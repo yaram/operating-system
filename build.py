@@ -68,7 +68,8 @@ if not os.path.exists(acpica_archive):
 
 objects_64bit = [
     (os.path.join(source_directory, 'entry64.S'), 'entry64.o'),
-    (os.path.join(source_directory, 'main.cpp'), 'main.o')
+    (os.path.join(source_directory, 'main.cpp'), 'main.o'),
+    (os.path.join(source_directory, 'acpi_environment.cpp'), 'acpi_environment.o')
 ]
 
 for source_path, object_name in objects_64bit:
