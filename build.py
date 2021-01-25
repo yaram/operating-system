@@ -13,6 +13,9 @@ parent_directory = os.path.dirname(os.path.realpath(__file__))
 
 source_directory = os.path.join(parent_directory, 'src')
 build_directory = os.path.join(parent_directory, 'build')
+thirdparty_directory = os.path.join(parent_directory, 'thirdparty')
+
+acpica_directory = os.path.join(thirdparty_directory, 'acpica')
 
 if not os.path.exists(build_directory):
     os.makedirs(build_directory)
@@ -26,15 +29,53 @@ if len(sys.argv) >= 2:
         print('Unknown configuration \'{}\''.format(configuration), file=sys.stderr)
         exit(1)
 
+acpica_archive = os.path.join(build_directory, 'acpica.a')
+
+if not os.path.exists(acpica_archive):
+    objects = [
+        (os.path.join(acpica_directory, 'src', name), name[:name.index('.c')] + '.o')
+        for name in os.listdir(os.path.join(acpica_directory, 'src'))
+    ]
+
+    for source_path, object_name in objects:
+        run_command(
+            shutil.which('clang'),
+            '-target', 'x86_64-unknown-unknown-elf',
+            '-I{}'.format(os.path.join(acpica_directory, 'include')),
+            '-march=x86-64',
+            '-mcmodel=kernel',
+            '-ffreestanding',
+            '-fno-stack-protector',
+            '-mno-red-zone',
+            '-mno-mmx',
+            '-mno-sse',
+            '-mno-sse2',
+            '-fpic',
+            *(['-g'] if configuration == 'debug' else []),
+            *(['-O2'] if configuration == 'release' else []),
+            '-c',
+            '-o', os.path.join(build_directory, object_name),
+            source_path
+        )
+
+    run_command(
+        shutil.which('llvm-ar'),
+        '-rs',
+        acpica_archive,
+        *[os.path.join(build_directory, object_name) for _, object_name in objects]
+    )
+
+
 objects_64bit = [
-    ('entry64.S', 'entry64.o'),
-    ('main.cpp', 'main.o'),
+    (os.path.join(source_directory, 'entry64.S'), 'entry64.o'),
+    (os.path.join(source_directory, 'main.cpp'), 'main.o')
 ]
 
-for source_name, object_name in objects_64bit:
+for source_path, object_name in objects_64bit:
     run_command(
         shutil.which('clang++'),
         '-target', 'x86_64-unknown-unknown-elf',
+        '-I{}'.format(os.path.join(acpica_directory, 'include')),
         '-march=x86-64',
         '-mcmodel=kernel',
         '-ffreestanding',
@@ -48,7 +89,7 @@ for source_name, object_name in objects_64bit:
         *(['-O2'] if configuration == 'release' else []),
         '-c',
         '-o', os.path.join(build_directory, object_name),
-        os.path.join(source_directory, source_name)
+        source_path
     )
 
 run_command(
@@ -57,6 +98,7 @@ run_command(
     '--pie',
     '-T', os.path.join(source_directory, 'linker64.ld'),
     '-o', os.path.join(build_directory, 'kernel64.elf'),
+    acpica_archive,
     *[os.path.join(build_directory, object_name) for _, object_name in objects_64bit]
 )
 
@@ -66,7 +108,6 @@ run_command(
     '--only-section', '.text',
     '--only-section', '.data',
     '--only-section', '.rodata',
-    '--only-section', '.kernel64',
     os.path.join(build_directory, 'kernel64.elf'),
     os.path.join(build_directory, 'kernel64.bin')
 )
