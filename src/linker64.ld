@@ -1,0 +1,21 @@
+ENTRY(entry)
+
+SECTIONS {
+    .text : {
+        *(.text.entry)
+        *(.text)
+    }
+
+    .rodata : {
+        *(.rodata)
+    }
+
+    .data : {
+        *(.data)
+    }
+
+    .bss : {
+        *(.bss)
+        *(COMMON)
+    }
+}
