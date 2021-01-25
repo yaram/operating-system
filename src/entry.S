@@ -6,7 +6,7 @@
 
 .set long_mode_bit_mask, 1 << 8
 
-.section .text
+.section .text.entry
 
 .globl entry
 entry:
