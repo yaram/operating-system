@@ -330,7 +330,7 @@ AcpiOsPrintf (
     va_list args;
     va_start(args, Format);
 
-    AcpiOsVprintf(Format, nullptr);
+    AcpiOsVprintf(Format, args);
 
     va_end(args);
 }
