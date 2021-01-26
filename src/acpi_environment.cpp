@@ -5,6 +5,7 @@ extern "C" {
 #include "acpi.h"
 }
 #include "console.h"
+#include "heap.h"
 #include "paging.h"
 
 extern "C" ACPI_STATUS AcpiOsInitialize(void) {
@@ -78,23 +79,15 @@ extern "C" ACPI_STATUS AcpiOsSignalSemaphore(ACPI_SEMAPHORE Handle, UINT32 Units
     return AE_NOT_IMPLEMENTED;
 }
 
-
-static size_t next_heap_index = 0;
-uint8_t heap[1024 * 10];
-
 /*
  * Memory allocation and mapping
  */
 extern "C" void * AcpiOsAllocate(ACPI_SIZE Size) {
-        auto index = next_heap_index;
-
-        next_heap_index += Size;
-
-    return (void*)(index + (size_t)heap);
+    return allocate((size_t)Size);
 }
 
 extern "C" void AcpiOsFree(void *Memory) {
-
+    deallocate(Memory);
 }
 
 extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
