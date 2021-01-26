@@ -1,5 +1,6 @@
 #include <stddef.h>
 #include <stdint.h>
+#include "console.h"
 
 const size_t page_size = 4096;
 

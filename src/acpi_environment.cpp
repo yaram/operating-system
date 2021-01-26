@@ -4,6 +4,7 @@
 extern "C" {
 #include "acpi.h"
 }
+#include "console.h"
 
 extern "C" ACPI_STATUS AcpiOsInitialize(void) {
     return AE_OK;
@@ -216,22 +217,13 @@ extern "C" void ACPI_INTERNAL_VAR_XFACE AcpiOsPrintf(const char *Format, ...) {
     va_list args;
     va_start(args, Format);
 
-    AcpiOsVprintf(Format, args);
+    vprintf(Format, args);
 
     va_end(args);
 }
 
-static uint32_t character_index = 0;
-
 extern "C" void AcpiOsVprintf(const char *Format, va_list Args) {
-    const auto vga_memory = (volatile uint8_t *)0xB8000;
-
-    while(*Format != 0) {
-        vga_memory[character_index] = *Format;
-
-        Format += 1;
-        character_index += 2;
-    }
+    vprintf(Format, Args);
 }
 
 extern "C" void AcpiOsRedirectOutput(void *Destination) {
