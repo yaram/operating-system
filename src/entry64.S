@@ -4,7 +4,7 @@
 
 .globl entry
 
-.entry:
+entry:
     // Set up segments not set up previously
     mov $0x20, %ax
     mov %ax, %ds

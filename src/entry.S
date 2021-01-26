@@ -6,7 +6,9 @@
 
 .set long_mode_bit_mask, 1 << 8
 
-.section .text.entry
+.equ kernel64_load_location, 0x200000
+
+.section .text
 
 .globl entry
 entry:
@@ -25,6 +27,11 @@ entry:
 
     ljmp $0x08, $long_jump_target
 long_jump_target:
+    // Copy 64-bit kernel to it's final memory location
+    mov $kernel64, %esi
+    mov $kernel64_load_location, %edi
+    mov $(kernel64_end - kernel64), %ecx
+    rep movsb
 
     // Enable extended memory
     mov %cr4, %eax
@@ -57,9 +64,27 @@ long_jump_target:
     or $0b11, %eax
     mov %eax, (pdt)
 
+    mov $pt, %eax
+    add $4096, %eax
+    and $~0xFFF, %eax
+    or $0b11, %eax
+    mov %eax, (pdt + 8)
+
+    mov $pt, %eax
+    add $(4096 * 2), %eax
+    and $~0xFFF, %eax
+    or $0b11, %eax
+    mov %eax, (pdt + 16)
+
+    mov $pt, %eax
+    add $(4096 * 3), %eax
+    and $~0xFFF, %eax
+    or $0b11, %eax
+    mov %eax, (pdt + 24)
+
     mov $pt, %edi
     mov $0b11, %ebx
-    mov $512, %ecx
+    mov $(512 * 4), %ecx
 
 .page_table_loop:
     mov %ebx, (%edi)
@@ -80,7 +105,7 @@ long_jump_target:
 
     // Switch from 32-bit to 64-bit mode code segment & jump to 64-bit kernel code
 
-    ljmp $0x18, $kernel64
+    ljmp $0x18, $kernel64_load_location
 
 .section .rodata
 
@@ -120,9 +145,6 @@ gdt_entries:
     .byte 0b00000000
     .byte 0
 
-kernel64:
-.incbin "build/kernel64.bin"
-
 .section .bss
 
 .align 4096
@@ -137,4 +159,10 @@ pdt:
     .skip 4096
 
 pt:
-    .skip 4096
+    .skip 4096 * 4
+
+.section .data
+
+kernel64:
+.incbin "build/kernel64.bin"
+kernel64_end:

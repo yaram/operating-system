@@ -15,10 +15,12 @@ source_directory = os.path.join(parent_directory, 'src')
 build_directory = os.path.join(parent_directory, 'build')
 thirdparty_directory = os.path.join(parent_directory, 'thirdparty')
 
+object_directory = os.path.join(build_directory, 'objects')
+
 acpica_directory = os.path.join(thirdparty_directory, 'acpica')
 
-if not os.path.exists(build_directory):
-    os.makedirs(build_directory)
+if not os.path.exists(object_directory):
+    os.makedirs(object_directory)
 
 configuration = 'debug'
 
@@ -50,11 +52,10 @@ if not os.path.exists(acpica_archive):
             '-mno-mmx',
             '-mno-sse',
             '-mno-sse2',
-            '-fpic',
             *(['-g'] if configuration == 'debug' else []),
             *(['-O2'] if configuration == 'release' else []),
             '-c',
-            '-o', os.path.join(build_directory, object_name),
+            '-o', os.path.join(object_directory, object_name),
             source_path
         )
 
@@ -62,7 +63,7 @@ if not os.path.exists(acpica_archive):
         shutil.which('llvm-ar'),
         '-rs',
         acpica_archive,
-        *[os.path.join(build_directory, object_name) for _, object_name in objects]
+        *[os.path.join(object_directory, object_name) for _, object_name in objects]
     )
 
 
@@ -85,22 +86,20 @@ for source_path, object_name in objects_64bit:
         '-mno-mmx',
         '-mno-sse',
         '-mno-sse2',
-        '-fpic',
         *(['-g'] if configuration == 'debug' else []),
         *(['-O2'] if configuration == 'release' else []),
         '-c',
-        '-o', os.path.join(build_directory, object_name),
+        '-o', os.path.join(object_directory, object_name),
         source_path
     )
 
 run_command(
     shutil.which('ld.lld'),
     '-e', 'entry',
-    '--pie',
     '-T', os.path.join(source_directory, 'linker64.ld'),
     '-o', os.path.join(build_directory, 'kernel64.elf'),
     acpica_archive,
-    *[os.path.join(build_directory, object_name) for _, object_name in objects_64bit]
+    *[os.path.join(object_directory, object_name) for _, object_name in objects_64bit]
 )
 
 run_command(
@@ -133,7 +132,7 @@ for source_name, object_name in objects_32bit:
         *(['-g'] if configuration == 'debug' else []),
         *(['-O2'] if configuration == 'release' else []),
         '-c',
-        '-o', os.path.join(build_directory, object_name),
+        '-o', os.path.join(object_directory, object_name),
         os.path.join(source_directory, source_name)
     )
 
@@ -142,5 +141,5 @@ run_command(
     '-e', 'entry',
     '-T', os.path.join(source_directory, 'linker32.ld'),
     '-o', os.path.join(build_directory, 'kernel32.elf'),
-    *[os.path.join(build_directory, object_name) for _, object_name in objects_32bit]
+    *[os.path.join(object_directory, object_name) for _, object_name in objects_32bit]
 )
