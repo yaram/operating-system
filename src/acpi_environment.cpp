@@ -64,19 +64,19 @@ extern "C" void AcpiOsReleaseLock(ACPI_SPINLOCK Handle, ACPI_CPU_FLAGS Flags) {
  * Semaphore primitives
  */
 extern "C" ACPI_STATUS AcpiOsCreateSemaphore(UINT32 MaxUnits, UINT32 InitialUnits, ACPI_SEMAPHORE *OutHandle) {
-    return AE_NOT_IMPLEMENTED;
+    return AE_OK;
 }
 
 extern "C" ACPI_STATUS AcpiOsDeleteSemaphore(ACPI_SEMAPHORE Handle) {
-    return AE_NOT_IMPLEMENTED;
+    return AE_OK;
 }
 
 extern "C" ACPI_STATUS AcpiOsWaitSemaphore(ACPI_SEMAPHORE Handle, UINT32 Units, UINT16 Timeout) {
-    return AE_NOT_IMPLEMENTED;
+    return AE_OK;
 }
 
 extern "C" ACPI_STATUS AcpiOsSignalSemaphore(ACPI_SEMAPHORE Handle, UINT32 Units) {
-    return AE_NOT_IMPLEMENTED;
+    return AE_OK;
 }
 
 /*
