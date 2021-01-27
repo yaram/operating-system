@@ -1,5 +1,6 @@
 #include "paging.h"
 #include <stdint.h>
+#include "console.h"
 
 struct __attribute__((packed)) PML4Entry {
     bool present: 1;
@@ -329,52 +330,58 @@ void unmap_pages(size_t logical_page_index, size_t page_count) {
 
         page_table[page_index].present = false;
 
-        auto page_table_empty = true;
-        for(size_t i = 0; i < page_table_length; i += 1) {
-            if(page_table[i].present) {
-                page_table_empty = false;
-                break;
+        if(pd_table[pd_index].present) {
+            auto page_table_empty = true;
+            for(size_t i = 0; i < page_table_length; i += 1) {
+                if(page_table[i].present) {
+                    page_table_empty = false;
+                    break;
+                }
+            }
+
+            if(page_table_empty) {
+                pd_table[pd_index].present = false;
+
+                auto page_table_index = ((size_t)page_table - (size_t)page_tables) / sizeof(PageEntry);
+
+                page_tables_used[page_table_index] = false;
             }
         }
 
-        if(page_table_empty) {
-            pd_table[pd_index].present = false;
+        if(pdp_table[pdp_index].present) {
+            auto pd_table_empty = true;
+            for(size_t i = 0; i < page_table_length; i += 1) {
+                if(pd_table[i].present) {
+                    pd_table_empty = false;
+                    break;
+                }
+            }
 
-            auto page_table_index = ((size_t)page_tables - (size_t)page_table) / 8;
+            if(pd_table_empty) {
+                pdp_table[pdp_index].present = false;
 
-            page_tables_used[page_table_index] = false;
-        }
+                auto pd_table_index = ((size_t)pd_table - (size_t)pd_tables) / sizeof(PDEntry);
 
-        auto pd_table_empty = true;
-        for(size_t i = 0; i < page_table_length; i += 1) {
-            if(pd_table[i].present) {
-                pd_table_empty = false;
-                break;
+                pd_tables_used[pd_table_index] = false;
             }
         }
 
-        if(pd_table_empty) {
-            pdp_table[pdp_index].present = false;
-
-            auto pd_table_index = ((size_t)pd_tables - (size_t)pd_table) / 8;
-
-            pd_tables_used[pd_table_index] = false;
-        }
-
-        auto pdp_table_empty = true;
-        for(size_t i = 0; i < page_table_length; i += 1) {
-            if(pdp_table[i].present) {
-                pdp_table_empty = false;
-                break;
+        if(pml4_table[pml4_index].present) {
+            auto pdp_table_empty = true;
+            for(size_t i = 0; i < page_table_length; i += 1) {
+                if(pdp_table[i].present) {
+                    pdp_table_empty = false;
+                    break;
+                }
             }
-        }
 
-        if(pdp_table_empty) {
-            pml4_table[pml4_index].present = false;
+            if(pdp_table_empty) {
+                pml4_table[pml4_index].present = false;
 
-            auto pdp_table_index = ((size_t)pdp_tables - (size_t)pdp_table) / 8;
+                auto pdp_table_index = ((size_t)pdp_table - (size_t)pdp_tables) / sizeof(PDPEntry);
 
-            pdp_tables_used[pdp_table_index] = false;
+                pdp_tables_used[pdp_table_index] = false;
+            }
         }
 
         __asm volatile(

@@ -102,7 +102,7 @@ extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length)
 }
 
 extern "C" void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) {
-    auto logical_pages_start = (size_t)Size / page_size;
+    auto logical_pages_start = (size_t)LogicalAddress / page_size;
     auto logical_pages_end = ((size_t)LogicalAddress + (size_t)Size) / page_size;
 
     unmap_pages(logical_pages_start, logical_pages_end - logical_pages_start + 1);
