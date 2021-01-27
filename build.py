@@ -18,6 +18,7 @@ thirdparty_directory = os.path.join(parent_directory, 'thirdparty')
 object_directory = os.path.join(build_directory, 'objects')
 
 acpica_directory = os.path.join(thirdparty_directory, 'acpica')
+printf_directory = os.path.join(thirdparty_directory, 'printf')
 
 if not os.path.exists(object_directory):
     os.makedirs(object_directory)
@@ -72,14 +73,16 @@ objects_64bit = [
     (os.path.join(source_directory, 'main.cpp'), 'main.o'),
     (os.path.join(source_directory, 'console.cpp'), 'console.o'),
     (os.path.join(source_directory, 'paging.cpp'), 'paging.o'),
+    (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
     (os.path.join(source_directory, 'acpi_environment.cpp'), 'acpi_environment.o')
 ]
 
 for source_path, object_name in objects_64bit:
     run_command(
-        shutil.which('clang++'),
+        shutil.which('clang++' if source_path.endswith('.cpp') else 'clang'),
         '-target', 'x86_64-unknown-unknown-elf',
         '-I{}'.format(os.path.join(acpica_directory, 'include')),
+        '-I{}'.format(os.path.join(printf_directory)),
         '-march=x86-64',
         '-mcmodel=kernel',
         '-ffreestanding',

@@ -1,7 +1,6 @@
 #pragma once
 
 #include <stdarg.h>
+#include "printf.h"
 
 void clear_console();
-void vprintf(const char *format, va_list Args);
-void printf(const char *format, ...);
