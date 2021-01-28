@@ -22,5 +22,6 @@ run_command(
     shutil.which('qemu-system-x86_64'),
     *(['-S', '-s'] if gdb else []),
     '-monitor', 'stdio',
+    '-machine', 'q35',
     '-kernel', os.path.join(build_directory, 'kernel32.elf')
 )
