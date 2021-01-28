@@ -96,7 +96,10 @@ extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length)
 
     auto offset = (size_t)Where - physical_pages_start * page_size;
 
-    auto logical_pages_start = map_pages(physical_pages_start, physical_pages_end - physical_pages_start + 1);
+    size_t logical_pages_start;
+    if(!map_pages(physical_pages_start, physical_pages_end - physical_pages_start + 1, &logical_pages_start)) {
+        return nullptr;
+    }
 
     return (void*)(logical_pages_start * page_size + offset);
 }

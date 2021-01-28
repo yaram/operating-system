@@ -80,7 +80,7 @@ const size_t page_table_count = 16;
 bool page_tables_used[page_table_count];
 PageEntry __attribute__((aligned(page_size))) page_tables[page_table_count][page_table_length];
 
-void create_initial_pages(size_t identity_pages_start, size_t identity_page_count) {
+bool create_initial_pages(size_t identity_pages_start, size_t identity_page_count) {
     for(size_t i = 0; i < page_table_length; i += 1) {
         pml4_table[0] = {};
     }
@@ -109,16 +109,20 @@ void create_initial_pages(size_t identity_pages_start, size_t identity_page_coun
         }
     }
 
-    map_consecutive_pages(identity_pages_start, identity_pages_start, identity_page_count, false);
+    if(!map_consecutive_pages(identity_pages_start, identity_pages_start, identity_page_count, false)) {
+        return false;
+    }
 
     __asm volatile(
         "mov %0, %%cr3"
         :
         : "D"(&pml4_table)
     );
+
+    return true;
 }
 
-void map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_start, size_t page_count, bool invalidate_pages) {
+bool map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_start, size_t page_count, bool invalidate_pages) {
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
         auto page_index = logical_pages_start + relative_page_index;
         auto pd_index = page_index / page_table_length;
@@ -134,13 +138,19 @@ void map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
         if(pml4_table[pml4_index].present) {
             pdp_table = (PDPEntry*)(pml4_table[pml4_index].pdp_table_page_address * page_size);
         } else {
+            auto found = false;
             for(size_t i = 0; i < pdp_table_count; i += 1) {
                 if(!pdp_tables_used[i]) {
                     pdp_table = pdp_tables[i];
                     pdp_tables_used[i] = true;
+                    found = true;
 
                     break;
                 }
+            }
+
+            if(!found) {
+                return false;
             }
 
             pml4_table[pml4_index].present = true;
@@ -152,14 +162,21 @@ void map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
         if(pdp_table[pdp_index].present) {
             pd_table = (PDEntry*)(pdp_table[pdp_index].pd_table_page_address * page_size);
         } else {
+            auto found = false;
             for(size_t i = 0; i < pd_table_count; i += 1) {
                 if(!pd_tables_used[i]) {
                     pd_table = pd_tables[i];
                     pd_tables_used[i] = true;
+                    found = true;
 
                     break;
                 }
             }
+
+            if(!found) {
+                return false;
+            }
+
 
             pdp_table[pdp_index].present = true;
             pdp_table[pdp_index].write_allowed = true;
@@ -170,14 +187,21 @@ void map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
         if(pd_table[pd_index].present) {
             page_table = (PageEntry*)(pd_table[pd_index].page_table_page_address * page_size);
         } else {
+            auto found = false;
             for(size_t i = 0; i < page_table_count; i += 1) {
                 if(!page_tables_used[i]) {
                     page_table = page_tables[i];
                     page_tables_used[i] = true;
+                    found = true;
 
                     break;
                 }
             }
+
+            if(!found) {
+                return false;
+            }
+
 
             pd_table[pd_index].present = true;
             pd_table[pd_index].write_allowed = true;
@@ -198,7 +222,7 @@ void map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
     }
 }
 
-size_t map_pages(size_t physical_page_index, size_t page_count) {
+bool map_pages(size_t physical_pages_start, size_t page_count, size_t *logical_pages_start) {
     auto last_full = true;
     auto found = false;
     size_t free_page_range_start;
@@ -302,14 +326,22 @@ size_t map_pages(size_t physical_page_index, size_t page_count) {
         }
     }
 
-    map_consecutive_pages(physical_page_index, free_page_range_start, page_count, true);
+    if(!found) {
+        return false;
+    }
 
-    return free_page_range_start;
+    if(!map_consecutive_pages(physical_pages_start, free_page_range_start, page_count, true)) {
+        return false;
+    }
+
+    *physical_pages_start = free_page_range_start;
+
+    return true;
 }
 
-void unmap_pages(size_t logical_page_index, size_t page_count) {
+void unmap_pages(size_t logical_pages_start, size_t page_count) {
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
-        auto page_index = logical_page_index + relative_page_index;
+        auto page_index = logical_pages_start + relative_page_index;
         auto pd_index = page_index / page_table_length;
         auto pdp_index = pd_index / page_table_length;
         auto pml4_index = pdp_index / page_table_length;
@@ -384,7 +416,7 @@ void unmap_pages(size_t logical_page_index, size_t page_count) {
         __asm volatile(
             "invlpg (%0)"
             :
-            : "D"((logical_page_index + relative_page_index) * page_size)
+            : "D"((logical_pages_start + relative_page_index) * page_size)
         );
     }
 }
