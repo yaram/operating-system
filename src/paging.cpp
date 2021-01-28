@@ -134,7 +134,6 @@ void map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
         if(pml4_table[pml4_index].present) {
             pdp_table = (PDPEntry*)(pml4_table[pml4_index].pdp_table_page_address * page_size);
         } else {
-            size_t pdp_table_index;
             for(size_t i = 0; i < pdp_table_count; i += 1) {
                 if(!pdp_tables_used[i]) {
                     pdp_table = pdp_tables[i];
@@ -153,7 +152,6 @@ void map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
         if(pdp_table[pdp_index].present) {
             pd_table = (PDEntry*)(pdp_table[pdp_index].pd_table_page_address * page_size);
         } else {
-            size_t pd_table_index;
             for(size_t i = 0; i < pd_table_count; i += 1) {
                 if(!pd_tables_used[i]) {
                     pd_table = pd_tables[i];
@@ -172,7 +170,6 @@ void map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
         if(pd_table[pd_index].present) {
             page_table = (PageEntry*)(pd_table[pd_index].page_table_page_address * page_size);
         } else {
-            size_t page_table_index;
             for(size_t i = 0; i < page_table_count; i += 1) {
                 if(!page_tables_used[i]) {
                     page_table = page_tables[i];
@@ -342,7 +339,7 @@ void unmap_pages(size_t logical_page_index, size_t page_count) {
             if(page_table_empty) {
                 pd_table[pd_index].present = false;
 
-                auto page_table_index = ((size_t)page_table - (size_t)page_tables) / sizeof(PageEntry);
+                auto page_table_index = ((size_t)page_table - (size_t)page_tables) / (sizeof(PageEntry) * page_table_length);
 
                 page_tables_used[page_table_index] = false;
             }
@@ -360,7 +357,7 @@ void unmap_pages(size_t logical_page_index, size_t page_count) {
             if(pd_table_empty) {
                 pdp_table[pdp_index].present = false;
 
-                auto pd_table_index = ((size_t)pd_table - (size_t)pd_tables) / sizeof(PDEntry);
+                auto pd_table_index = ((size_t)pd_table - (size_t)pd_tables) / (sizeof(PDEntry) * page_table_length);
 
                 pd_tables_used[pd_table_index] = false;
             }
@@ -378,7 +375,7 @@ void unmap_pages(size_t logical_page_index, size_t page_count) {
             if(pdp_table_empty) {
                 pml4_table[pml4_index].present = false;
 
-                auto pdp_table_index = ((size_t)pdp_table - (size_t)pdp_tables) / sizeof(PDPEntry);
+                auto pdp_table_index = ((size_t)pdp_table - (size_t)pdp_tables) / (sizeof(PDPEntry) * page_table_length);
 
                 pdp_tables_used[pdp_table_index] = false;
             }
