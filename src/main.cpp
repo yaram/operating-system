@@ -8,7 +8,8 @@ extern "C" {
 #include "paging.h"
 
 size_t next_heap_index = 0;
-uint8_t heap[1024 * 1024];
+const size_t heap_size = 1024 * 1024;
+uint8_t heap[heap_size];
 
 extern "C" void main() {
     clear_console();
@@ -23,6 +24,10 @@ void *allocate(size_t size) {
     auto index = next_heap_index;
 
     next_heap_index += size;
+
+    if(next_heap_index > heap_size) {
+        return nullptr;
+    }
 
     return (void*)(index + (size_t)heap);
 }
