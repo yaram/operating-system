@@ -91,24 +91,11 @@ extern "C" void AcpiOsFree(void *Memory) {
 }
 
 extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
-    auto physical_pages_start = (size_t)Where / page_size;
-    auto physical_pages_end = ((size_t)Where + (size_t)Length) / page_size;
-
-    auto offset = (size_t)Where - physical_pages_start * page_size;
-
-    size_t logical_pages_start;
-    if(!map_pages(physical_pages_start, physical_pages_end - physical_pages_start + 1, &logical_pages_start)) {
-        return nullptr;
-    }
-
-    return (void*)(logical_pages_start * page_size + offset);
+    return map_memory((size_t)Where, (size_t)Length);
 }
 
 extern "C" void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) {
-    auto logical_pages_start = (size_t)LogicalAddress / page_size;
-    auto logical_pages_end = ((size_t)LogicalAddress + (size_t)Size) / page_size;
-
-    unmap_pages(logical_pages_start, logical_pages_end - logical_pages_start + 1);
+    unmap_memory(LogicalAddress, (size_t)Size);
 }
 
 extern "C" ACPI_STATUS AcpiOsGetPhysicalAddress(void *LogicalAddress, ACPI_PHYSICAL_ADDRESS *PhysicalAddress) {

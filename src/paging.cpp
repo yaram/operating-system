@@ -220,6 +220,8 @@ bool map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
             );
         }
     }
+
+    return true;
 }
 
 bool map_pages(size_t physical_pages_start, size_t page_count, size_t *logical_pages_start) {
@@ -334,7 +336,7 @@ bool map_pages(size_t physical_pages_start, size_t page_count, size_t *logical_p
         return false;
     }
 
-    *physical_pages_start = free_page_range_start;
+    *logical_pages_start = free_page_range_start;
 
     return true;
 }
@@ -419,4 +421,25 @@ void unmap_pages(size_t logical_pages_start, size_t page_count) {
             : "D"((logical_pages_start + relative_page_index) * page_size)
         );
     }
+}
+
+void *map_memory(size_t physical_memory_start, size_t size) {
+    auto physical_pages_start = physical_memory_start / page_size;
+    auto physical_pages_end = (physical_memory_start + size) / page_size;
+
+    auto offset = physical_memory_start - physical_pages_start * page_size;
+
+    size_t logical_pages_start;
+    if(!map_pages(physical_pages_start, physical_pages_end - physical_pages_start + 1, &logical_pages_start)) {
+        return nullptr;
+    }
+
+    return (void*)(logical_pages_start * page_size + offset);
+}
+
+void unmap_memory(void *logical_memory_start, size_t size) {
+    auto logical_pages_start = (size_t)logical_memory_start / page_size;
+    auto logical_pages_end = ((size_t)logical_memory_start + size) / page_size;
+
+    unmap_pages(logical_pages_start, logical_pages_end - logical_pages_start + 1);
 }
