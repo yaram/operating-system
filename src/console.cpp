@@ -10,10 +10,29 @@ const auto vga_memory = (volatile uint8_t *)0xB8000;
 uint32_t column = 0;
 uint32_t line = 0;
 
+static void out(uint16_t port, uint8_t value) {
+    __asm volatile(
+        "out %%al, %%dx"
+        :
+        : "d"(port), "a"(value)
+    );
+}
+
+static void move_cursor(uint32_t column, uint32_t line) {
+    auto index = line * column_count + column;
+
+    out(0x03D4, 0x0F);
+    out(0x03D5, (uint8_t)index);
+    out(0x03D4, 0x0E);
+    out(0x03D5, (uint8_t)(index >> 8));
+}
+
 void clear_console() {
     for(size_t i = 0; i < line_count * column_count * 2; i += 2) {
         vga_memory[i] = ' ';
     }
+
+    move_cursor(0, 0);
 }
 
 void _putchar(char character) {
@@ -42,10 +61,14 @@ void _putchar(char character) {
     }
 
     if(character == '\n') {
+        move_cursor(column, line);
+
         return;
     }
 
     vga_memory[line * column_count * 2 + column * 2] = character;
 
     column += 1;
+
+    move_cursor(column, line);
 }
