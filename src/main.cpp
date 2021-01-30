@@ -33,6 +33,8 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         return;
     }
 
+    AcpiInitializeSubsystem();
+
     AcpiInitializeTables(nullptr, 8, FALSE);
 
     MCFGTable *mcfg_table;
