@@ -17,11 +17,138 @@ struct MCFGTable {
 MemoryMapEntry *global_memory_map;
 size_t global_memory_map_size;
 
+struct __attribute__((packed)) IDTEntry {
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t interrupt_stack_table: 3;
+    uint8_t ignored: 5;
+    uint8_t type: 4;
+    bool storage_segment: 1;
+    uint8_t privilege_level: 2;
+    bool present: 1;
+    uint64_t offset_high: 48;
+    uint32_t reserved;
+};
+
+struct __attribute__((packed)) IDTDescriptor {
+    uint16_t limit;
+    uint64_t base;
+};
+
+struct __attribute__((packed)) InterruptStackFrame {
+    void *instruction_pointer;
+    uint64_t code_segment;
+    uint64_t cpu_flags;
+    void *stack_pointer;
+    uint64_t stack_segment;
+};
+
+static void exception_handler(size_t index, InterruptStackFrame frame, size_t error_code) {
+    printf("EXCEPTION 0x%X(0x%X) AT %p\n", index, error_code, frame.instruction_pointer);
+
+    while(true) {
+        __asm volatile("hlt");
+    }
+}
+
+#define exception_thunk(index) \
+__attribute((interrupt)) static void exception_handler_thunk_##index(InterruptStackFrame *interrupt_frame) { \
+    exception_handler(index, *interrupt_frame, 0); \
+}
+
+#define exception_thunk_error_code(index) \
+__attribute((interrupt)) static void exception_handler_thunk_##index(InterruptStackFrame *interrupt_frame, size_t error_code) { \
+    exception_handler(index, *interrupt_frame, error_code); \
+}
+
+exception_thunk(0);
+exception_thunk(1);
+exception_thunk(2);
+exception_thunk(3);
+exception_thunk(4);
+exception_thunk(5);
+exception_thunk(6);
+exception_thunk(7);
+exception_thunk_error_code(8);
+exception_thunk_error_code(10);
+exception_thunk_error_code(11);
+exception_thunk_error_code(12);
+exception_thunk_error_code(13);
+exception_thunk_error_code(14);
+exception_thunk(15);
+exception_thunk(16);
+exception_thunk_error_code(17);
+exception_thunk(18);
+exception_thunk(19);
+exception_thunk(20);
+exception_thunk_error_code(30);
+
+const size_t idt_length = 32;
+
+#define idt_entry_exception(index) {\
+    (uint16_t)(size_t)&exception_handler_thunk_##index, \
+    0x18, \
+    0, \
+    0, \
+    0xF, \
+    0, \
+    0, \
+    1, \
+    (uint64_t)(size_t)&exception_handler_thunk_##index >> 16, \
+    0 \
+}
+
+IDTEntry idt_entries[idt_length] {
+    idt_entry_exception(0),
+    idt_entry_exception(1),
+    idt_entry_exception(2),
+    idt_entry_exception(3),
+    idt_entry_exception(4),
+    idt_entry_exception(5),
+    idt_entry_exception(6),
+    idt_entry_exception(7),
+    idt_entry_exception(8),
+    {},
+    idt_entry_exception(10),
+    idt_entry_exception(11),
+    idt_entry_exception(12),
+    idt_entry_exception(13),
+    idt_entry_exception(14),
+    idt_entry_exception(15),
+    idt_entry_exception(16),
+    idt_entry_exception(17),
+    idt_entry_exception(18),
+    idt_entry_exception(19),
+    idt_entry_exception(20),
+    {}, {}, {}, {}, {}, {}, {}, {}, {},
+    idt_entry_exception(30),
+    {}
+};
+
+IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt_entries };
+
+extern "C" void __cxx_global_var_init();
+
 extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     global_memory_map = memory_map;
     global_memory_map_size = memory_map_size;
 
     clear_console();
+
+    __cxx_global_var_init();
+
+    __asm volatile(
+        // Load IDT
+        "lidt (%0)\n"
+        // Disable PIC
+        "mov $0xff, %%al\n"
+        "out %%al, $0xA1\n"
+        "out %%al, $0x21\n"
+        // Enable interupts
+        "sti"
+        :
+        : "D"(&idt_descriptor)
+    );
 
     for(size_t i = 0; i < memory_map_size; i += 1) {
         printf("Memory region 0x%zX, 0x%zX, %d\n", (size_t)memory_map[i].address, memory_map[i].length, memory_map[i].available);
