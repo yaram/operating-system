@@ -423,6 +423,84 @@ void unmap_pages(size_t logical_pages_start, size_t page_count) {
     }
 }
 
+inline size_t divide_round_up(size_t dividend, size_t divisor) {
+    return (dividend + divisor / 2) / divisor;
+}
+
+bool map_any_pages(size_t page_count, MemoryMapEntry *memory_map, size_t memory_map_size, size_t *logical_pages_start) {
+    auto found = false;
+    size_t free_page_range_start;
+
+    for(size_t i = 0; i < memory_map_size; i += 1) {
+        if(memory_map[i].available) {
+            // Early out for memory regions entirely within the kernel memory
+            if((size_t)memory_map[i].address >= kernel_memory_start && (size_t)memory_map[i].address + memory_map[i].length <= kernel_memory_end) {
+                continue;
+            }
+
+            auto last_unavailable = true;
+
+            for(
+                auto physical_page_index = divide_round_up((size_t)memory_map[i].address, page_size);
+                (physical_page_index + 1) * page_size <= (size_t)memory_map[i].address + memory_map[i].length;
+                physical_page_index += 1
+            ) {
+                if(physical_page_index * page_size < kernel_memory_end && (physical_page_index + 1) * page_size > kernel_memory_start) {
+                    continue;
+                }
+
+                auto already_allocated = false;
+
+                for(size_t page_table_index = 0; page_table_index < page_table_count; page_table_index += 1) {
+                    if(page_tables_used[page_table_index]) {
+                        for(size_t page_index = 0; page_index < page_table_length; page_index += 1) {
+                            if(page_tables[page_table_index][page_index].present) {
+                                if(page_tables[page_table_index][page_index].page_address == physical_page_index) {
+                                    already_allocated = true;
+
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    if(already_allocated) {
+                        break;
+                    }
+                }
+
+                if(already_allocated) {
+                    last_unavailable = true;
+
+                    continue;
+                } else {
+                    if(last_unavailable) {
+                        free_page_range_start = physical_page_index;
+
+                        last_unavailable = false;
+                    }
+
+                    if(physical_page_index - free_page_range_start == page_count) {
+                        found = true;
+
+                        break;
+                    }
+                }
+            }
+        }
+
+        if(found) {
+            break;
+        }
+    }
+
+    if(!found) {
+        return false;
+    }
+
+    return map_pages(free_page_range_start, page_count, logical_pages_start);
+}
+
 void *map_memory(size_t physical_memory_start, size_t size) {
     auto physical_pages_start = physical_memory_start / page_size;
     auto physical_pages_end = (physical_memory_start + size) / page_size;
@@ -442,4 +520,15 @@ void unmap_memory(void *logical_memory_start, size_t size) {
     auto logical_pages_end = ((size_t)logical_memory_start + size) / page_size;
 
     unmap_pages(logical_pages_start, logical_pages_end - logical_pages_start + 1);
+}
+
+void *map_any_memory(size_t size, MemoryMapEntry *memory_map, size_t memory_map_size) {
+    auto page_count = divide_round_up(size, page_size);
+
+    size_t logical_pages_start;
+    if(!map_any_pages(page_count + 1, memory_map, memory_map_size, &logical_pages_start)) {
+        return nullptr;
+    }
+
+    return (void*)(logical_pages_start * page_size);
 }

@@ -6,10 +6,7 @@ extern "C" {
 #include "console.h"
 #include "heap.h"
 #include "paging.h"
-
-size_t next_heap_index = 0;
-const size_t heap_size = 1024 * 1024;
-uint8_t heap[heap_size];
+#include "memory_map.h"
 
 struct MCFGTable {
     ACPI_TABLE_MCFG preamble;
@@ -17,23 +14,20 @@ struct MCFGTable {
     ACPI_MCFG_ALLOCATION allocations[0];
 };
 
-struct MemoryMapEntry {
-    void* address;
-    size_t length;
-    bool available;
-};
+MemoryMapEntry *global_memory_map;
+size_t global_memory_map_size;
 
 extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
+    global_memory_map = memory_map;
+    global_memory_map_size = memory_map_size;
+
     clear_console();
 
     for(size_t i = 0; i < memory_map_size; i += 1) {
         printf("Memory region 0x%zX, 0x%zX, %d\n", (size_t)memory_map[i].address, memory_map[i].length, memory_map[i].available);
     }
 
-    const size_t inital_pages_start = 0;
-    const size_t inital_pages_length = 0x800000;
-
-    if(!create_initial_pages(inital_pages_start / page_size, inital_pages_length / page_size)) {
+    if(!create_initial_pages(kernel_memory_start / page_size, kernel_memory_end / page_size)) {
         printf("Error: Unable to allocate initial pages\n");
 
         return;
@@ -102,15 +96,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
 }
 
 void *allocate(size_t size) {
-    auto index = next_heap_index;
-
-    next_heap_index += size;
-
-    if(next_heap_index > heap_size) {
-        return nullptr;
-    }
-
-    return (void*)(index + (size_t)heap);
+    return map_any_memory(size, global_memory_map, global_memory_map_size);
 }
 
 void deallocate(void *pointer) {
