@@ -23,5 +23,6 @@ run_command(
     *(['-S', '-s'] if gdb else []),
     '-monitor', 'stdio',
     '-machine', 'q35',
+    '-m', '4G',
     '-kernel', os.path.join(build_directory, 'kernel32.elf')
 )

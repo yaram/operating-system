@@ -25,8 +25,51 @@ entry:
     mov %ax, %fs
     mov %ax, %gs
 
-    ljmp $0x08, $long_jump_target
-long_jump_target:
+    ljmp $0x08, $.long_jump_target
+.long_jump_target:
+
+    // Fill in memory map from the multiboot memory map
+
+    mov 44(%ebx), %eax
+    mov 48(%ebx), %esi
+    mov %esi, %edi
+    add %eax, %edi
+
+    mov $0, %eax
+
+.memory_map_loop:
+    mov 4(%esi), %ebx
+    mov %ebx, memory_map_buffer(%eax)
+
+    mov 8(%esi), %ebx
+    mov %ebx, memory_map_buffer + 4(%eax)
+
+    mov 12(%esi), %ebx
+    mov %ebx, memory_map_buffer + 8(%eax)
+
+    mov 16(%esi), %ebx
+    mov %ebx, memory_map_buffer + 12(%eax)
+
+    mov $0, %ebx
+    mov 20(%esi), %bl
+    cmp $1, %bl
+    sete %bl
+    mov %bl, memory_map_buffer + 16(%eax)
+
+    mov (%esi), %ebx
+    add %ebx, %esi
+    add $4, %esi
+
+    add $24, %eax
+
+    cmp %edi, %esi
+    jl .memory_map_loop
+
+    mov $0, %edx
+    mov $24, %ebx
+    div %ebx
+    mov %eax, (memory_map_size)
+
     // Copy 64-bit kernel to it's final memory location
     mov $kernel64, %esi
     mov $kernel64_load_location, %edi
@@ -42,9 +85,9 @@ long_jump_target:
     mov $pml4t, %edi
     mov %edi, %cr3
 
-    // Clear all 4 page tables
+    // Clear all 3 coarse page tables
     mov $0, %eax
-    mov $(4096 * 4), %ecx
+    mov $(4096 * 3), %ecx
     rep stosl
 
     // Set up page table entries
@@ -103,6 +146,10 @@ long_jump_target:
     or $paging_bit_mask, %eax
     mov %eax, %cr0
 
+    // Load main parameters
+    mov $memory_map_buffer, %edi
+    mov (memory_map_size), %esi
+
     // Switch from 32-bit to 64-bit mode code segment & jump to 64-bit kernel code
 
     ljmp $0x18, $kernel64_load_location
@@ -146,6 +193,12 @@ gdt_entries:
     .byte 0
 
 .section .bss
+
+memory_map_size:
+    .skip 4
+
+memory_map_buffer:
+    .skip 4096
 
 .align 4096
 

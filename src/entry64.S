@@ -13,7 +13,7 @@ entry:
     mov %ax, %fs
     mov %ax, %gs
 
-    lea stack_top(%rip), %rsp
+    lea stack_top, %rsp
 
     call main
 

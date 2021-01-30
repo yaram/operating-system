@@ -1,5 +1,5 @@
 .set MAGIC, 0x1BADB002
-.set FLAG_ALIGN, 1 << 0
+.set FLAG_ALIGN, 1 << 0 | 1 << 6
 .set FLAGS, FLAG_ALIGN
 .set CHECKSUM, -(MAGIC + FLAGS)
 

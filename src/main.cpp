@@ -17,8 +17,18 @@ struct MCFGTable {
     ACPI_MCFG_ALLOCATION allocations[0];
 };
 
-extern "C" void main() {
+struct MemoryMapEntry {
+    void* address;
+    size_t length;
+    bool available;
+};
+
+extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     clear_console();
+
+    for(size_t i = 0; i < memory_map_size; i += 1) {
+        printf("Memory region 0x%zX, 0x%zX, %d\n", (size_t)memory_map[i].address, memory_map[i].length, memory_map[i].available);
+    }
 
     const size_t inital_pages_start = 0;
     const size_t inital_pages_length = 0x800000;
@@ -89,8 +99,6 @@ extern "C" void main() {
             unmap_memory((void*)bus_memory, bus_memory_size);
         }
     }
-
-    printf("Finished enumerating PCI-E devices\n");
 }
 
 void *allocate(size_t size) {
