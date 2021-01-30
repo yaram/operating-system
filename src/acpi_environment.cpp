@@ -208,16 +208,20 @@ extern "C" ACPI_STATUS AcpiOsEnterSleep(UINT8 SleepState, UINT32 RegaValue, UINT
  */
 ACPI_PRINTF_LIKE (1)
 extern "C" void ACPI_INTERNAL_VAR_XFACE AcpiOsPrintf(const char *Format, ...) {
+#if ACPICA_LOG
     va_list args;
     va_start(args, Format);
 
     vprintf(Format, args);
 
     va_end(args);
+#endif
 }
 
 extern "C" void AcpiOsVprintf(const char *Format, va_list Args) {
+#if ACPICA_LOG
     vprintf(Format, Args);
+#endif
 }
 
 extern "C" void AcpiOsRedirectOutput(void *Destination) {
