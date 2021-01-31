@@ -13,7 +13,6 @@
  * PERFORMANCE OF THIS SOFTWARE.
  */
 #include "elfload.h"
-#include <string.h>
 
 el_status el_pread(el_ctx *ctx, void *def, size_t nb, size_t offset)
 {
@@ -130,6 +129,8 @@ typedef void* (*el_alloc_cb)(
     Elf_Addr virt,
     Elf_Addr size);
 */
+
+void *memset(void *destination, int value, size_t count);
 
 el_status el_load(el_ctx *ctx, el_alloc_cb alloc)
 {

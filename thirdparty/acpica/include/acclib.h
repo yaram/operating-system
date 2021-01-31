@@ -174,11 +174,13 @@ memcpy (
     const void              *Src,
     ACPI_SIZE               Count);
 
+#if 0
 void *
 memmove (
     void                    *Dest,
     const void              *Src,
     ACPI_SIZE               Count);
+#endif
 
 void *
 memset (

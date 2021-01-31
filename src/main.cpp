@@ -319,3 +319,23 @@ void *allocate(size_t size) {
 void deallocate(void *pointer) {
 
 }
+
+extern "C" void *memset(void *destination, int value, size_t count) {
+    __asm volatile(
+        "rep stosb"
+        :
+        : "S"(destination), "a"((uint8_t)value), "c"(count)
+    );
+
+    return destination;
+}
+
+extern "C" void *memcpy(void *destination, const void *source, size_t count) {
+    __asm volatile(
+        "rep movsb"
+        :
+        : "S"(source), "D"(destination), "c"(count)
+    );
+
+    return destination;
+}
