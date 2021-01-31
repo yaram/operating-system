@@ -19,6 +19,7 @@ object_directory = os.path.join(build_directory, 'objects')
 
 acpica_directory = os.path.join(thirdparty_directory, 'acpica')
 printf_directory = os.path.join(thirdparty_directory, 'printf')
+elfload_directory = os.path.join(thirdparty_directory, 'elfload')
 
 if not os.path.exists(object_directory):
     os.makedirs(object_directory)
@@ -67,6 +68,69 @@ if not os.path.exists(acpica_archive):
         *[os.path.join(object_directory, object_name) for _, object_name in objects]
     )
 
+elfload_archive = os.path.join(build_directory, 'elfload.a')
+
+if not os.path.exists(elfload_archive):
+    objects = [
+        (os.path.join(elfload_directory, 'elfload.c'), 'elfload.o'),
+        (os.path.join(elfload_directory, 'elfreloc_amd64.c'), 'elfreloc_amd64.o')
+    ]
+
+    for source_path, object_name in objects:
+        run_command(
+            shutil.which('clang'),
+            '-target', 'x86_64-unknown-unknown-elf',
+            '-I{}'.format(os.path.join(elfload_directory)),
+            '-march=x86-64',
+            '-mcmodel=kernel',
+            '-ffreestanding',
+            '-fno-stack-protector',
+            '-mno-red-zone',
+            '-mno-mmx',
+            '-mno-sse',
+            '-mno-sse2',
+            *(['-g'] if configuration == 'debug' else []),
+            *(['-O2'] if configuration == 'release' else []),
+            '-c',
+            '-o', os.path.join(object_directory, object_name),
+            source_path
+        )
+
+    run_command(
+        shutil.which('llvm-ar'),
+        '-rs',
+        elfload_archive,
+        *[os.path.join(object_directory, object_name) for _, object_name in objects]
+    )
+
+user_mode_test_objects = [
+    (os.path.join(source_directory, 'user_mode_test.S'), 'user_mode_test.o')
+]
+
+for source_path, object_name in user_mode_test_objects:
+    run_command(
+        shutil.which('clang'),
+        '-target', 'x86_64-unknown-unknown-elf',
+        '-march=x86-64',
+        '-ffreestanding',
+        '-fpie',
+        '-mno-mmx',
+        '-mno-sse',
+        '-mno-sse2',
+        *(['-g'] if configuration == 'debug' else []),
+        *(['-O2'] if configuration == 'release' else []),
+        '-c',
+        '-o', os.path.join(object_directory, object_name),
+        source_path
+    )
+
+run_command(
+    shutil.which('ld.lld'),
+    '-e', 'entry',
+    '-pie',
+    '-o', os.path.join(build_directory, 'user_mode_test.elf'),
+    *[os.path.join(object_directory, object_name) for _, object_name in user_mode_test_objects]
+)
 
 objects_64bit = [
     (os.path.join(source_directory, 'entry64.S'), 'entry64.o'),
@@ -83,6 +147,7 @@ for source_path, object_name in objects_64bit:
         '-target', 'x86_64-unknown-unknown-elf',
         '-I{}'.format(os.path.join(acpica_directory, 'include')),
         '-I{}'.format(os.path.join(printf_directory)),
+        '-I{}'.format(os.path.join(elfload_directory)),
         '-march=x86-64',
         '-mcmodel=kernel',
         '-ffreestanding',
@@ -104,6 +169,7 @@ run_command(
     '-T', os.path.join(source_directory, 'linker64.ld'),
     '-o', os.path.join(build_directory, 'kernel64.elf'),
     acpica_archive,
+    elfload_archive,
     *[os.path.join(object_directory, object_name) for _, object_name in objects_64bit]
 )
 

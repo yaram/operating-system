@@ -28,3 +28,10 @@ entry:
 stack_bottom:
 .skip 1024 * 16
 stack_top:
+
+.section .rodata
+
+.globl user_mode_test
+
+user_mode_test:
+.incbin "build/user_mode_test.elf"

@@ -7,6 +7,10 @@ extern "C" {
 #include "heap.h"
 #include "paging.h"
 #include "memory_map.h"
+#include "elfload.h"
+
+extern "C" void *memset(void *destination, int value, size_t count);
+extern "C" void *memcpy(void *destination, const void *source, size_t count);
 
 struct MCFGTable {
     ACPI_TABLE_MCFG preamble;
@@ -197,6 +201,18 @@ IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt
 
 extern "C" void __cxx_global_var_init();
 
+extern uint8_t user_mode_test[];
+
+static bool elf_read(el_ctx *context, void *destination, size_t length, size_t offset) {
+    memcpy(destination, &user_mode_test[offset], length);
+
+    return true;
+}
+
+static void *elf_allocate(el_ctx *context, Elf_Addr physical_memory_start, Elf_Addr virtual_memory_start, Elf_Addr size) {
+    return (void*)physical_memory_start;
+}
+
 extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     global_memory_map = memory_map;
     global_memory_map_size = memory_map_size;
@@ -310,6 +326,65 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
             unmap_memory((void*)bus_memory, bus_memory_size);
         }
     }
+
+    printf("Loading user mode ELF...\n");
+
+    el_ctx elf_context {};
+    elf_context.pread = &elf_read;
+
+    {
+        auto status = el_init(&elf_context);
+        if(status != EL_OK) {
+            printf("Error: Unable to initialize elfloader (%d)\n", status);
+
+            return;
+        }
+    }
+
+    auto user_mode_memory_start = map_any_memory(elf_context.memsz, memory_map, memory_map_size);
+    if(user_mode_memory_start == nullptr) {
+        printf("Error: Unable to map memory of size %zu for user mode\n", elf_context.memsz);
+
+        return;
+    }
+
+    {
+        auto status = el_init(&elf_context);
+        if(status != EL_OK) {
+            printf("Error: Unable to initialize elfloader (%d)\n", status);
+
+            return;
+        }
+    }
+
+    elf_context.base_load_paddr = (Elf64_Addr)user_mode_memory_start;
+    elf_context.base_load_vaddr = (Elf64_Addr)user_mode_memory_start;
+
+    {
+        auto status = el_load(&elf_context, &elf_allocate);
+        if(status != EL_OK) {
+            printf("Error: Unable to load ELF binary (%d)\n", status);
+
+            return;
+        }
+    }
+
+    {
+        auto status = el_relocate(&elf_context);
+        if(status != EL_OK) {
+            printf("Error: Unable to perform ELF relocations (%d)\n", status);
+
+            return;
+        }
+    }
+
+    printf("Entering user mode...\n");
+
+    auto entry_point = (void (*)())((size_t)user_mode_memory_start + elf_context.ehdr.e_entry);
+
+    entry_point();
+
+    printf("Left user mode!\n");
 }
 
 void *allocate(size_t size) {

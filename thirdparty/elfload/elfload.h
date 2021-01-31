@@ -20,6 +20,10 @@
 #include "elfarch.h"
 #include "elf.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifdef DEBUG
 #include <stdio.h>
 #define EL_DEBUG(...) printf(__VA_ARGS__)
@@ -108,5 +112,9 @@ typedef struct {
  * sets ri->entrysize = 0 if not found
  */
 el_status el_findrelocs(el_ctx *ctx, el_relocinfo *ri, uint32_t type);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
