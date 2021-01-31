@@ -17,6 +17,74 @@ struct MCFGTable {
 MemoryMapEntry *global_memory_map;
 size_t global_memory_map_size;
 
+struct __attribute__((packed)) GDTEntry {
+    uint16_t limit_low;
+    uint32_t base_low: 24;
+    bool accessed: 1;
+    bool read_write: 1;
+    bool direction_conforming: 1;
+    bool executable: 1;
+    bool type: 1;
+    uint8_t privilege: 2;
+    bool present: 1;
+    uint8_t limit_high: 4;
+    uint8_t ignored: 1;
+    bool long_mode: 1;
+    bool size: 1;
+    bool granularity: 1;
+    uint8_t base_high;
+};
+
+struct __attribute__((packed)) GDTDescriptor {
+    uint16_t limit;
+    uint32_t base;
+};
+
+const size_t gdt_size = 3;
+
+GDTEntry gdt_entries[gdt_size] {
+    {},
+    { // Kernel code segment
+        0xFFFF,
+        0,
+        false,
+        true,
+        false,
+        true,
+        true,
+        0,
+        true,
+        0b1111,
+        0,
+        true,
+        false,
+        true,
+        0,
+    },
+    { // Kernel data segment
+        0,
+        0,
+        false,
+        true,
+        false,
+        false,
+        true,
+        0,
+        true,
+        0,
+        0,
+        false,
+        false,
+        false,
+        0,
+    }
+};
+
+GDTDescriptor gdt_descriptor {
+    (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
+    (uint32_t)(size_t)&gdt_entries
+};
+
 struct __attribute__((packed)) IDTEntry {
     uint16_t offset_low;
     uint16_t selector;
@@ -87,7 +155,7 @@ const size_t idt_length = 32;
 
 #define idt_entry_exception(index) {\
     (uint16_t)(size_t)&exception_handler_thunk_##index, \
-    0x18, \
+    0x08, \
     0, \
     0, \
     0xF, \
@@ -136,6 +204,26 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     clear_console();
 
     __cxx_global_var_init();
+
+    __asm volatile(
+        // Load GDT
+        "lgdt (%0)\n"
+        // Load data segments
+        "mov $0x10, %%ax\n"
+        "mov %%ax, %%ds\n"
+        "mov %%ax, %%ss\n"
+        "mov %%ax, %%es\n"
+        "mov %%ax, %%fs\n"
+        "mov %%ax, %%gs\n"
+        // Load code segment
+        "sub $16, %%rsp\n"
+        "movq $.long_jump_target, (%%rsp)\n"
+        "movq $0x08, 8(%%rsp)\n"
+        "lretq\n"
+        ".long_jump_target:\n"
+        :
+        : "D"(&gdt_descriptor)
+    );
 
     __asm volatile(
         // Load IDT
