@@ -91,7 +91,7 @@ extern "C" void AcpiOsFree(void *Memory) {
 }
 
 extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
-    return map_memory((size_t)Where, (size_t)Length);
+    return map_memory((size_t)Where, (size_t)Length, false);
 }
 
 extern "C" void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) {

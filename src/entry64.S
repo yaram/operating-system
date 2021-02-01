@@ -25,6 +25,8 @@ entry:
 .section .bss
 .align 16
 
+.globl stack_top
+
 stack_bottom:
 .skip 1024 * 16
 stack_top:

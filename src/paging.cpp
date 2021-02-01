@@ -109,7 +109,7 @@ bool create_initial_pages(size_t identity_pages_start, size_t identity_page_coun
         }
     }
 
-    if(!map_consecutive_pages(identity_pages_start, identity_pages_start, identity_page_count, false)) {
+    if(!map_consecutive_pages(identity_pages_start, identity_pages_start, identity_page_count, false, false)) {
         return false;
     }
 
@@ -122,7 +122,7 @@ bool create_initial_pages(size_t identity_pages_start, size_t identity_page_coun
     return true;
 }
 
-bool map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_start, size_t page_count, bool invalidate_pages) {
+bool map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_start, size_t page_count, bool invalidate_pages, bool user_mode) {
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
         auto page_index = logical_pages_start + relative_page_index;
         auto pd_index = page_index / page_table_length;
@@ -155,6 +155,7 @@ bool map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
 
             pml4_table[pml4_index].present = true;
             pml4_table[pml4_index].write_allowed = true;
+            pml4_table[pml4_index].user_mode_allowed = true;
             pml4_table[pml4_index].pdp_table_page_address = (size_t)pdp_table / page_size;
         }
 
@@ -180,6 +181,7 @@ bool map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
 
             pdp_table[pdp_index].present = true;
             pdp_table[pdp_index].write_allowed = true;
+            pdp_table[pdp_index].user_mode_allowed = true;
             pdp_table[pdp_index].pd_table_page_address = (size_t)pd_table / page_size;
         }
 
@@ -205,11 +207,13 @@ bool map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
 
             pd_table[pd_index].present = true;
             pd_table[pd_index].write_allowed = true;
+            pd_table[pd_index].user_mode_allowed = true;
             pd_table[pd_index].page_table_page_address = (size_t)page_table / page_size;
         }
 
         page_table[page_index].present = true;
         page_table[page_index].write_allowed = true;
+        page_table[page_index].user_mode_allowed = user_mode;
         page_table[page_index].page_address = physical_pages_start + relative_page_index;
 
         if(invalidate_pages) {
@@ -224,7 +228,7 @@ bool map_consecutive_pages(size_t physical_pages_start, size_t logical_pages_sta
     return true;
 }
 
-bool map_pages(size_t physical_pages_start, size_t page_count, size_t *logical_pages_start) {
+bool map_pages(size_t physical_pages_start, size_t page_count, bool user_mode, size_t *logical_pages_start) {
     auto last_full = true;
     auto found = false;
     size_t free_page_range_start;
@@ -332,7 +336,7 @@ bool map_pages(size_t physical_pages_start, size_t page_count, size_t *logical_p
         return false;
     }
 
-    if(!map_consecutive_pages(physical_pages_start, free_page_range_start, page_count, true)) {
+    if(!map_consecutive_pages(physical_pages_start, free_page_range_start, page_count, true, user_mode)) {
         return false;
     }
 
@@ -427,7 +431,7 @@ inline size_t divide_round_up(size_t dividend, size_t divisor) {
     return (dividend + divisor / 2) / divisor;
 }
 
-bool map_any_pages(size_t page_count, MemoryMapEntry *memory_map, size_t memory_map_size, size_t *logical_pages_start) {
+bool map_any_pages(size_t page_count, bool user_mode, MemoryMapEntry *memory_map, size_t memory_map_size, size_t *logical_pages_start) {
     auto found = false;
     size_t free_page_range_start;
 
@@ -498,17 +502,17 @@ bool map_any_pages(size_t page_count, MemoryMapEntry *memory_map, size_t memory_
         return false;
     }
 
-    return map_pages(free_page_range_start, page_count, logical_pages_start);
+    return map_pages(free_page_range_start, page_count, user_mode, logical_pages_start);
 }
 
-void *map_memory(size_t physical_memory_start, size_t size) {
+void *map_memory(size_t physical_memory_start, size_t size, bool user_mode) {
     auto physical_pages_start = physical_memory_start / page_size;
     auto physical_pages_end = (physical_memory_start + size) / page_size;
 
     auto offset = physical_memory_start - physical_pages_start * page_size;
 
     size_t logical_pages_start;
-    if(!map_pages(physical_pages_start, physical_pages_end - physical_pages_start + 1, &logical_pages_start)) {
+    if(!map_pages(physical_pages_start, physical_pages_end - physical_pages_start + 1, user_mode, &logical_pages_start)) {
         return nullptr;
     }
 
@@ -522,11 +526,11 @@ void unmap_memory(void *logical_memory_start, size_t size) {
     unmap_pages(logical_pages_start, logical_pages_end - logical_pages_start + 1);
 }
 
-void *map_any_memory(size_t size, MemoryMapEntry *memory_map, size_t memory_map_size) {
+void *map_any_memory(size_t size, bool user_mode, MemoryMapEntry *memory_map, size_t memory_map_size) {
     auto page_count = divide_round_up(size, page_size);
 
     size_t logical_pages_start;
-    if(!map_any_pages(page_count + 1, memory_map, memory_map_size, &logical_pages_start)) {
+    if(!map_any_pages(page_count + 1, user_mode, memory_map, memory_map_size, &logical_pages_start)) {
         return nullptr;
     }
 

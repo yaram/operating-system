@@ -134,6 +134,7 @@ run_command(
 
 objects_64bit = [
     (os.path.join(source_directory, 'entry64.S'), 'entry64.o'),
+    (os.path.join(source_directory, 'syscall.S'), 'syscall.o'),
     (os.path.join(source_directory, 'main.cpp'), 'main.o'),
     (os.path.join(source_directory, 'console.cpp'), 'console.o'),
     (os.path.join(source_directory, 'paging.cpp'), 'paging.o'),

@@ -44,7 +44,7 @@ struct __attribute__((packed)) GDTDescriptor {
     uint32_t base;
 };
 
-const size_t gdt_size = 3;
+const size_t gdt_size = 5;
 
 GDTEntry gdt_entries[gdt_size] {
     {},
@@ -74,6 +74,40 @@ GDTEntry gdt_entries[gdt_size] {
         false,
         true,
         0,
+        true,
+        0,
+        0,
+        false,
+        false,
+        false,
+        0,
+    },
+    { // User code segment
+        0xFFFF,
+        0,
+        false,
+        true,
+        false,
+        true,
+        true,
+        3,
+        true,
+        0b1111,
+        0,
+        true,
+        false,
+        true,
+        0,
+    },
+    { // User data segment
+        0,
+        0,
+        false,
+        true,
+        false,
+        false,
+        true,
+        3,
         true,
         0,
         0,
@@ -213,6 +247,13 @@ static void *elf_allocate(el_ctx *context, Elf_Addr physical_memory_start, Elf_A
     return (void*)physical_memory_start;
 }
 
+extern "C" [[noreturn]] void user_enter_thunk(void *entry_address, void *stack_pointer);
+extern "C" void syscall_thunk();
+
+extern "C" void syscall_entrance(void *return_address, void *stack_pointer) {
+    printf("Syscall at %p (%p)...\n", return_address, stack_pointer);
+}
+
 extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     global_memory_map = memory_map;
     global_memory_map_size = memory_map_size;
@@ -239,6 +280,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         ".long_jump_target:\n"
         :
         : "D"(&gdt_descriptor)
+        : "ax"
     );
 
     __asm volatile(
@@ -252,6 +294,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         "sti"
         :
         : "D"(&idt_descriptor)
+        : "al"
     );
 
     for(size_t i = 0; i < memory_map_size; i += 1) {
@@ -292,7 +335,11 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         for(size_t bus = 0; bus < bus_count; bus += 1) {
             auto bus_memory_size = device_count * function_count * function_area_size;
 
-            auto bus_memory = (uint8_t*)map_memory(physical_memory_start + bus * device_count * function_count * function_area_size, bus_memory_size);
+            auto bus_memory = (uint8_t*)map_memory(
+                physical_memory_start + bus * device_count * function_count * function_area_size,
+                bus_memory_size,
+                false
+            );
             if(bus_memory == nullptr) {
                 printf(
                     "Error: Unable to map pages for PCI-E bus %zu on segment %u at 0x%0zx(%zx)\n",
@@ -327,6 +374,33 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         }
     }
 
+    // Set up syscall/sysret instructions
+
+    __asm volatile(
+        "mov $0xC0000080, %rcx\n" // IA32_EFER MSR
+        "rdmsr\n"
+        "or $1, %eax\n"
+        "wrmsr\n"
+    );
+
+    __asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)0), "d"((uint32_t)0), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
+    );
+
+    __asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)(size_t)syscall_thunk), "d"((uint32_t)((size_t)syscall_thunk >> 32)), "c"((uint32_t)0xC0000082) // IA32_LSTAR MSR
+    );
+
+    __asm volatile(
+        "wrmsr"
+        :
+        : "a"(0), "d"((size_t)0x18 | (size_t)0x08 << 16), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
+    );
+
     printf("Loading user mode ELF...\n");
 
     el_ctx elf_context {};
@@ -341,7 +415,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         }
     }
 
-    auto user_mode_memory_start = map_any_memory(elf_context.memsz, memory_map, memory_map_size);
+    auto user_mode_memory_start = map_any_memory(elf_context.memsz, true, memory_map, memory_map_size);
     if(user_mode_memory_start == nullptr) {
         printf("Error: Unable to map memory of size %zu for user mode\n", elf_context.memsz);
 
@@ -378,17 +452,28 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         }
     }
 
+    const size_t user_mode_stack_size = 4096;
+
+    auto user_mode_stack_bottom = map_any_memory(user_mode_stack_size, true, memory_map, memory_map_size);
+    if(user_mode_stack_bottom == nullptr) {
+        printf("Error: Unable to allocate user mode stack of size %uz\n", user_mode_stack_size);
+
+        return;
+    }
+
+    auto user_mode_stack_top = (void*)((size_t)user_mode_stack_bottom + user_mode_stack_size);
+
+    auto entry_point = (void*)((size_t)user_mode_memory_start + elf_context.ehdr.e_entry);
+
+    printf("%p\n", entry_point);
+
     printf("Entering user mode...\n");
 
-    auto entry_point = (void (*)())((size_t)user_mode_memory_start + elf_context.ehdr.e_entry);
-
-    entry_point();
-
-    printf("Left user mode!\n");
+    user_enter_thunk(entry_point, user_mode_stack_top);
 }
 
 void *allocate(size_t size) {
-    return map_any_memory(size, global_memory_map, global_memory_map_size);
+    return map_any_memory(size, false, global_memory_map, global_memory_map_size);
 }
 
 void deallocate(void *pointer) {

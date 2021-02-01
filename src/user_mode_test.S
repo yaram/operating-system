@@ -1,5 +1,12 @@
 .globl entry
 
 entry:
-    movb $'U', (0xB8000)
-    ret
+    syscall
+
+    pushq $42
+    popq %rax
+
+    syscall
+
+.loop:
+    jmp .loop
