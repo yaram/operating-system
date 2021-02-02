@@ -3,7 +3,7 @@
 
 .globl user_enter_thunk
 user_enter_thunk:
-    mov $0, %r11
+    mov $(1 << 9), %r11
     mov %rdi, %rcx
     mov %rsi, %rsp
 

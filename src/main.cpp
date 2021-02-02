@@ -27,6 +27,44 @@ struct MADTTable {
 MemoryMapEntry *global_memory_map;
 size_t global_memory_map_size;
 
+struct __attribute__((packed)) TSSEntry {
+    uint32_t reserved_1;
+    uint64_t rsp0;
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved_2;
+    uint64_t ist1;
+    uint64_t ist2;
+    uint64_t ist3;
+    uint64_t ist4;
+    uint64_t ist5;
+    uint64_t ist6;
+    uint64_t ist7;
+    uint64_t reserved_3;
+    uint16_t reserved_4;
+    uint16_t iopb_offset;
+};
+
+extern uint8_t stack_top[];
+
+TSSEntry tss_entry {
+    0,
+    (uint64_t)&stack_top,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    (uint16_t)sizeof(TSSEntry)
+};
+
 struct __attribute__((packed)) GDTEntry {
     uint16_t limit_low;
     uint32_t base_low: 24;
@@ -38,7 +76,7 @@ struct __attribute__((packed)) GDTEntry {
     uint8_t privilege: 2;
     bool present: 1;
     uint8_t limit_high: 4;
-    uint8_t ignored: 1;
+    bool task_available: 1;
     bool long_mode: 1;
     bool size: 1;
     bool granularity: 1;
@@ -50,7 +88,7 @@ struct __attribute__((packed)) GDTDescriptor {
     uint32_t base;
 };
 
-const size_t gdt_size = 5;
+const size_t gdt_size = 7;
 
 GDTEntry gdt_entries[gdt_size] {
     {},
@@ -65,7 +103,7 @@ GDTEntry gdt_entries[gdt_size] {
         0,
         true,
         0b1111,
-        0,
+        false,
         true,
         false,
         true,
@@ -82,7 +120,24 @@ GDTEntry gdt_entries[gdt_size] {
         0,
         true,
         0,
+        false,
+        false,
+        false,
+        false,
         0,
+    },
+    { // User data segment
+        0,
+        0,
+        false,
+        true,
+        false,
+        false,
+        true,
+        3,
+        true,
+        0,
+        false,
         false,
         false,
         false,
@@ -99,28 +154,28 @@ GDTEntry gdt_entries[gdt_size] {
         3,
         true,
         0b1111,
-        0,
+        false,
         true,
         false,
         true,
         0,
     },
-    { // User data segment
-        0,
-        0,
-        false,
+    { // Task State Segment
+        (uint16_t)sizeof(TSSEntry),
+        (uint32_t)(size_t)&tss_entry,
         true,
         false,
         false,
         true,
+        false,
         3,
         true,
-        0,
-        0,
+        (uint8_t)(sizeof(TSSEntry) >> 16),
         false,
         false,
         false,
-        0,
+        false,
+        (uint8_t)((size_t)&tss_entry >> 24),
     }
 };
 
@@ -332,6 +387,9 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         "movq $0x08, 8(%%rsp)\n"
         "lretq\n"
         ".long_jump_target:\n"
+        // Load task state register
+        "mov $0x2B, %%ax\n"
+        "ltr %%ax"
         :
         : "D"(&gdt_descriptor)
         : "ax"
@@ -525,7 +583,8 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     __asm volatile(
         "wrmsr"
         :
-        : "a"((uint32_t)0), "d"((uint32_t)0x18 | (uint32_t)0x08 << 16), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
+        : "a"((uint32_t)0), "d"((uint32_t)0x10 << 16 | (uint32_t)0x08), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
+        // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
     );
 
     printf("Loading user mode ELF...\n");
@@ -593,6 +652,9 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     auto entry_point = (void*)((size_t)user_mode_memory_start + elf_context.ehdr.e_entry);
 
     printf("Entering user mode at %p...\n", entry_point);
+
+    // Set timer value
+    apic_registers[0x380 / 4] = 0x1000000;
 
     user_enter_thunk(entry_point, user_mode_stack_top);
 }
