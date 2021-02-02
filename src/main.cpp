@@ -233,8 +233,6 @@ IDTEntry idt_entries[idt_length] {
 
 IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt_entries };
 
-extern "C" void __cxx_global_var_init();
-
 extern uint8_t user_mode_test[];
 
 static bool elf_read(el_ctx *context, void *destination, size_t length, size_t offset) {
@@ -254,13 +252,20 @@ extern "C" void syscall_entrance(void *return_address, void *stack_pointer) {
     printf("Syscall at %p (%p)...\n", return_address, stack_pointer);
 }
 
+extern void (*init_array_start[])();
+extern void (*init_array_end[])();
+
 extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     global_memory_map = memory_map;
     global_memory_map_size = memory_map_size;
 
-    clear_console();
+    auto initializer_count = ((size_t)init_array_end - (size_t)init_array_start) / sizeof(void (*)());
 
-    __cxx_global_var_init();
+    for(size_t i = 0; i < initializer_count; i += 1) {
+        init_array_start[i]();
+    }
+
+    clear_console();
 
     __asm volatile(
         // Load GDT

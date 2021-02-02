@@ -125,6 +125,8 @@ run_command(
 )
 
 objects_kernel64 = [
+    (os.path.join(source_directory, 'crti.S'), 'crti.o'),
+    (os.path.join(source_directory, 'crtn.S'), 'crtn.o'),
     (os.path.join(source_directory, 'entry64.S'), 'entry64.o'),
     (os.path.join(source_directory, 'syscall.S'), 'syscall.o'),
     (os.path.join(source_directory, 'main.cpp'), 'main.o'),
