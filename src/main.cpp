@@ -465,9 +465,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
 
     auto entry_point = (void*)((size_t)user_mode_memory_start + elf_context.ehdr.e_entry);
 
-    printf("%p\n", entry_point);
-
-    printf("Entering user mode...\n");
+    printf("Entering user mode at %p...\n", entry_point);
 
     user_enter_thunk(entry_point, user_mode_stack_top);
 }
