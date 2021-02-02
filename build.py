@@ -4,25 +4,9 @@ import sys
 import os
 import subprocess
 import shutil
-import math
 
 def run_command(executable, *arguments):
     subprocess.call([executable, *arguments], stdout=sys.stdout, stderr=sys.stderr)
-
-parent_directory = os.path.dirname(os.path.realpath(__file__))
-
-source_directory = os.path.join(parent_directory, 'src')
-build_directory = os.path.join(parent_directory, 'build')
-thirdparty_directory = os.path.join(parent_directory, 'thirdparty')
-
-object_directory = os.path.join(build_directory, 'objects')
-
-acpica_directory = os.path.join(thirdparty_directory, 'acpica')
-printf_directory = os.path.join(thirdparty_directory, 'printf')
-elfload_directory = os.path.join(thirdparty_directory, 'elfload')
-
-if not os.path.exists(object_directory):
-    os.makedirs(object_directory)
 
 configuration = 'debug'
 
@@ -33,6 +17,47 @@ if len(sys.argv) >= 2:
         print('Unknown configuration \'{}\''.format(configuration), file=sys.stderr)
         exit(1)
 
+parent_directory = os.path.dirname(os.path.realpath(__file__))
+
+source_directory = os.path.join(parent_directory, 'src')
+build_directory = os.path.join(parent_directory, 'build')
+thirdparty_directory = os.path.join(parent_directory, 'thirdparty')
+
+object_directory = os.path.join(build_directory, 'objects')
+
+def build_objects(objects, target, object_subdirectory, *extra_arguments):
+    object_subdirectory_full = os.path.join(object_directory, object_subdirectory)
+
+    if not os.path.exists(object_subdirectory_full):
+        os.makedirs(object_subdirectory_full)
+
+    for source_path, object_name in objects:
+        run_command(
+            shutil.which('clang++' if source_path.endswith('.cpp') else 'clang'),
+            '-target', target,
+            '-march=x86-64',
+            '-ffreestanding',
+            '-mno-mmx',
+            '-mno-sse',
+            '-mno-sse2',
+            *(['-g'] if configuration == 'debug' else []),
+            *(['-O2'] if configuration == 'release' else []),
+            *extra_arguments,
+            '-c',
+            '-o', os.path.join(object_directory, object_subdirectory_full, object_name),
+            source_path
+        )
+
+def build_objects_64bit(objects, object_subdirectory, *extra_arguments):
+    build_objects(objects, 'x86_64-unknown-unknown-elf', object_subdirectory, *extra_arguments)
+
+def build_objects_32bit(objects, object_subdirectory, *extra_arguments):
+    build_objects(objects, 'i686-unknown-unknown-elf', object_subdirectory, *extra_arguments)
+
+acpica_directory = os.path.join(thirdparty_directory, 'acpica')
+printf_directory = os.path.join(thirdparty_directory, 'printf')
+elfload_directory = os.path.join(thirdparty_directory, 'elfload')
+
 acpica_archive = os.path.join(build_directory, 'acpica.a')
 
 if not os.path.exists(acpica_archive):
@@ -41,31 +66,20 @@ if not os.path.exists(acpica_archive):
         for name in os.listdir(os.path.join(acpica_directory, 'src'))
     ]
 
-    for source_path, object_name in objects:
-        run_command(
-            shutil.which('clang'),
-            '-target', 'x86_64-unknown-unknown-elf',
-            '-I{}'.format(os.path.join(acpica_directory, 'include')),
-            '-march=x86-64',
-            '-mcmodel=kernel',
-            '-ffreestanding',
-            '-fno-stack-protector',
-            '-mno-red-zone',
-            '-mno-mmx',
-            '-mno-sse',
-            '-mno-sse2',
-            *(['-g'] if configuration == 'debug' else []),
-            *(['-O2'] if configuration == 'release' else []),
-            '-c',
-            '-o', os.path.join(object_directory, object_name),
-            source_path
-        )
+    build_objects_64bit(
+        objects,
+        'acpica',
+        '-I{}'.format(os.path.join(acpica_directory, 'include')),
+        '-mcmodel=kernel',
+        '-fno-stack-protector',
+        '-mno-red-zone'
+    )
 
     run_command(
         shutil.which('llvm-ar'),
         '-rs',
         acpica_archive,
-        *[os.path.join(object_directory, object_name) for _, object_name in objects]
+        *[os.path.join(object_directory, 'acpica', object_name) for _, object_name in objects]
     )
 
 elfload_archive = os.path.join(build_directory, 'elfload.a')
@@ -76,63 +90,41 @@ if not os.path.exists(elfload_archive):
         (os.path.join(elfload_directory, 'elfreloc_amd64.c'), 'elfreloc_amd64.o')
     ]
 
-    for source_path, object_name in objects:
-        run_command(
-            shutil.which('clang'),
-            '-target', 'x86_64-unknown-unknown-elf',
-            '-I{}'.format(os.path.join(elfload_directory)),
-            '-march=x86-64',
-            '-mcmodel=kernel',
-            '-ffreestanding',
-            '-fno-stack-protector',
-            '-mno-red-zone',
-            '-mno-mmx',
-            '-mno-sse',
-            '-mno-sse2',
-            *(['-g'] if configuration == 'debug' else []),
-            *(['-O2'] if configuration == 'release' else []),
-            '-c',
-            '-o', os.path.join(object_directory, object_name),
-            source_path
-        )
+    build_objects_64bit(
+        objects,
+        'elfload',
+        '-I{}'.format(os.path.join(elfload_directory, 'include')),
+        '-mcmodel=kernel',
+        '-fno-stack-protector',
+        '-mno-red-zone'
+    )
 
     run_command(
         shutil.which('llvm-ar'),
         '-rs',
         elfload_archive,
-        *[os.path.join(object_directory, object_name) for _, object_name in objects]
+        *[os.path.join(object_directory, 'elfload', object_name) for _, object_name in objects]
     )
 
 user_mode_test_objects = [
     (os.path.join(source_directory, 'user_mode_test.S'), 'user_mode_test.o')
 ]
 
-for source_path, object_name in user_mode_test_objects:
-    run_command(
-        shutil.which('clang'),
-        '-target', 'x86_64-unknown-unknown-elf',
-        '-march=x86-64',
-        '-ffreestanding',
-        '-fpie',
-        '-mno-mmx',
-        '-mno-sse',
-        '-mno-sse2',
-        *(['-g'] if configuration == 'debug' else []),
-        *(['-O2'] if configuration == 'release' else []),
-        '-c',
-        '-o', os.path.join(object_directory, object_name),
-        source_path
-    )
+build_objects_64bit(
+    user_mode_test_objects,
+    'user_mode_test',
+    '-fpie'
+)
 
 run_command(
     shutil.which('ld.lld'),
     '-e', 'entry',
     '-pie',
     '-o', os.path.join(build_directory, 'user_mode_test.elf'),
-    *[os.path.join(object_directory, object_name) for _, object_name in user_mode_test_objects]
+    *[os.path.join(object_directory, 'user_mode_test', object_name) for _, object_name in user_mode_test_objects]
 )
 
-objects_64bit = [
+objects_kernel64 = [
     (os.path.join(source_directory, 'entry64.S'), 'entry64.o'),
     (os.path.join(source_directory, 'syscall.S'), 'syscall.o'),
     (os.path.join(source_directory, 'main.cpp'), 'main.o'),
@@ -142,27 +134,16 @@ objects_64bit = [
     (os.path.join(source_directory, 'acpi_environment.cpp'), 'acpi_environment.o')
 ]
 
-for source_path, object_name in objects_64bit:
-    run_command(
-        shutil.which('clang++' if source_path.endswith('.cpp') else 'clang'),
-        '-target', 'x86_64-unknown-unknown-elf',
-        '-I{}'.format(os.path.join(acpica_directory, 'include')),
-        '-I{}'.format(os.path.join(printf_directory)),
-        '-I{}'.format(os.path.join(elfload_directory)),
-        '-march=x86-64',
-        '-mcmodel=kernel',
-        '-ffreestanding',
-        '-fno-stack-protector',
-        '-mno-red-zone',
-        '-mno-mmx',
-        '-mno-sse',
-        '-mno-sse2',
-        *(['-g'] if configuration == 'debug' else []),
-        *(['-O2'] if configuration == 'release' else []),
-        '-c',
-        '-o', os.path.join(object_directory, object_name),
-        source_path
-    )
+build_objects_64bit(
+    objects_kernel64,
+    'kernel64',
+    '-I{}'.format(os.path.join(acpica_directory, 'include')),
+    '-I{}'.format(os.path.join(printf_directory)),
+    '-I{}'.format(os.path.join(elfload_directory)),
+    '-mcmodel=kernel',
+    '-fno-stack-protector',
+    '-mno-red-zone'
+)
 
 run_command(
     shutil.which('ld.lld'),
@@ -171,7 +152,7 @@ run_command(
     '-o', os.path.join(build_directory, 'kernel64.elf'),
     acpica_archive,
     elfload_archive,
-    *[os.path.join(object_directory, object_name) for _, object_name in objects_64bit]
+    *[os.path.join(object_directory, 'kernel64', object_name) for _, object_name in objects_kernel64]
 )
 
 run_command(
@@ -184,34 +165,23 @@ run_command(
     os.path.join(build_directory, 'kernel64.bin')
 )
 
-objects_32bit = [
-    ('entry.S', 'entry.o'),
-    ('multiboot.S', 'multiboot.o'),
+objects_kernel32 = [
+    (os.path.join(source_directory, 'entry.S'), 'entry.o'),
+    (os.path.join(source_directory, 'multiboot.S'), 'multiboot.o'),
 ]
 
-for source_name, object_name in objects_32bit:
-    run_command(
-        shutil.which('clang++'),
-        '-target', 'i686-unknown-unknown-elf',
-        '-march=x86-64',
-        '-mcmodel=kernel',
-        '-ffreestanding',
-        '-fno-stack-protector',
-        '-mno-red-zone',
-        '-mno-mmx',
-        '-mno-sse',
-        '-mno-sse2',
-        *(['-g'] if configuration == 'debug' else []),
-        *(['-O2'] if configuration == 'release' else []),
-        '-c',
-        '-o', os.path.join(object_directory, object_name),
-        os.path.join(source_directory, source_name)
-    )
+build_objects_32bit(
+    objects_kernel32,
+    'kernel32',
+    '-mcmodel=kernel',
+    '-fno-stack-protector',
+    '-mno-red-zone',
+)
 
 run_command(
     shutil.which('ld.lld'),
     '-e', 'entry',
     '-T', os.path.join(source_directory, 'linker32.ld'),
     '-o', os.path.join(build_directory, 'kernel32.elf'),
-    *[os.path.join(object_directory, object_name) for _, object_name in objects_32bit]
+    *[os.path.join(object_directory, 'kernel32', object_name) for _, object_name in objects_kernel32]
 )
