@@ -18,6 +18,12 @@ struct MCFGTable {
     ACPI_MCFG_ALLOCATION allocations[0];
 };
 
+struct MADTTable {
+    ACPI_TABLE_MADT preamble;
+
+    ACPI_SUBTABLE_HEADER entries[0];
+};
+
 MemoryMapEntry *global_memory_map;
 size_t global_memory_map_size;
 
@@ -157,6 +163,24 @@ static void exception_handler(size_t index, InterruptStackFrame frame, size_t er
     }
 }
 
+volatile uint32_t *apic_registers;
+
+__attribute((interrupt))
+static void local_apic_timer_interrupt(InterruptStackFrame *interrupt_frame) {
+    printf("Timer interrupt at %p\n", interrupt_frame->instruction_pointer);
+
+    // Signal end of interrupt to local APIC
+    apic_registers[0xB0] = 0;
+}
+
+__attribute((interrupt))
+static void local_apic_spurious_interrupt(InterruptStackFrame *interrupt_frame) {
+    printf("Spurious interrupt at %p\n", interrupt_frame->instruction_pointer);
+
+    // Signal end of interrupt to local APIC
+    apic_registers[0xB0] = 0;
+}
+
 #define exception_thunk(index) \
 __attribute((interrupt)) static void exception_handler_thunk_##index(InterruptStackFrame *interrupt_frame) { \
     exception_handler(index, *interrupt_frame, 0); \
@@ -189,7 +213,7 @@ exception_thunk(19);
 exception_thunk(20);
 exception_thunk_error_code(30);
 
-const size_t idt_length = 32;
+const size_t idt_length = 48;
 
 #define idt_entry_exception(index) {\
     (uint16_t)(size_t)&exception_handler_thunk_##index, \
@@ -228,7 +252,32 @@ IDTEntry idt_entries[idt_length] {
     idt_entry_exception(20),
     {}, {}, {}, {}, {}, {}, {}, {}, {},
     idt_entry_exception(30),
-    {}
+    {},
+    {
+       (uint16_t)(size_t)&local_apic_timer_interrupt,
+        0x08,
+        0,
+        0,
+        0xE,
+        0,
+        0,
+        1,
+        (uint64_t)(size_t)&local_apic_timer_interrupt >> 16,
+        0 
+    },
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+    {
+       (uint16_t)(size_t)&local_apic_spurious_interrupt,
+        0x08,
+        0,
+        0,
+        0xE,
+        0,
+        0,
+        1,
+        (uint64_t)(size_t)&local_apic_spurious_interrupt >> 16,
+        0 
+    }
 };
 
 IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt_entries };
@@ -317,12 +366,13 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     AcpiInitializeTables(nullptr, 8, FALSE);
 
     MCFGTable *mcfg_table;
-    auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
+    {
+        auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
+        if(status != AE_OK) {
+            printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
 
-    if(status != AE_OK) {
-        printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
-
-        return;
+            return;
+        }
     }
 
     const size_t device_count = 32;
@@ -379,13 +429,85 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         }
     }
 
+    AcpiPutTable(&mcfg_table->preamble.Header);
+
+    MADTTable *madt_table;
+    {
+        auto status = AcpiGetTable((char*)ACPI_SIG_MADT, 1, (ACPI_TABLE_HEADER**)&madt_table);
+        if(status != AE_OK) {
+            printf("Error: Unable to get MADT ACPI table (0x%X)\n", status);
+
+            return;
+        }
+    }
+
+    auto apic_physical_address = (size_t)madt_table->preamble.Address;
+
+    size_t current_madt_index = 0;
+    while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
+        auto header = *(ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
+
+        if(header.Type == ACPI_MADT_TYPE_LOCAL_APIC_OVERRIDE) {
+            auto subtable = *(ACPI_MADT_LOCAL_APIC_OVERRIDE*)((size_t)madt_table->entries + current_madt_index + sizeof(header));
+
+            apic_physical_address = (size_t)subtable.Address;
+
+            break;
+        }
+
+        current_madt_index += (size_t)header.Length;
+    }
+
+    AcpiPutTable(&madt_table->preamble.Header);
+
+    apic_physical_address = 0xFEE00000;
+
+    apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, false);
+    if(apic_registers == nullptr) {
+        printf("Error: Unable to map memory for APIC registers\n");
+
+        return;
+    }
+
+    // Set APIC to known state
+    apic_registers[0x2F0 / 4] |= 1 << 16;
+    apic_registers[0x320 / 4] |= 1 << 16;
+    apic_registers[0x330 / 4] |= 1 << 16;
+    apic_registers[0x340 / 4] |= 1 << 16;
+    apic_registers[0x350 / 4] |= 1 << 16;
+    apic_registers[0x360 / 4] |= 1 << 16;
+    apic_registers[0x370 / 4] |= 1 << 16;
+
+    // Globally enable APICs
+    __asm volatile(
+        "mov $0x1B, %%ecx\n" // IA32_APIC_BASE MSR
+        "rdmsr\n"
+        "or $(1 << 11), %%eax\n"
+        "wrmsr\n"
+        :
+        :
+        : "edx"
+    );
+
+    // Enable local APIC / set spurious interrupt vector to 0x2F
+    apic_registers[0xF0 / 4] = 0x2F | 0x100;
+
+    // Enable timer / set timer interrupt vector vector
+    apic_registers[0x320 / 4] = 0x20;
+
+    // Set timer divider to 16
+    apic_registers[0x3E0 / 4] = 3;
+
     // Set up syscall/sysret instructions
 
     __asm volatile(
-        "mov $0xC0000080, %rcx\n" // IA32_EFER MSR
+        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
         "rdmsr\n"
-        "or $1, %eax\n"
+        "or $1, %%eax\n"
         "wrmsr\n"
+        :
+        :
+        : "edx"
     );
 
     __asm volatile(
@@ -403,7 +525,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     __asm volatile(
         "wrmsr"
         :
-        : "a"(0), "d"((size_t)0x18 | (size_t)0x08 << 16), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
+        : "a"((uint32_t)0), "d"((uint32_t)0x18 | (uint32_t)0x08 << 16), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
     );
 
     printf("Loading user mode ELF...\n");
