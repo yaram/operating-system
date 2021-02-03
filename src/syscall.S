@@ -1,34 +1,59 @@
 .extern stack_top
 .extern syscall_entrance
 
-.globl user_enter_thunk
-user_enter_thunk:
-    mov $(1 << 9), %r11
-    mov %rdi, %rcx
-    mov %rsi, %rsp
-
-    sysretq
-
 .globl syscall_thunk
 syscall_thunk:
     mov %rsp, %rax
 
     mov $stack_top, %rsp
 
-    push %rcx
-    push %r11
-
+    pushq $0x1b
     push %rax
+    push %r11
+    pushq $0x23
+    push %rcx
 
-    mov %rcx, %rdi
-    mov %rax, %rsi
+    push %rbp
+    push %r15
+    push %r14
+    push %r13
+    push %r12
+    pushq $0
+    push %r10
+    push %r9
+    push %r8
+    push %rdi
+    push %rsi
+    push %rdx
+    pushq $0
+    push %rbx
+    pushq $0
+
+    mov %rsp, %rdi
 
     call syscall_entrance
 
-    pop %rax
+    add $8, %rsp
+    pop %rbx
+    add $8, %rsp
+    pop %rdx
+    pop %rsi
+    pop %rdi
+    pop %r8
+    pop %r9
+    pop %r10
+    add $8, %rsp
+    pop %r12
+    pop %r13
+    pop %r14
+    pop %r15
+    pop %rbp
 
-    pop %r11
     pop %rcx
+    add $8, %rsp
+    pop %r11
+    pop %rax
+    add $8, %rsp
 
     mov %rax, %rsp
 

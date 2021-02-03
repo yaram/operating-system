@@ -9,4 +9,9 @@ entry:
     syscall
 
 .loop:
+    syscall
+
+    pushq $42
+    popq %rax
+
     jmp .loop

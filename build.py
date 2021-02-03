@@ -129,6 +129,8 @@ objects_kernel64 = [
     (os.path.join(source_directory, 'crtn.S'), 'crtn.o'),
     (os.path.join(source_directory, 'entry64.S'), 'entry64.o'),
     (os.path.join(source_directory, 'syscall.S'), 'syscall.o'),
+    (os.path.join(source_directory, 'preempt.S'), 'preempt.o'),
+    (os.path.join(source_directory, 'interrupts.S'), 'interrupts.o'),
     (os.path.join(source_directory, 'main.cpp'), 'main.o'),
     (os.path.join(source_directory, 'console.cpp'), 'console.o'),
     (os.path.join(source_directory, 'paging.cpp'), 'paging.o'),

@@ -8,6 +8,7 @@ extern "C" {
 #include "paging.h"
 #include "memory_map.h"
 #include "elfload.h"
+#include "process.h"
 
 extern "C" void *memset(void *destination, int value, size_t count);
 extern "C" void *memcpy(void *destination, const void *source, size_t count);
@@ -24,7 +25,7 @@ struct MADTTable {
     ACPI_SUBTABLE_HEADER entries[0];
 };
 
-MemoryMapEntry *global_memory_map;
+const MemoryMapEntry *global_memory_map;
 size_t global_memory_map_size;
 
 struct __attribute__((packed)) TSSEntry {
@@ -202,16 +203,8 @@ struct __attribute__((packed)) IDTDescriptor {
     uint64_t base;
 };
 
-struct __attribute__((packed)) InterruptStackFrame {
-    void *instruction_pointer;
-    uint64_t code_segment;
-    uint64_t cpu_flags;
-    void *stack_pointer;
-    uint64_t stack_segment;
-};
-
-static void exception_handler(size_t index, InterruptStackFrame frame, size_t error_code) {
-    printf("EXCEPTION 0x%X(0x%X) AT %p\n", index, error_code, frame.instruction_pointer);
+extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStackFrame *frame, size_t error_code) {
+    printf("EXCEPTION 0x%X(0x%X) AT %p\n", index, error_code, frame->instruction_pointer);
 
     while(true) {
         __asm volatile("hlt");
@@ -220,53 +213,73 @@ static void exception_handler(size_t index, InterruptStackFrame frame, size_t er
 
 volatile uint32_t *apic_registers;
 
-__attribute((interrupt))
-static void local_apic_timer_interrupt(InterruptStackFrame *interrupt_frame) {
-    printf("Timer interrupt at %p\n", interrupt_frame->instruction_pointer);
+extern "C" [[noreturn]] void  preempt_timer_thunk();
 
-    // Signal end of interrupt to local APIC
-    apic_registers[0xB0] = 0;
+extern "C" [[noreturn]] void user_enter_thunk(const ProcessStackFrame *frame);
+
+Process processes[process_count] {};
+
+size_t current_process_index = 0;
+
+const uint32_t preempt_time = 0x100000;
+
+PageTables kernel_tables {};
+
+extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *frame) {
+    __asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&kernel_tables)
+    );
+
+    processes[current_process_index].frame = *frame;
+
+    current_process_index += 1;
+    current_process_index %= process_count;
+
+    auto stack_frame = &processes[current_process_index].frame;
+
+    // Set timer value
+    apic_registers[0x380 / 4] = preempt_time;
+
+    // Send the End of Interrupt signal
+    apic_registers[0x0B0 / 4] = 0;
+
+    __asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&processes[current_process_index].tables.pml4_table)
+    );
+
+    user_enter_thunk(stack_frame);
 }
 
 __attribute((interrupt))
-static void local_apic_spurious_interrupt(InterruptStackFrame *interrupt_frame) {
+static void local_apic_spurious_interrupt(const InterruptStackFrame *interrupt_frame) {
     printf("Spurious interrupt at %p\n", interrupt_frame->instruction_pointer);
-
-    // Signal end of interrupt to local APIC
-    apic_registers[0xB0] = 0;
 }
 
-#define exception_thunk(index) \
-__attribute((interrupt)) static void exception_handler_thunk_##index(InterruptStackFrame *interrupt_frame) { \
-    exception_handler(index, *interrupt_frame, 0); \
-}
-
-#define exception_thunk_error_code(index) \
-__attribute((interrupt)) static void exception_handler_thunk_##index(InterruptStackFrame *interrupt_frame, size_t error_code) { \
-    exception_handler(index, *interrupt_frame, error_code); \
-}
-
-exception_thunk(0);
-exception_thunk(1);
-exception_thunk(2);
-exception_thunk(3);
-exception_thunk(4);
-exception_thunk(5);
-exception_thunk(6);
-exception_thunk(7);
-exception_thunk_error_code(8);
-exception_thunk_error_code(10);
-exception_thunk_error_code(11);
-exception_thunk_error_code(12);
-exception_thunk_error_code(13);
-exception_thunk_error_code(14);
-exception_thunk(15);
-exception_thunk(16);
-exception_thunk_error_code(17);
-exception_thunk(18);
-exception_thunk(19);
-exception_thunk(20);
-exception_thunk_error_code(30);
+extern "C" void exception_handler_thunk_0();
+extern "C" void exception_handler_thunk_1();
+extern "C" void exception_handler_thunk_2();
+extern "C" void exception_handler_thunk_3();
+extern "C" void exception_handler_thunk_4();
+extern "C" void exception_handler_thunk_5();
+extern "C" void exception_handler_thunk_6();
+extern "C" void exception_handler_thunk_7();
+extern "C" void exception_handler_thunk_8();
+extern "C" void exception_handler_thunk_10();
+extern "C" void exception_handler_thunk_11();
+extern "C" void exception_handler_thunk_12();
+extern "C" void exception_handler_thunk_13();
+extern "C" void exception_handler_thunk_14();
+extern "C" void exception_handler_thunk_15();
+extern "C" void exception_handler_thunk_16();
+extern "C" void exception_handler_thunk_17();
+extern "C" void exception_handler_thunk_18();
+extern "C" void exception_handler_thunk_19();
+extern "C" void exception_handler_thunk_20();
+extern "C" void exception_handler_thunk_30();
 
 const size_t idt_length = 48;
 
@@ -309,7 +322,7 @@ IDTEntry idt_entries[idt_length] {
     idt_entry_exception(30),
     {},
     {
-       (uint16_t)(size_t)&local_apic_timer_interrupt,
+       (uint16_t)(size_t)&preempt_timer_thunk,
         0x08,
         0,
         0,
@@ -317,7 +330,7 @@ IDTEntry idt_entries[idt_length] {
         0,
         0,
         1,
-        (uint64_t)(size_t)&local_apic_timer_interrupt >> 16,
+        (uint64_t)(size_t)&preempt_timer_thunk >> 16,
         0 
     },
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
@@ -349,17 +362,28 @@ static void *elf_allocate(el_ctx *context, Elf_Addr physical_memory_start, Elf_A
     return (void*)physical_memory_start;
 }
 
-extern "C" [[noreturn]] void user_enter_thunk(void *entry_address, void *stack_pointer);
 extern "C" void syscall_thunk();
 
-extern "C" void syscall_entrance(void *return_address, void *stack_pointer) {
-    printf("Syscall at %p (%p)...\n", return_address, stack_pointer);
+extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
+    __asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&kernel_tables)
+    );
+
+    printf("Syscall at %p from process %zu\n", stack_frame->interrupt_frame.instruction_pointer, current_process_index);
+
+    __asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&processes[current_process_index].tables.pml4_table)
+    );
 }
 
 extern void (*init_array_start[])();
 extern void (*init_array_end[])();
 
-extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
+extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
     global_memory_map = memory_map;
     global_memory_map_size = memory_map_size;
 
@@ -413,11 +437,21 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         printf("Memory region 0x%zX, 0x%zX, %d\n", (size_t)memory_map[i].address, memory_map[i].length, memory_map[i].available);
     }
 
-    if(!create_initial_pages(kernel_memory_start / page_size, kernel_memory_end / page_size)) {
-        printf("Error: Unable to allocate initial pages\n");
+    auto kernel_pages_start = kernel_memory_start / page_size;
+    auto kernel_pages_end = kernel_memory_end / page_size;
+    auto kernel_pages_count = kernel_pages_end - kernel_pages_start + 1;
+
+    if(!map_consecutive_pages(&kernel_tables, kernel_pages_start, kernel_pages_start, kernel_pages_count, false, false)) {
+        printf("Error: Unable to map initial pages in kernel space\n");
 
         return;
     }
+
+    __asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&kernel_tables.pml4_table)
+    );
 
     AcpiInitializeSubsystem();
 
@@ -449,9 +483,11 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
             auto bus_memory_size = device_count * function_count * function_area_size;
 
             auto bus_memory = (uint8_t*)map_memory(
+                &kernel_tables,
                 physical_memory_start + bus * device_count * function_count * function_area_size,
                 bus_memory_size,
-                false
+                false,
+                true
             );
             if(bus_memory == nullptr) {
                 printf(
@@ -483,7 +519,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
                 }
             }
 
-            unmap_memory((void*)bus_memory, bus_memory_size);
+            unmap_memory(&kernel_tables, (void*)bus_memory, bus_memory_size, true);
         }
     }
 
@@ -520,7 +556,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
 
     apic_physical_address = 0xFEE00000;
 
-    apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, false);
+    apic_registers = (volatile uint32_t*)map_memory(&kernel_tables, apic_physical_address, 0x400, false, true);
     if(apic_registers == nullptr) {
         printf("Error: Unable to map memory for APIC registers\n");
 
@@ -571,7 +607,7 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
     __asm volatile(
         "wrmsr"
         :
-        : "a"((uint32_t)0), "d"((uint32_t)0), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
+        : "a"((uint32_t)-1), "d"((uint32_t)-1), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
     );
 
     __asm volatile(
@@ -587,80 +623,128 @@ extern "C" void main(MemoryMapEntry *memory_map, size_t memory_map_size) {
         // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
     );
 
-    printf("Loading user mode ELF...\n");
+    printf("Loading user mode processes...\n");
 
-    el_ctx elf_context {};
-    elf_context.pread = &elf_read;
+    for(size_t i = 0; i < process_count; i += 1) {
+        el_ctx elf_context {};
+        elf_context.pread = &elf_read;
 
-    {
-        auto status = el_init(&elf_context);
-        if(status != EL_OK) {
-            printf("Error: Unable to initialize elfloader (%d)\n", status);
+        {
+            auto status = el_init(&elf_context);
+            if(status != EL_OK) {
+                printf("Error: Unable to initialize elfloader (%d)\n", status);
+
+                return;
+            }
+        }
+
+        if(!map_consecutive_pages(&processes[i].tables, kernel_pages_start, kernel_pages_start, kernel_pages_count, false, false)) {
+            printf("Error: Unable to map initial pages in user space for process %zu\n", i);
 
             return;
         }
-    }
 
-    auto user_mode_memory_start = map_any_memory(elf_context.memsz, true, memory_map, memory_map_size);
-    if(user_mode_memory_start == nullptr) {
-        printf("Error: Unable to map memory of size %zu for user mode\n", elf_context.memsz);
-
-        return;
-    }
-
-    {
-        auto status = el_init(&elf_context);
-        if(status != EL_OK) {
-            printf("Error: Unable to initialize elfloader (%d)\n", status);
+        size_t process_physical_memory_start;
+        if(!find_unoccupied_physical_memory(elf_context.memsz, &kernel_tables, processes, memory_map, memory_map_size, &process_physical_memory_start)) {
+            printf("Error: Unable to find unoccupied memory of size %zu for process %zu\n", elf_context.memsz, i);
 
             return;
         }
-    }
 
-    elf_context.base_load_paddr = (Elf64_Addr)user_mode_memory_start;
-    elf_context.base_load_vaddr = (Elf64_Addr)user_mode_memory_start;
-
-    {
-        auto status = el_load(&elf_context, &elf_allocate);
-        if(status != EL_OK) {
-            printf("Error: Unable to load ELF binary (%d)\n", status);
+        auto kernel_mapped_process_memory = map_memory(&kernel_tables, process_physical_memory_start, elf_context.memsz, false, true);
+        if(kernel_mapped_process_memory == nullptr) {
+            printf("Error: Unable to map kernel memory of size %zu for process %zu\n", elf_context.memsz, i);
 
             return;
         }
-    }
 
-    {
-        auto status = el_relocate(&elf_context);
-        if(status != EL_OK) {
-            printf("Error: Unable to perform ELF relocations (%d)\n", status);
+        auto user_mapped_process_memory = map_memory(&processes[i].tables, process_physical_memory_start, elf_context.memsz, true, false);
+        if(user_mapped_process_memory == nullptr) {
+            printf("Error: Unable to map user memory of size %zu for process %zu\n", elf_context.memsz, i);
 
             return;
         }
+
+        {
+            auto status = el_init(&elf_context);
+            if(status != EL_OK) {
+                printf("Error: Unable to initialize elfloader (%d)\n", status);
+
+                return;
+            }
+        }
+
+        elf_context.base_load_paddr = (Elf64_Addr)kernel_mapped_process_memory;
+        elf_context.base_load_vaddr = (Elf64_Addr)user_mapped_process_memory;
+
+        {
+            auto status = el_load(&elf_context, &elf_allocate);
+            if(status != EL_OK) {
+                printf("Error: Unable to load ELF binary (%d)\n", status);
+
+                return;
+            }
+        }
+
+        {
+            auto status = el_relocate(&elf_context);
+            if(status != EL_OK) {
+                printf("Error: Unable to perform ELF relocations (%d)\n", status);
+
+                return;
+            }
+        }
+
+        unmap_memory(&kernel_tables, kernel_mapped_process_memory, elf_context.memsz, true);
+
+        const size_t process_stack_size = 4096;
+
+        size_t stack_physical_memory_start;
+        if(!find_unoccupied_physical_memory(process_stack_size, &kernel_tables, processes, memory_map, memory_map_size, &stack_physical_memory_start)) {
+            printf("Error: Unable to find unoccupied memory of size %zu for process %zu stack\n", process_stack_size, i);
+
+            return;
+        }
+
+        auto stack_bottom = map_memory(&processes[i].tables, stack_physical_memory_start, process_stack_size, true, false);
+        if(stack_bottom == nullptr) {
+            printf("Error: Unable to map process stack memory of size %zu for process %zu\n", process_stack_size, i);
+
+            return;
+        }
+
+        auto stack_top = (void*)((size_t)stack_bottom + process_stack_size);
+
+        auto entry_point = (void*)((size_t)user_mapped_process_memory + (size_t)elf_context.ehdr.e_entry);
+
+        processes[i].frame.interrupt_frame.instruction_pointer = entry_point;
+        processes[i].frame.interrupt_frame.code_segment = 0x23;
+        processes[i].frame.interrupt_frame.cpu_flags = 1 << 9;
+        processes[i].frame.interrupt_frame.stack_pointer = stack_top;
+        processes[i].frame.interrupt_frame.stack_segment = 0x1B;
     }
 
-    const size_t user_mode_stack_size = 4096;
-
-    auto user_mode_stack_bottom = map_any_memory(user_mode_stack_size, true, memory_map, memory_map_size);
-    if(user_mode_stack_bottom == nullptr) {
-        printf("Error: Unable to allocate user mode stack of size %uz\n", user_mode_stack_size);
-
-        return;
-    }
-
-    auto user_mode_stack_top = (void*)((size_t)user_mode_stack_bottom + user_mode_stack_size);
-
-    auto entry_point = (void*)((size_t)user_mode_memory_start + elf_context.ehdr.e_entry);
-
-    printf("Entering user mode at %p...\n", entry_point);
+    current_process_index = 0;
 
     // Set timer value
-    apic_registers[0x380 / 4] = 0x1000000;
+    apic_registers[0x380 / 4] = preempt_time;
 
-    user_enter_thunk(entry_point, user_mode_stack_top);
+    __asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&processes[0].tables.pml4_table)
+    );
+
+    user_enter_thunk(&processes[0].frame);
 }
 
 void *allocate(size_t size) {
-    return map_any_memory(size, false, global_memory_map, global_memory_map_size);
+    size_t physical_memory_start;
+    if(!find_unoccupied_physical_memory(size, &kernel_tables, processes, global_memory_map, global_memory_map_size, &physical_memory_start)) {
+        return nullptr;
+    }
+
+    return map_memory(&kernel_tables, physical_memory_start, size, false, true);
 }
 
 void deallocate(void *pointer) {

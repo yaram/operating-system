@@ -90,12 +90,14 @@ extern "C" void AcpiOsFree(void *Memory) {
     deallocate(Memory);
 }
 
+extern PageTables kernel_tables;
+
 extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
-    return map_memory((size_t)Where, (size_t)Length, false);
+    return map_memory(&kernel_tables, (size_t)Where, (size_t)Length, false, true);
 }
 
 extern "C" void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) {
-    unmap_memory(LogicalAddress, (size_t)Size);
+    unmap_memory(&kernel_tables, LogicalAddress, (size_t)Size, true);
 }
 
 extern "C" ACPI_STATUS AcpiOsGetPhysicalAddress(void *LogicalAddress, ACPI_PHYSICAL_ADDRESS *PhysicalAddress) {
