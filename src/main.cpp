@@ -755,7 +755,7 @@ extern "C" void *memset(void *destination, int value, size_t count) {
     __asm volatile(
         "rep stosb"
         :
-        : "S"(destination), "a"((uint8_t)value), "c"(count)
+        : "D"(destination), "a"((uint8_t)value), "c"(count)
     );
 
     return destination;
