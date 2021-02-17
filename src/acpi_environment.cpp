@@ -90,14 +90,15 @@ extern "C" void AcpiOsFree(void *Memory) {
     deallocate(Memory);
 }
 
-extern PageTables kernel_tables;
+extern uint8_t global_bitmap_entries[];
+extern size_t global_bitmap_size;
 
 extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
-    return map_memory(&kernel_tables, (size_t)Where, (size_t)Length, false, true);
+    return map_memory((size_t)Where, (size_t)Length, global_bitmap_entries, global_bitmap_size);
 }
 
 extern "C" void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) {
-    unmap_memory(&kernel_tables, LogicalAddress, (size_t)Size, true);
+    unmap_memory(LogicalAddress, (size_t)Size);
 }
 
 extern "C" ACPI_STATUS AcpiOsGetPhysicalAddress(void *LogicalAddress, ACPI_PHYSICAL_ADDRESS *PhysicalAddress) {
@@ -210,7 +211,7 @@ extern "C" ACPI_STATUS AcpiOsEnterSleep(UINT8 SleepState, UINT32 RegaValue, UINT
  */
 ACPI_PRINTF_LIKE (1)
 extern "C" void ACPI_INTERNAL_VAR_XFACE AcpiOsPrintf(const char *Format, ...) {
-#if ACPICA_LOG
+#ifdef ACPICA_LOG
     va_list args;
     va_start(args, Format);
 
@@ -221,7 +222,7 @@ extern "C" void ACPI_INTERNAL_VAR_XFACE AcpiOsPrintf(const char *Format, ...) {
 }
 
 extern "C" void AcpiOsVprintf(const char *Format, va_list Args) {
-#if ACPICA_LOG
+#ifdef ACPICA_LOG
     vprintf(Format, Args);
 #endif
 }

@@ -6,12 +6,13 @@ extern "C" {
 #include "console.h"
 #include "heap.h"
 #include "paging.h"
-#include "memory_map.h"
 #include "elfload.h"
 #include "process.h"
+#include "memory.h"
 
-extern "C" void *memset(void *destination, int value, size_t count);
-extern "C" void *memcpy(void *destination, const void *source, size_t count);
+#define divide_round_up(dividend, divisor) (((dividend) + (divisor) - 1) / (divisor))
+
+#define do_ranges_intersect(a_start, a_end, b_start, b_end) (!((a_end) <= (b_start) || (b_end) <= (a_start)))
 
 struct MCFGTable {
     ACPI_TABLE_MCFG preamble;
@@ -24,9 +25,6 @@ struct MADTTable {
 
     ACPI_SUBTABLE_HEADER entries[0];
 };
-
-const MemoryMapEntry *global_memory_map;
-size_t global_memory_map_size;
 
 struct __attribute__((packed)) TSSEntry {
     uint32_t reserved_1;
@@ -223,13 +221,41 @@ size_t current_process_index = 0;
 
 const uint32_t preempt_time = 0x100000;
 
-PageTables kernel_tables {};
+const size_t kernel_memory_start = 0;
+const size_t kernel_memory_end = 0x800000;
+
+const auto kernel_pages_start = kernel_memory_start / page_size;
+const auto kernel_pages_end = divide_round_up(kernel_memory_end, page_size);
+
+const auto kernel_pd_start = kernel_pages_start / page_table_length;
+const auto kernel_pd_end = divide_round_up(kernel_pages_end, page_table_length);
+const auto kernel_pd_count = kernel_pd_end - kernel_pd_start;
+
+const auto kernel_pdp_start = kernel_pd_start / page_table_length;
+const auto kernel_pdp_end = divide_round_up(kernel_pd_end, page_table_length);
+const auto kernel_pdp_count = kernel_pdp_end - kernel_pdp_start;
+
+const auto kernel_pml4_start = kernel_pdp_start / page_table_length;
+const auto kernel_pml4_end = divide_round_up(kernel_pdp_end, page_table_length);
+const auto kernel_pml4_count = kernel_pml4_end - kernel_pml4_start;
+
+__attribute__((aligned(page_size)))
+PageTableEntry kernel_pml4_table[page_table_length] {};
+
+__attribute__((aligned(page_size)))
+PageTableEntry kernel_pdp_tables[kernel_pml4_count][page_table_length] {};
+
+__attribute__((aligned(page_size)))
+PageTableEntry kernel_pd_tables[kernel_pdp_count][page_table_length] {};
+
+__attribute__((aligned(page_size)))
+PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 
 extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *frame) {
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&kernel_tables)
+        : "D"(&kernel_pml4_table)
     );
 
     processes[current_process_index].frame = *frame;
@@ -248,7 +274,7 @@ extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *fram
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&processes[current_process_index].tables.pml4_table)
+        : "D"(&processes[current_process_index].pml4_table)
     );
 
     user_enter_thunk(stack_frame);
@@ -368,7 +394,7 @@ extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&kernel_tables)
+        : "D"(&kernel_pml4_table)
     );
 
     printf("Syscall at %p from process %zu\n", stack_frame->interrupt_frame.instruction_pointer, current_process_index);
@@ -376,17 +402,116 @@ extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&processes[current_process_index].tables.pml4_table)
+        : "D"(&processes[current_process_index].pml4_table)
     );
 }
 
 extern void (*init_array_start[])();
 extern void (*init_array_end[])();
 
-extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
-    global_memory_map = memory_map;
-    global_memory_map_size = memory_map_size;
+struct BootstrapMemoryMapEntry {
+    void* address;
+    size_t length;
+    bool available;
+};
 
+static bool find_free_physical_pages_in_bootstrap(
+    const BootstrapMemoryMapEntry *bootstrap_map,
+    size_t bootstrap_map_size,
+    size_t page_count,
+    size_t extra_pages_start,
+    size_t extra_page_count,
+    size_t *pages_start
+) {
+    for(size_t i = 0; i < bootstrap_map_size; i += 1) {
+        auto entry = &bootstrap_map[i];
+        if(entry->available) {
+            auto start = (size_t)entry->address;
+            auto end = start + entry->length;
+
+            auto entry_pages_start = divide_round_up(start, page_size);
+            auto entry_pages_end = end / page_size;
+            auto entry_page_count = entry_pages_end - entry_pages_start;
+
+            if(entry_page_count >= page_count) {
+                for(size_t test_pages_start = entry_pages_start; test_pages_start < entry_pages_start - page_count; test_pages_start += 1) {
+                    if(
+                        !do_ranges_intersect(test_pages_start, test_pages_start + page_count, kernel_pages_start, kernel_pages_end) &&
+                        !do_ranges_intersect(test_pages_start, test_pages_start + page_count, extra_pages_start, extra_pages_start + extra_page_count)
+                    ) {
+                        *pages_start = test_pages_start;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+static void allocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
+    auto start_bit = start;
+    auto end_bit = start + count;
+
+    auto start_byte = start_bit / 8;
+    auto end_byte = divide_round_up(end_bit, 8);
+
+    auto sub_start_bit = start_bit % 8;
+    auto sub_end_bit = end_bit % 8;
+
+    if(end_byte - start_byte == 1) {
+        for(size_t i = sub_start_bit; i < sub_end_bit; i += 1) {
+            bitmap[start_byte] |= 1 << i;
+        }
+    } else {
+        for(size_t i = sub_start_bit; i < 8; i += 1) {
+            bitmap[start_byte] |= 1 << i;
+        }
+
+        for(size_t i = start_byte + 1; i < end_byte - 1; i += 1) {
+            bitmap[i] = 0b11111111;
+        }
+
+        for(size_t i = 0; i < sub_end_bit; i += 1) {
+            bitmap[end_byte - 1] |= 1 << i;
+        }
+    }
+}
+
+static void deallocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
+    auto start_bit = start;
+    auto end_bit = start + count;
+
+    auto start_byte = start_bit / 8;
+    auto end_byte = divide_round_up(end_bit, 8);
+
+    auto sub_start_bit = start_bit % 8;
+    auto sub_end_bit = end_bit % 8;
+
+    if(end_byte - start_byte == 1) {
+        for(size_t i = sub_start_bit; i < sub_end_bit; i += 1) {
+            bitmap[start_byte] &= ~(1 << i);
+        }
+    } else {
+        for(size_t i = sub_start_bit; i < 8; i += 1) {
+            bitmap[start_byte] &= ~(1 << i);
+        }
+
+        for(size_t i = start_byte + 1; i < end_byte - 1; i += 1) {
+            bitmap[i] = 0;
+        }
+
+        for(size_t i = 0; i < sub_end_bit; i += 1) {
+            bitmap[end_byte - 1] &= ~(1 << i);
+        }
+    }
+}
+
+uint8_t *global_bitmap_entries;
+size_t global_bitmap_size;
+
+extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t bootstrap_memory_map_size) {
     auto initializer_count = ((size_t)init_array_end - (size_t)init_array_start) / sizeof(void (*)());
 
     for(size_t i = 0; i < initializer_count; i += 1) {
@@ -433,29 +558,244 @@ extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
         : "al"
     );
 
-    for(size_t i = 0; i < memory_map_size; i += 1) {
-        printf("Memory region 0x%zX, 0x%zX, %d\n", (size_t)memory_map[i].address, memory_map[i].length, memory_map[i].available);
+    size_t next_pdp_table_index = 0;
+    size_t next_pd_table_index = 0;
+    size_t next_page_table_index = 0;
+
+    for(size_t total_page_index = kernel_pages_start; total_page_index < kernel_pages_end; total_page_index += 1) {
+        auto page_index = total_page_index;
+        auto pd_index = page_index / page_table_length;
+        auto pdp_index = pd_index / page_table_length;
+        auto pml4_index = pdp_index / page_table_length;
+
+        page_index %= page_table_length;
+        pd_index %= page_table_length;
+        pdp_index %= page_table_length;
+        pml4_index %= page_table_length;
+
+        PageTableEntry *pdp_table;
+        if(kernel_pml4_table[pml4_index].present) {
+            pdp_table = (PageTableEntry*)(kernel_pml4_table[pml4_index].page_address * page_size);
+        } else {
+            pdp_table = &kernel_pdp_tables[next_pdp_table_index][0];
+            next_pdp_table_index += 1;
+
+            kernel_pml4_table[pml4_index].present = true;
+            kernel_pml4_table[pml4_index].write_allowed = true;
+            kernel_pml4_table[pml4_index].user_mode_allowed = true;
+            kernel_pml4_table[pml4_index].page_address = (size_t)pdp_table / page_size;
+
+            next_pdp_table_index += 1;
+        }
+
+        PageTableEntry *pd_table;
+        if(pdp_table[pdp_index].present) {
+            pd_table = (PageTableEntry*)(pdp_table[pdp_index].page_address * page_size);
+        } else {
+            pd_table = &kernel_pd_tables[next_pd_table_index][0];
+            next_pd_table_index += 1;
+
+            pdp_table[pdp_index].present = true;
+            pdp_table[pdp_index].write_allowed = true;
+            pdp_table[pdp_index].user_mode_allowed = true;
+            pdp_table[pdp_index].page_address = (size_t)pd_table / page_size;
+        }
+
+        PageTableEntry *page_table;
+        if(pd_table[pd_index].present) {
+            page_table = (PageTableEntry*)(pd_table[pd_index].page_address * page_size);
+        } else {
+            page_table = &kernel_page_tables[next_page_table_index][0];
+            next_page_table_index += 1;
+
+            pd_table[pd_index].present = true;
+            pd_table[pd_index].write_allowed = true;
+            pd_table[pd_index].user_mode_allowed = true;
+            pd_table[pd_index].page_address = (size_t)page_table / page_size;
+        }
+
+        page_table[page_index].present = true;
+        page_table[page_index].write_allowed = true;
+        page_table[page_index].page_address = total_page_index;
     }
 
-    auto kernel_pages_start = kernel_memory_start / page_size;
-    auto kernel_pages_end = kernel_memory_end / page_size;
-    auto kernel_pages_count = kernel_pages_end - kernel_pages_start + 1;
-
-    if(!map_consecutive_pages(&kernel_tables, kernel_pages_start, kernel_pages_start, kernel_pages_count, false, false)) {
-        printf("Error: Unable to map initial pages in kernel space\n");
-
-        return;
-    }
+    kernel_pml4_table[page_table_length - 1].present = true;
+    kernel_pml4_table[page_table_length - 1].write_allowed = true;
+    kernel_pml4_table[page_table_length - 1].page_address = (size_t)kernel_pml4_table / page_size;
 
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&kernel_tables.pml4_table)
+        : "D"(&kernel_pml4_table)
     );
+
+    size_t highest_available_memory_end = 0;
+    for(size_t i = 0; i < bootstrap_memory_map_size; i += 1) {
+        auto entry = &bootstrap_memory_map[i];
+
+        if(entry->available) {
+            auto end = (size_t)entry->address + entry->length;
+
+            if(end > highest_available_memory_end) {        
+                highest_available_memory_end = end;
+            }
+        }
+    }
+
+    auto highest_available_pages_end = divide_round_up(highest_available_memory_end, page_size);
+
+    auto bitmap_size = highest_available_pages_end / 8;
+    auto bitmap_page_count = divide_round_up(bitmap_size, page_size);
+
+    size_t bitmap_physical_pages_start;
+    if(!find_free_physical_pages_in_bootstrap(
+        bootstrap_memory_map,
+        bootstrap_memory_map_size,
+        bitmap_page_count,
+        0,
+        0,
+        &bitmap_physical_pages_start
+    )) {
+        printf("Error: Unable to find %zu free pages for page bitmap\n", bitmap_page_count);
+
+        return;
+    }
+
+    auto new_page_table_count = count_page_tables_needed_for_logical_pages(kernel_pages_end, bitmap_page_count);
+
+    size_t new_physical_pages_start;
+    if(!find_free_physical_pages_in_bootstrap(
+        bootstrap_memory_map,
+        bootstrap_memory_map_size,
+        new_page_table_count,
+        bitmap_physical_pages_start,
+        bitmap_page_count,
+        &new_physical_pages_start
+    )) {
+        printf("Error: Unable to find %zu free pages for new page tables\n", new_page_table_count);
+
+        return;
+    }
+
+    size_t next_new_physical_page_index = 0;
+
+    for(size_t relative_page_index = 0; relative_page_index < bitmap_page_count; relative_page_index += 1) {
+        auto page_index = kernel_pages_end + relative_page_index;
+        auto pd_index = page_index / page_table_length;
+        auto pdp_index = pd_index / page_table_length;
+        auto pml4_index = pdp_index / page_table_length;
+
+        page_index %= page_table_length;
+        pd_index %= page_table_length;
+        pdp_index %= page_table_length;
+        pml4_index %= page_table_length;
+
+        auto pml4_table = get_pml4_table_pointer();
+
+        auto pdp_table = get_pdp_table_pointer(pml4_index);
+
+        if(!pml4_table[pml4_index].present) {
+            auto physical_pages_start = new_physical_pages_start + next_new_physical_page_index;
+            next_new_physical_page_index += 1;
+
+            pml4_table[pml4_index].present = true;
+            pml4_table[pml4_index].write_allowed = true;
+            pml4_table[pml4_index].user_mode_allowed = true;
+            pml4_table[pml4_index].page_address = physical_pages_start;
+
+            __asm volatile(
+                "invlpg (%0)"
+                :
+                : "D"(pdp_table)
+            );
+
+            memset((void*)pdp_table, 0, sizeof(PageTableEntry[page_table_length]));
+        }
+
+        auto pd_table = get_pd_table_pointer(pml4_index, pdp_index);
+
+        if(!pdp_table[pdp_index].present) {
+            auto physical_pages_start = new_physical_pages_start + next_new_physical_page_index;
+            next_new_physical_page_index += 1;
+
+            pdp_table[pdp_index].present = true;
+            pdp_table[pdp_index].write_allowed = true;
+            pdp_table[pdp_index].user_mode_allowed = true;
+            pdp_table[pdp_index].page_address = physical_pages_start;
+
+            __asm volatile(
+                "invlpg (%0)"
+                :
+                : "D"(pd_table)
+            );
+
+            memset((void*)pd_table, 0, sizeof(PageTableEntry[page_table_length]));
+        }
+
+        auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
+
+        if(!pd_table[pd_index].present) {
+            auto physical_pages_start = new_physical_pages_start + next_new_physical_page_index;
+            next_new_physical_page_index += 1;
+
+            pd_table[pd_index].present = true;
+            pd_table[pd_index].write_allowed = true;
+            pd_table[pd_index].user_mode_allowed = true;
+            pd_table[pd_index].page_address = physical_pages_start;
+
+            __asm volatile(
+                "invlpg (%0)"
+                :
+                : "D"(page_table)
+            );
+
+            memset((void*)page_table, 0, sizeof(PageTableEntry[page_table_length]));
+        }
+
+        page_table[page_index].present = true;
+        page_table[page_index].write_allowed = true;
+        page_table[page_index].page_address = bitmap_physical_pages_start + relative_page_index;
+
+        __asm volatile(
+            "invlpg (%0)"
+            :
+            : "D"((kernel_pages_end + relative_page_index) * page_size)
+        );
+    }
+
+    auto bitmap_entries = (uint8_t*)(kernel_pages_end * page_size);
+
+    bitmap_entries[0] = 0;
+
+    memset((void*)bitmap_entries, 0xFF, bitmap_size);
+
+    for(size_t i = 0; i < bootstrap_memory_map_size; i += 1) {
+        auto entry = &bootstrap_memory_map[i];
+
+        if(entry->available) {
+            auto start = (size_t)entry->address;
+            auto end = start + entry->length;
+
+            auto entry_pages_start = divide_round_up(start, page_size);
+            auto entry_pages_end = end / page_size;
+            auto entry_page_count = entry_pages_end - entry_pages_start;
+
+            deallocate_bitmap_range(bitmap_entries, entry_pages_start, entry_page_count);
+        }
+    }
+
+    allocate_bitmap_range(bitmap_entries, kernel_pages_start, kernel_pages_end - kernel_pages_start);
+
+    allocate_bitmap_range(bitmap_entries, bitmap_physical_pages_start, bitmap_page_count);
+
+    allocate_bitmap_range(bitmap_entries, new_physical_pages_start, new_page_table_count);
+
+    global_bitmap_entries = bitmap_entries;
+    global_bitmap_size = bitmap_size;
 
     AcpiInitializeSubsystem();
 
-    AcpiInitializeTables(nullptr, 8, FALSE);
+    AcpiInitializeTables(nullptr, 8, TRUE);
 
     MCFGTable *mcfg_table;
     {
@@ -483,11 +823,10 @@ extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
             auto bus_memory_size = device_count * function_count * function_area_size;
 
             auto bus_memory = (uint8_t*)map_memory(
-                &kernel_tables,
                 physical_memory_start + bus * device_count * function_count * function_area_size,
                 bus_memory_size,
-                false,
-                true
+                bitmap_entries,
+                bitmap_size
             );
             if(bus_memory == nullptr) {
                 printf(
@@ -519,7 +858,7 @@ extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
                 }
             }
 
-            unmap_memory(&kernel_tables, (void*)bus_memory, bus_memory_size, true);
+            unmap_memory((void*)bus_memory, bus_memory_size);
         }
     }
 
@@ -556,7 +895,7 @@ extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
 
     apic_physical_address = 0xFEE00000;
 
-    apic_registers = (volatile uint32_t*)map_memory(&kernel_tables, apic_physical_address, 0x400, false, true);
+    apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap_entries, bitmap_size);
     if(apic_registers == nullptr) {
         printf("Error: Unable to map memory for APIC registers\n");
 
@@ -638,31 +977,66 @@ extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
             }
         }
 
-        if(!map_consecutive_pages(&processes[i].tables, kernel_pages_start, kernel_pages_start, kernel_pages_count, false, false)) {
-            printf("Error: Unable to map initial pages in user space for process %zu\n", i);
+        size_t bitmap_index = 0;
+        size_t bitmap_sub_bit_index = 0;
+
+        for(size_t j = kernel_pages_start; j < kernel_pages_end; j += 1) {
+            if(!set_page(j, j, processes[i].pml4_table, bitmap_entries, bitmap_size)) {
+                printf("Error: Unable to map kernel pages in user-space for process %zu\n", i);
+
+                return;
+            }
+        }
+
+        auto process_page_count = divide_round_up(elf_context.memsz, page_size);
+
+        size_t process_user_pages_start;
+        if(!find_free_logical_pages(
+            process_page_count,
+            processes[i].pml4_table,
+            bitmap_entries,
+            bitmap_index,
+            &process_user_pages_start
+        )) {
+            printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", elf_context.memsz, i);
 
             return;
         }
 
-        size_t process_physical_memory_start;
-        if(!find_unoccupied_physical_memory(elf_context.memsz, &kernel_tables, processes, memory_map, memory_map_size, &process_physical_memory_start)) {
-            printf("Error: Unable to find unoccupied memory of size %zu for process %zu\n", elf_context.memsz, i);
+        size_t process_kernel_pages_start;
+        if(!find_free_logical_pages(process_page_count, &process_kernel_pages_start)) {
+            printf("Error: Unable to find unoccupied kernel memory of size %zu for process %zu\n", elf_context.memsz, i);
 
             return;
         }
 
-        auto kernel_mapped_process_memory = map_memory(&kernel_tables, process_physical_memory_start, elf_context.memsz, false, true);
-        if(kernel_mapped_process_memory == nullptr) {
-            printf("Error: Unable to map kernel memory of size %zu for process %zu\n", elf_context.memsz, i);
+        for(size_t j = 0; j < process_page_count; j += 1) {
+            size_t physical_page_index;
+            if(!allocate_next_physical_page(
+                &bitmap_index,
+                &bitmap_sub_bit_index,
+                bitmap_entries,
+                bitmap_size,
+                &physical_page_index
+            )){
+                printf("Error: Unable to allocate page for process %zu\n", i);
 
-            return;
-        }
+                return;
+            }
 
-        auto user_mapped_process_memory = map_memory(&processes[i].tables, process_physical_memory_start, elf_context.memsz, true, false);
-        if(user_mapped_process_memory == nullptr) {
-            printf("Error: Unable to map user memory of size %zu for process %zu\n", elf_context.memsz, i);
+            // The order of these is IMPORTANT, otherwise the kernel pages will get overwritten!!!
 
-            return;
+            if(!set_page(process_user_pages_start + j, physical_page_index, processes[i].pml4_table, bitmap_entries, bitmap_size)) {
+                printf("Error: Unable to map user page for process %zu\n", i);
+
+                return;
+            }
+
+            if(!set_page(process_kernel_pages_start + j, physical_page_index, bitmap_entries, bitmap_size)) {
+                printf("Error: Unable to map kernel page for process %zu\n", i);
+
+                return;
+            }
         }
 
         {
@@ -674,8 +1048,8 @@ extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
             }
         }
 
-        elf_context.base_load_paddr = (Elf64_Addr)kernel_mapped_process_memory;
-        elf_context.base_load_vaddr = (Elf64_Addr)user_mapped_process_memory;
+        elf_context.base_load_paddr = (Elf64_Addr)(process_kernel_pages_start * page_size);
+        elf_context.base_load_vaddr = (Elf64_Addr)(process_user_pages_start * page_size);
 
         {
             auto status = el_load(&elf_context, &elf_allocate);
@@ -695,27 +1069,48 @@ extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
             }
         }
 
-        unmap_memory(&kernel_tables, kernel_mapped_process_memory, elf_context.memsz, true);
+        unmap_pages(process_kernel_pages_start, process_page_count);
 
         const size_t process_stack_size = 4096;
+        const size_t process_stack_page_count = divide_round_up(process_stack_size, page_size);
 
-        size_t stack_physical_memory_start;
-        if(!find_unoccupied_physical_memory(process_stack_size, &kernel_tables, processes, memory_map, memory_map_size, &stack_physical_memory_start)) {
-            printf("Error: Unable to find unoccupied memory of size %zu for process %zu stack\n", process_stack_size, i);
+        size_t process_stack_pages_start;
+        if(!find_free_logical_pages(
+            process_stack_page_count,
+            processes[i].pml4_table,
+            bitmap_entries,
+            bitmap_index,
+            &process_stack_pages_start
+        )) {
+            printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", elf_context.memsz, i);
 
             return;
         }
 
-        auto stack_bottom = map_memory(&processes[i].tables, stack_physical_memory_start, process_stack_size, true, false);
-        if(stack_bottom == nullptr) {
-            printf("Error: Unable to map process stack memory of size %zu for process %zu\n", process_stack_size, i);
+        for(size_t j = 0; j < process_stack_page_count; j += 1) {
+            size_t physical_page_index;
+            if(!allocate_next_physical_page(
+                &bitmap_index,
+                &bitmap_sub_bit_index,
+                bitmap_entries,
+                bitmap_size,
+                &physical_page_index
+            )){
+                printf("Error: Unable to allocate page for process %zu\n", i);
 
-            return;
+                return;
+            }
+
+            if(!set_page(process_stack_pages_start + j, physical_page_index, processes[i].pml4_table, bitmap_entries, bitmap_size)) {
+                printf("Error: Unable to map user page for process %zu\n", i);
+
+                return;
+            }
         }
 
-        auto stack_top = (void*)((size_t)stack_bottom + process_stack_size);
+        auto stack_top = (void*)(process_stack_pages_start * page_size + process_stack_size);
 
-        auto entry_point = (void*)((size_t)user_mapped_process_memory + (size_t)elf_context.ehdr.e_entry);
+        auto entry_point = (void*)(process_user_pages_start * page_size + (size_t)elf_context.ehdr.e_entry);
 
         processes[i].frame.interrupt_frame.instruction_pointer = entry_point;
         processes[i].frame.interrupt_frame.code_segment = 0x23;
@@ -732,19 +1127,14 @@ extern "C" void main(const MemoryMapEntry *memory_map, size_t memory_map_size) {
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&processes[0].tables.pml4_table)
+        : "D"(&processes[0].pml4_table)
     );
 
     user_enter_thunk(&processes[0].frame);
 }
 
 void *allocate(size_t size) {
-    size_t physical_memory_start;
-    if(!find_unoccupied_physical_memory(size, &kernel_tables, processes, global_memory_map, global_memory_map_size, &physical_memory_start)) {
-        return nullptr;
-    }
-
-    return map_memory(&kernel_tables, physical_memory_start, size, false, true);
+    return map_free_memory(size, global_bitmap_entries, global_bitmap_size);
 }
 
 void deallocate(void *pointer) {

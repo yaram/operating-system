@@ -2,58 +2,10 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include "memory_map.h"
-
-struct Process;
 
 const size_t page_size = 4096;
 
-struct __attribute__((packed)) PML4Entry {
-    bool present: 1;
-    bool write_allowed: 1;
-    bool user_mode_allowed: 1;
-    bool write_through: 1;
-    bool cache_disable: 1;
-    bool accessed: 1;
-    bool _ignored_0: 1;
-    bool _reserved_0: 1;
-    uint8_t _ignored_1: 4;
-    size_t pdp_table_page_address: 40;
-    uint16_t _ignored_2: 11;
-    bool execute_disable: 1;
-};
-
-struct __attribute__((packed)) PDPEntry {
-    bool present: 1;
-    bool write_allowed: 1;
-    bool user_mode_allowed: 1;
-    bool write_through: 1;
-    bool cache_disable: 1;
-    bool accessed: 1;
-    bool _ignored_0: 1;
-    bool page_size: 1;
-    uint8_t _ignored_1: 4;
-    size_t pd_table_page_address: 40;
-    uint16_t _ignored_2: 11;
-    bool execute_disable: 1;
-};
-
-struct __attribute__((packed)) PDEntry {
-    bool present: 1;
-    bool write_allowed: 1;
-    bool user_mode_allowed: 1;
-    bool write_through: 1;
-    bool cache_disable: 1;
-    bool accessed: 1;
-    bool _ignored_0: 1;
-    bool page_size: 1;
-    uint8_t _ignored_1: 4;
-    size_t page_table_page_address: 40;
-    uint16_t _ignored_2: 11;
-    bool execute_disable: 1;
-};
-
-struct __attribute__((packed)) PageEntry {
+struct __attribute__((packed)) PageTableEntry {
     bool present: 1;
     bool write_allowed: 1;
     bool user_mode_allowed: 1;
@@ -61,7 +13,7 @@ struct __attribute__((packed)) PageEntry {
     bool cache_disable: 1;
     bool accessed: 1;
     bool dirty: 1;
-    bool memory_type: 1;
+    bool page_size: 1;
     bool global: 1;
     uint8_t _ignored_0: 3;
     size_t page_address: 40;
@@ -72,48 +24,123 @@ struct __attribute__((packed)) PageEntry {
 
 const size_t page_table_length = 512;
 
-const size_t pdp_table_count = 4;
-const size_t pd_table_count = 4;
-const size_t page_table_count = 16;
+// Calculate addresses for accessing tables through recursive page tables
 
-struct PageTables {
-    PML4Entry pml4_table[page_table_length];
+inline size_t make_address_canonical(size_t address) {
+    const auto shift_amount = 64 - 48;
 
-    bool pdp_tables_used[pdp_table_count];
-    __attribute__((aligned(page_size)))
-    PDPEntry pdp_tables[pdp_table_count][page_table_length];
+    return (size_t)((intptr_t)(address << shift_amount) >> shift_amount);
+}
 
-    bool pd_tables_used[pdp_table_count];
-    __attribute__((aligned(page_size)))
-    PDEntry pd_tables[pd_table_count][page_table_length];
+inline PageTableEntry *get_pml4_table_pointer() {
+    return (PageTableEntry*)(make_address_canonical(
+        (size_t)0b111111111 << 39 |
+        (size_t)0b111111111 << 30 |
+        (size_t)0b111111111 << 21 |
+        (size_t)0b111111111 << 12
+    ));
+}
 
-    bool page_tables_used[pdp_table_count];
-    __attribute__((aligned(page_size)))
-    PageEntry page_tables[page_table_count][page_table_length];
-};
+inline PageTableEntry *get_pdp_table_pointer(size_t pml4_index) {
+    return (PageTableEntry*)(make_address_canonical(
+        (size_t)0b111111111 << 39 |
+        (size_t)0b111111111 << 30 |
+        (size_t)0b111111111 << 21 |
+        pml4_index << 12
+    ));
+}
 
-bool map_consecutive_pages(PageTables *tables, size_t physical_pages_start, size_t logical_pages_start, size_t page_count, bool invalidate_pages, bool user_mode);
+inline PageTableEntry *get_pd_table_pointer(size_t pml4_index, size_t pdp_index) {
+    return (PageTableEntry*)(make_address_canonical(
+        (size_t)0b111111111 << 39 |
+        (size_t)0b111111111 << 30 |
+        pml4_index << 21 |
+        pdp_index << 12
+    ));
+}
 
-bool map_pages(PageTables *tables, size_t physical_pages_start, size_t page_count, bool user_mode, size_t *logical_pages_start, bool invalidate_pages);
-void unmap_pages(PageTables *tables, size_t logical_pages_start, size_t page_count, bool invalidate_pages);
+inline PageTableEntry *get_page_table_pointer(size_t pml4_index, size_t pdp_index, size_t pd_index) {
+    return (PageTableEntry*)(make_address_canonical(
+        (size_t)0b111111111 << 39 |
+        pml4_index << 30 |
+        pdp_index << 21 |
+        pd_index << 12
+    ));
+}
 
-bool find_unoccupied_physical_pages(
-    size_t page_count,
-    const PageTables *kernel_tables,
-    const Process *processes,
-    const MemoryMapEntry *memory_map,
-    size_t memory_map_size,
-    size_t *physical_pages_start
+bool find_free_logical_pages(size_t page_count, size_t *logical_pages_start);
+
+size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, size_t page_count);
+
+bool allocate_next_physical_page(
+    size_t *bitmap_index,
+    size_t *bitmap_sub_bit_index,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    size_t *physical_page_index
 );
 
-void *map_memory(PageTables *tables, size_t physical_memory_start, size_t size, bool user_mode, bool invalidate_pages);
-void unmap_memory(PageTables *tables, void *logical_memory_start, size_t size, bool invalidate_pages);
+// Kernel table-specific functions
 
-bool find_unoccupied_physical_memory(
+bool set_page(
+    size_t logical_page_index,
+    size_t physical_page_index,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+);
+
+bool map_pages(
+    size_t physical_pages_start,
+    size_t page_count,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    size_t *logical_pages_start
+);
+
+void unmap_pages(
+    size_t logical_pages_start,
+    size_t page_count
+);
+
+bool map_free_pages(
+    size_t page_count,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    size_t *logical_pages_start
+);
+
+void *map_memory(
+    size_t physical_memory_start,
     size_t size,
-    const PageTables *kernel_tables,
-    const Process *processes,
-    const MemoryMapEntry *memory_map,
-    size_t memory_map_size,
-    size_t *physical_memory_start
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+);
+
+void unmap_memory(
+    void *logical_memory_start,
+    size_t size
+);
+
+void *map_free_memory(
+    size_t size,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+);
+
+// non-kernel (process) page table functions
+
+bool find_free_logical_pages(
+    size_t page_count,
+    PageTableEntry pml4_table[page_table_length],
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    size_t *logical_pages_start
+);
+
+bool set_page(
+    size_t logical_page_index,
+    size_t physical_page_index,
+    PageTableEntry pml4_table[page_table_length],
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
 );

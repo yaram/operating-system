@@ -25,7 +25,8 @@ struct __attribute__((packed)) ProcessStackFrame {
 };
 
 struct Process {
-    PageTables tables;
+    __attribute__((aligned(page_size)))
+    PageTableEntry pml4_table[page_table_length];
 
     ProcessStackFrame frame;
 };
