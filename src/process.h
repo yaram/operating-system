@@ -24,6 +24,9 @@ struct __attribute__((packed)) ProcessStackFrame {
 };
 
 struct Process {
+    size_t logical_pages_start;
+    size_t page_count;
+
     size_t pml4_table_physical_address;
 
     size_t id;

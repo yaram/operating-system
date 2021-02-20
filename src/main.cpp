@@ -248,6 +248,14 @@ PageTableEntry kernel_pd_tables[kernel_pdp_count][page_table_length] {};
 __attribute__((aligned(page_size)))
 PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 
+[[noreturn]] inline void halt() {
+    printf("Halting...\n");
+
+    while(true) {
+        asm volatile("hlt");
+    }
+}
+
 [[noreturn]] static void enter_next_process() {
     ++current_process_iterator;
 
@@ -256,11 +264,9 @@ PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
     }
 
     if(current_process_iterator.current_bucket == nullptr) {
-        printf("No processes left, halting\n");
+        printf("No processes left\n");
 
-        while(true) {
-            asm volatile("hlt");
-        }
+        halt();
     }
 
     auto process = *current_process_iterator;
@@ -282,6 +288,9 @@ PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
     user_enter_thunk(&stack_frame_copy);
 }
 
+uint8_t *global_bitmap_entries;
+size_t global_bitmap_size;
+
 extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStackFrame *frame, size_t error_code) {
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, error_code, frame->instruction_pointer);
 
@@ -296,16 +305,96 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStac
 
         printf(" in process %zu\n", process->id);
 
+        for(size_t relative_page_index = 0; relative_page_index < process->page_count; relative_page_index += 1) {
+            auto page_index = process->logical_pages_start + relative_page_index;
+            auto pd_index = page_index / page_table_length;
+            auto pdp_index = pd_index / page_table_length;
+            auto pml4_index = pdp_index / page_table_length;
+
+            page_index %= page_table_length;
+            pd_index %= page_table_length;
+            pdp_index %= page_table_length;
+            pml4_index %= page_table_length;
+
+            auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
+
+            auto page_address = page_table[page_index].page_address;
+
+            auto bitmap_index = page_address / 8;
+            auto bitmap_sub_bit_index = page_address % 8;
+
+            global_bitmap_entries[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
+        }
+
+        auto pml4_table = (PageTableEntry*)map_memory(
+            process->pml4_table_physical_address,
+            sizeof(PageTableEntry[page_table_length]),
+            global_bitmap_entries,
+            global_bitmap_size
+        );
+        if(pml4_table == nullptr) {
+            printf("Unable to map memory for process tables\n");
+
+            halt();
+        }
+
+        size_t total_page_index = 0;
+        for(size_t pml4_index = 0; pml4_index < page_table_length; pml4_index += 1) {
+            if(pml4_table[pml4_index].present) {
+                auto pdp_table = (PageTableEntry*)map_memory(
+                    pml4_table[pml4_index].page_address * page_size,
+                    sizeof(PageTableEntry[page_table_length]),
+                    global_bitmap_entries,
+                    global_bitmap_size
+                );
+                if(pdp_table == nullptr) {
+                    printf("Unable to map memory for process tables\n");
+
+                    halt();
+                }
+
+                for(size_t pdp_index = 0; pdp_index < page_table_length; pdp_index += 1) {
+                    if(pdp_table[pdp_index].present) {
+                        auto pd_table = (PageTableEntry*)map_memory(
+                            pdp_table[pdp_index].page_address * page_size,
+                            sizeof(PageTableEntry[page_table_length]),
+                            global_bitmap_entries,
+                            global_bitmap_size
+                        );
+                        if(pd_table == nullptr) {
+                            printf("Unable to map memory for process tables\n");
+
+                            halt();
+                        }
+
+                        for(size_t pd_index = 0; pd_index < page_table_length; pd_index += 1) {
+                            if(!pd_table[pd_index].present) {
+                                auto page_index = pd_table[pd_index].page_address;
+
+                                auto bitmap_index = page_index / 8;
+                                auto bitmap_sub_bit_index = page_index % 8;
+
+                                global_bitmap_entries[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
+                            }
+                        }
+
+                        unmap_and_deallocate_memory(pd_table, sizeof(PageTableEntry[page_table_length]), global_bitmap_entries, global_bitmap_size);
+                    }
+                }
+
+                unmap_and_deallocate_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), global_bitmap_entries, global_bitmap_size);
+            }
+        }
+
+        unmap_and_deallocate_memory(pml4_table, sizeof(PageTableEntry[page_table_length]), global_bitmap_entries, global_bitmap_size);
+
         current_process_iterator.current_bucket->occupied[current_process_iterator.current_sub_index] = false;
 
         enter_next_process();
     } else {
         printf(" in kernel\n");
 
-        printf("Halting...\n");
-        while(true) {
-            asm volatile("hlt");
-        }
+        halt();
     }
 }
 
@@ -543,6 +632,9 @@ static bool create_process_from_elf(
         return false;
     }
 
+    process->logical_pages_start = process_user_pages_start;
+    process->page_count = process_page_count;
+
     size_t process_kernel_pages_start;
     if(!find_free_logical_pages(process_page_count, &process_kernel_pages_start)) {
         printf("Error: Unable to find unoccupied kernel memory of size %zu for process %zu\n", elf_context.memsz, process->id);
@@ -662,9 +754,6 @@ static bool create_process_from_elf(
     *result_process_iterator = process_iterator;
     return true;
 }
-
-uint8_t *global_bitmap_entries;
-size_t global_bitmap_size;
 
 extern "C" void syscall_thunk();
 
@@ -1255,14 +1344,6 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     ProcessBucket::Iterator process_iterator;
     if(!create_process_from_elf(user_mode_test, bitmap_entries, bitmap_size, &process, &process_iterator)) {
         return;
-    }
-
-    {
-        Process *process;
-        ProcessBucket::Iterator process_iterator;
-        if(!create_process_from_elf(user_mode_test, bitmap_entries, bitmap_size, &process, &process_iterator)) {
-            return;
-        }
     }
 
     current_process_iterator = begin(processes);
