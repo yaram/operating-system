@@ -1269,20 +1269,24 @@ void deallocate(void *pointer) {
 }
 
 extern "C" void *memset(void *destination, int value, size_t count) {
+    auto temp_destination = destination;
+
     asm volatile(
         "rep stosb"
-        :
-        : "D"(destination), "a"((uint8_t)value), "c"(count)
+        : "=D"(temp_destination), "=c"(count)
+        : "D"(temp_destination), "a"((uint8_t)value), "c"(count)
     );
 
     return destination;
 }
 
 extern "C" void *memcpy(void *destination, const void *source, size_t count) {
+    auto temp_destination = destination;
+
     asm volatile(
         "rep movsb"
-        :
-        : "S"(source), "D"(destination), "c"(count)
+        : "=S"(source), "=D"(temp_destination), "=c"(count)
+        : "S"(source), "D"(temp_destination), "c"(count)
     );
 
     return destination;
