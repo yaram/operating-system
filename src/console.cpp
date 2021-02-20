@@ -11,7 +11,7 @@ uint32_t column = 0;
 uint32_t line = 0;
 
 static void out(uint16_t port, uint8_t value) {
-    __asm volatile(
+    asm volatile(
         "out %%al, %%dx"
         :
         : "d"(port), "a"(value)

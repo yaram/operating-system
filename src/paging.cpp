@@ -297,7 +297,7 @@ bool set_page(
         pml4_table[pml4_index].user_mode_allowed = true;
         pml4_table[pml4_index].page_address = physical_page_index;
 
-        __asm volatile(
+        asm volatile(
             "invlpg (%0)"
             :
             : "D"(pdp_table)
@@ -325,7 +325,7 @@ bool set_page(
         pdp_table[pdp_index].user_mode_allowed = true;
         pdp_table[pdp_index].page_address = physical_page_index;
 
-        __asm volatile(
+        asm volatile(
             "invlpg (%0)"
             :
             : "D"(pd_table)
@@ -353,7 +353,7 @@ bool set_page(
         pd_table[pd_index].user_mode_allowed = true;
         pd_table[pd_index].page_address = physical_page_index;
 
-        __asm volatile(
+        asm volatile(
             "invlpg (%0)"
             :
             : "D"(page_table)
@@ -366,7 +366,7 @@ bool set_page(
     page_table[page_index].write_allowed = true;
     page_table[page_index].page_address = physical_page_index;
 
-    __asm volatile(
+    asm volatile(
         "invlpg (%0)"
         :
         : "D"(logical_page_index * page_size)
@@ -421,7 +421,7 @@ bool map_pages(
             pml4_table[pml4_index].user_mode_allowed = true;
             pml4_table[pml4_index].page_address = physical_page_index;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(pdp_table)
@@ -449,7 +449,7 @@ bool map_pages(
             pdp_table[pdp_index].user_mode_allowed = true;
             pdp_table[pdp_index].page_address = physical_page_index;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(pd_table)
@@ -477,7 +477,7 @@ bool map_pages(
             pd_table[pd_index].user_mode_allowed = true;
             pd_table[pd_index].page_address = physical_page_index;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(page_table)
@@ -490,7 +490,7 @@ bool map_pages(
         page_table[page_index].write_allowed = true;
         page_table[page_index].page_address = physical_pages_start + relative_page_index;
 
-        __asm volatile(
+        asm volatile(
             "invlpg (%0)"
             :
             : "D"((*logical_pages_start + relative_page_index) * page_size)
@@ -519,7 +519,7 @@ void unmap_pages(
 
         page_table[page_index].present = false;
 
-        __asm volatile(
+        asm volatile(
             "invlpg (%0)"
             :
             : "D"((logical_pages_start + relative_page_index) * page_size)
@@ -572,7 +572,7 @@ bool map_and_allocate_pages(
             pml4_table[pml4_index].user_mode_allowed = true;
             pml4_table[pml4_index].page_address = physical_page_index;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(pdp_table)
@@ -600,7 +600,7 @@ bool map_and_allocate_pages(
             pdp_table[pdp_index].user_mode_allowed = true;
             pdp_table[pdp_index].page_address = physical_page_index;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(pd_table)
@@ -628,7 +628,7 @@ bool map_and_allocate_pages(
             pd_table[pd_index].user_mode_allowed = true;
             pd_table[pd_index].page_address = physical_page_index;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(page_table)
@@ -652,7 +652,7 @@ bool map_and_allocate_pages(
         page_table[page_index].write_allowed = true;
         page_table[page_index].page_address = physical_page_index;
 
-        __asm volatile(
+        asm volatile(
             "invlpg (%0)"
             :
             : "D"((*logical_pages_start + relative_page_index) * page_size)
@@ -690,7 +690,7 @@ void unmap_and_deallocate_pages(
 
         page_table[page_index].present = false;
 
-        __asm volatile(
+        asm volatile(
             "invlpg (%0)"
             :
             : "D"((logical_pages_start + relative_page_index) * page_size)

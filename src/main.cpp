@@ -206,7 +206,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStac
     printf("EXCEPTION 0x%X(0x%X) AT %p\n", index, error_code, frame->instruction_pointer);
 
     while(true) {
-        __asm volatile("hlt");
+        asm volatile("hlt");
     }
 }
 
@@ -255,7 +255,7 @@ __attribute__((aligned(page_size)))
 PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 
 extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *frame) {
-    __asm volatile(
+    asm volatile(
         "mov %0, %%cr3"
         :
         : "D"(&kernel_pml4_table)
@@ -281,7 +281,7 @@ extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *fram
     // Send the End of Interrupt signal
     apic_registers[0x0B0 / 4] = 0;
 
-    __asm volatile(
+    asm volatile(
         "mov %0, %%cr3"
         :
         : "D"(process->pml4_table_physical_address)
@@ -636,7 +636,7 @@ size_t global_bitmap_size;
 extern "C" void syscall_thunk();
 
 extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
-    __asm volatile(
+    asm volatile(
         "mov %0, %%cr3"
         :
         : "D"(&kernel_pml4_table)
@@ -656,7 +656,7 @@ extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
         printf("Created new process %zu\n", new_process->id);
     }
 
-    __asm volatile(
+    asm volatile(
         "mov %0, %%cr3"
         :
         : "D"(process->pml4_table_physical_address)
@@ -774,7 +774,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 
     clear_console();
 
-    __asm volatile(
+    asm volatile(
         // Load GDT
         "lgdt (%0)\n"
         // Load data segments
@@ -798,7 +798,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
         : "ax"
     );
 
-    __asm volatile(
+    asm volatile(
         // Load IDT
         "lidt (%0)\n"
         // Disable PIC
@@ -877,7 +877,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     kernel_pml4_table[page_table_length - 1].write_allowed = true;
     kernel_pml4_table[page_table_length - 1].page_address = (size_t)kernel_pml4_table / page_size;
 
-    __asm volatile(
+    asm volatile(
         "mov %0, %%cr3"
         :
         : "D"(&kernel_pml4_table)
@@ -957,7 +957,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
             pml4_table[pml4_index].user_mode_allowed = true;
             pml4_table[pml4_index].page_address = physical_pages_start;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(pdp_table)
@@ -977,7 +977,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
             pdp_table[pdp_index].user_mode_allowed = true;
             pdp_table[pdp_index].page_address = physical_pages_start;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(pd_table)
@@ -997,7 +997,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
             pd_table[pd_index].user_mode_allowed = true;
             pd_table[pd_index].page_address = physical_pages_start;
 
-            __asm volatile(
+            asm volatile(
                 "invlpg (%0)"
                 :
                 : "D"(page_table)
@@ -1010,7 +1010,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
         page_table[page_index].write_allowed = true;
         page_table[page_index].page_address = bitmap_physical_pages_start + relative_page_index;
 
-        __asm volatile(
+        asm volatile(
             "invlpg (%0)"
             :
             : "D"((kernel_pages_end + relative_page_index) * page_size)
@@ -1166,7 +1166,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     apic_registers[0x370 / 4] |= 1 << 16;
 
     // Globally enable APICs
-    __asm volatile(
+    asm volatile(
         "mov $0x1B, %%ecx\n" // IA32_APIC_BASE MSR
         "rdmsr\n"
         "or $(1 << 11), %%eax\n"
@@ -1187,7 +1187,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 
     // Set up syscall/sysret instructions
 
-    __asm volatile(
+    asm volatile(
         "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
         "rdmsr\n"
         "or $1, %%eax\n"
@@ -1197,19 +1197,19 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
         : "edx"
     );
 
-    __asm volatile(
+    asm volatile(
         "wrmsr"
         :
         : "a"((uint32_t)-1), "d"((uint32_t)-1), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
     );
 
-    __asm volatile(
+    asm volatile(
         "wrmsr"
         :
         : "a"((uint32_t)(size_t)syscall_thunk), "d"((uint32_t)((size_t)syscall_thunk >> 32)), "c"((uint32_t)0xC0000082) // IA32_LSTAR MSR
     );
 
-    __asm volatile(
+    asm volatile(
         "wrmsr"
         :
         : "a"((uint32_t)0), "d"((uint32_t)0x10 << 16 | (uint32_t)0x08), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
@@ -1239,7 +1239,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     // Set timer value
     apic_registers[0x380 / 4] = preempt_time;
 
-    __asm volatile(
+    asm volatile(
         "mov %0, %%cr3"
         :
         : "D"(process->pml4_table_physical_address)
@@ -1269,7 +1269,7 @@ void deallocate(void *pointer) {
 }
 
 extern "C" void *memset(void *destination, int value, size_t count) {
-    __asm volatile(
+    asm volatile(
         "rep stosb"
         :
         : "D"(destination), "a"((uint8_t)value), "c"(count)
@@ -1279,7 +1279,7 @@ extern "C" void *memset(void *destination, int value, size_t count) {
 }
 
 extern "C" void *memcpy(void *destination, const void *source, size_t count) {
-    __asm volatile(
+    asm volatile(
         "rep movsb"
         :
         : "S"(source), "D"(destination), "c"(count)
