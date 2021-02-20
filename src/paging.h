@@ -102,11 +102,18 @@ void unmap_pages(
     size_t page_count
 );
 
-bool map_free_pages(
+bool map_and_allocate_pages(
     size_t page_count,
     uint8_t *bitmap_entries,
     size_t bitmap_size,
     size_t *logical_pages_start
+);
+
+void unmap_and_deallocate_pages(
+    size_t logical_pages_start,
+    size_t page_count,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
 );
 
 void *map_memory(
@@ -121,7 +128,14 @@ void unmap_memory(
     size_t size
 );
 
-void *map_free_memory(
+void *map_and_allocate_memory(
+    size_t size,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+);
+
+void unmap_and_deallocate_memory(
+    void *logical_memory_start,
     size_t size,
     uint8_t *bitmap_entries,
     size_t bitmap_size

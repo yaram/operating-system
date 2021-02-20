@@ -527,7 +527,7 @@ void unmap_pages(
     }
 }
 
-bool map_free_pages(
+bool map_and_allocate_pages(
     size_t page_count,
     uint8_t *bitmap_entries,
     size_t bitmap_size,
@@ -662,6 +662,42 @@ bool map_free_pages(
     return true;
 }
 
+void unmap_and_deallocate_pages(
+    size_t logical_pages_start,
+    size_t page_count,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+) {
+    for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
+        auto page_index = logical_pages_start + relative_page_index;
+        auto pd_index = page_index / page_table_length;
+        auto pdp_index = pd_index / page_table_length;
+        auto pml4_index = pdp_index / page_table_length;
+
+        page_index %= page_table_length;
+        pd_index %= page_table_length;
+        pdp_index %= page_table_length;
+        pml4_index %= page_table_length;
+
+        auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
+
+        auto page_address = page_table[page_index].page_address;
+
+        auto bitmap_index = page_address / 8;
+        auto bitmap_sub_bit_index = page_address % 8;
+
+        bitmap_entries[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
+
+        page_table[page_index].present = false;
+
+        __asm volatile(
+            "invlpg (%0)"
+            :
+            : "D"((logical_pages_start + relative_page_index) * page_size)
+        );
+    }
+}
+
 void *map_memory(
     size_t physical_memory_start,
     size_t size,
@@ -695,7 +731,7 @@ void unmap_memory(
     return unmap_pages(logical_pages_start, page_count);
 }
 
-void *map_free_memory(
+void *map_and_allocate_memory(
     size_t size,
     uint8_t *bitmap_entries,
     size_t bitmap_size
@@ -703,7 +739,7 @@ void *map_free_memory(
     auto page_count = divide_round_up(size, page_size);
 
     size_t logical_pages_start;
-    if(!map_free_pages(
+    if(!map_and_allocate_pages(
         page_count,
         bitmap_entries,
         bitmap_size,
@@ -713,6 +749,18 @@ void *map_free_memory(
     }
 
     return (void*)(logical_pages_start * page_size);
+}
+
+void unmap_and_deallocate_memory(
+    void *logical_memory_start,
+    size_t size,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+) {
+    auto logical_pages_start = (size_t)logical_memory_start / page_size;
+    auto page_count = divide_round_up(size, page_size);
+
+    unmap_and_deallocate_pages(logical_pages_start, page_count, bitmap_entries, bitmap_size);
 }
 
 bool find_free_logical_pages(
@@ -877,8 +925,6 @@ bool find_free_logical_pages(
     *logical_pages_start = free_page_range_start;
     return true;
 }
-
-#include "console.h"
 
 bool set_page(
     size_t logical_page_index,

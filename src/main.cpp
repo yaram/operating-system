@@ -412,7 +412,7 @@ static bool create_process_from_elf(
     auto process_iterator = find_unoccupied_bucket_slot(&processes);
 
     if(process_iterator.current_bucket == nullptr) {
-        auto new_bucket = (ProcessBucket::Bucket*)map_free_memory(sizeof(ProcessBucket::Bucket), bitmap_entries, bitmap_size);
+        auto new_bucket = (ProcessBucket::Bucket*)map_and_allocate_memory(sizeof(ProcessBucket::Bucket), bitmap_entries, bitmap_size);
         if(new_bucket == nullptr) {
             printf("Error: Unable to allocate new process bucket\n");
 
@@ -1249,11 +1249,23 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 }
 
 void *allocate(size_t size) {
-    return map_free_memory(size, global_bitmap_entries, global_bitmap_size);
+    auto base_pointer = map_and_allocate_memory(page_size + size, global_bitmap_entries, global_bitmap_size);
+
+    if(base_pointer == nullptr) {
+        return nullptr;
+    }
+
+    *(size_t*)base_pointer = size;
+
+    return (void*)((size_t)base_pointer + page_size);
 }
 
 void deallocate(void *pointer) {
+    auto base_pointer = (void*)((size_t)pointer - page_size);
 
+    auto size = *(size_t*)base_pointer;
+
+    unmap_and_deallocate_memory(base_pointer, page_size + size, global_bitmap_entries, global_bitmap_size);
 }
 
 extern "C" void *memset(void *destination, int value, size_t count) {
