@@ -48,6 +48,7 @@ def build_objects(objects, target, object_subdirectory, *extra_arguments):
             shutil.which('clang++' if source_path.endswith('.cpp') else 'clang'),
             '-target', target,
             '-march=x86-64',
+            '-std=gnu++11' if source_path.endswith('.cpp') else '-std=gnu11',
             '-ffreestanding',
             '-mno-mmx',
             '-mno-sse',
