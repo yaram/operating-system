@@ -1,8 +1,12 @@
 .extern stack_top
 .extern syscall_entrance
 
+.extern currently_in_process
+
 .globl syscall_thunk
 syscall_thunk:
+    movb $0, (currently_in_process)
+
     mov %rsp, %rax
 
     mov $stack_top, %rsp
@@ -56,5 +60,7 @@ syscall_thunk:
     add $8, %rsp
 
     mov %rax, %rsp
+
+    movb $1, (currently_in_process)
 
     sysretq

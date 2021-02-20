@@ -202,19 +202,13 @@ struct __attribute__((packed)) IDTDescriptor {
     uint64_t base;
 };
 
-extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStackFrame *frame, size_t error_code) {
-    printf("EXCEPTION 0x%X(0x%X) AT %p\n", index, error_code, frame->instruction_pointer);
-
-    while(true) {
-        asm volatile("hlt");
-    }
-}
-
 volatile uint32_t *apic_registers;
 
 extern "C" [[noreturn]] void  preempt_timer_thunk();
 
 extern "C" [[noreturn]] void user_enter_thunk(const ProcessStackFrame *frame);
+
+const uint32_t preempt_time = 0x100000;
 
 using ProcessBucket = BucketArray<Process, 4>;
 
@@ -222,7 +216,7 @@ ProcessBucket processes {};
 
 ProcessBucket::Iterator current_process_iterator;
 
-const uint32_t preempt_time = 0x100000;
+bool currently_in_process = false;
 
 const size_t kernel_memory_start = 0;
 const size_t kernel_memory_end = 0x800000;
@@ -254,21 +248,19 @@ PageTableEntry kernel_pd_tables[kernel_pdp_count][page_table_length] {};
 __attribute__((aligned(page_size)))
 PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 
-extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *frame) {
-    asm volatile(
-        "mov %0, %%cr3"
-        :
-        : "D"(&kernel_pml4_table)
-    );
-
-    auto old_process = *current_process_iterator;
-
-    old_process->frame = *frame;
-
+[[noreturn]] static void enter_next_process() {
     ++current_process_iterator;
 
     if(current_process_iterator.current_bucket == nullptr) {
         current_process_iterator = begin(processes);
+    }
+
+    if(current_process_iterator.current_bucket == nullptr) {
+        printf("No processes left, halting\n");
+
+        while(true) {
+            asm volatile("hlt");
+        }
     }
 
     auto process = *current_process_iterator;
@@ -288,6 +280,47 @@ extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *fram
     );
 
     user_enter_thunk(&stack_frame_copy);
+}
+
+extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStackFrame *frame, size_t error_code) {
+    printf("EXCEPTION 0x%X(0x%X) AT %p", index, error_code, frame->instruction_pointer);
+
+    if(currently_in_process) {
+        asm volatile(
+            "mov %0, %%cr3"
+            :
+            : "D"(&kernel_pml4_table)
+        );
+
+        auto process = *current_process_iterator;
+
+        printf(" in process %zu\n", process->id);
+
+        current_process_iterator.current_bucket->occupied[current_process_iterator.current_sub_index] = false;
+
+        enter_next_process();
+    } else {
+        printf(" in kernel\n");
+
+        printf("Halting...\n");
+        while(true) {
+            asm volatile("hlt");
+        }
+    }
+}
+
+extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *frame) {
+    asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&kernel_pml4_table)
+    );
+
+    auto old_process = *current_process_iterator;
+
+    old_process->frame = *frame;
+
+    enter_next_process();
 }
 
 __attribute((interrupt))

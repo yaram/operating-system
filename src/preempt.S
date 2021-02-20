@@ -2,6 +2,8 @@
 
 .globl preempt_timer_thunk
 preempt_timer_thunk:
+    movb $0, (currently_in_process)
+
     push %rbp
     push %r15
     push %r14
@@ -43,5 +45,7 @@ user_enter_thunk:
     pop %r14
     pop %r15
     pop %rbp
+
+    movb $1, (currently_in_process)
 
     iretq

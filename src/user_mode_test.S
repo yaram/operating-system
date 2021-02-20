@@ -3,5 +3,4 @@
 entry:
     syscall
 
-.loop:
-    jmp .loop
+    ud2

@@ -4,6 +4,7 @@
 .globl exception_handler_thunk_##index ;\
 exception_handler_thunk_##index: ;\
     cli ;\
+;\
     push %rbp ;\
     push %r15 ;\
     push %r14 ;\
@@ -24,30 +25,13 @@ exception_handler_thunk_##index: ;\
     lea 0x78(%rsp), %rsi ;\
     mov $0, %rdx ;\
 ;\
-    call exception_handler ;\
-;\
-    pop %rax ;\
-    pop %rbx ;\
-    pop %rcx ;\
-    pop %rdx ;\
-    pop %rsi ;\
-    pop %rdi ;\
-    pop %r8 ;\
-    pop %r9 ;\
-    pop %r10 ;\
-    pop %r11 ;\
-    pop %r12 ;\
-    pop %r13 ;\
-    pop %r14 ;\
-    pop %r15 ;\
-    pop %rbp ;\
-;\
-    iretq
+    call exception_handler
 
 #define exception_thunk_error_code(index) ;\
 .globl exception_handler_thunk_##index ;\
 exception_handler_thunk_##index: ;\
     cli ;\
+;\
     push %rbp ;\
     push %r15 ;\
     push %r14 ;\
@@ -68,26 +52,7 @@ exception_handler_thunk_##index: ;\
     lea 0x80(%rsp), %rsi ;\
     mov 0x78(%rsp), %rdx ;\
 ;\
-    call exception_handler ;\
-;\
-    pop %rax ;\
-    pop %rbx ;\
-    pop %rcx ;\
-    pop %rdx ;\
-    pop %rsi ;\
-    pop %rdi ;\
-    pop %r8 ;\
-    pop %r9 ;\
-    pop %r10 ;\
-    pop %r11 ;\
-    pop %r12 ;\
-    pop %r13 ;\
-    pop %r14 ;\
-    pop %r15 ;\
-    pop %rbp ;\
-    sub $4, %rsp;\
-;\
-    iretq ;\
+    call exception_handler
 
 exception_thunk(0)
 exception_thunk(1)
