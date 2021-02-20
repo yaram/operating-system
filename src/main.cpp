@@ -9,6 +9,7 @@ extern "C" {
 #include "elfload.h"
 #include "process.h"
 #include "memory.h"
+#include "bucket_array.h"
 
 #define divide_round_up(dividend, divisor) (((dividend) + (divisor) - 1) / (divisor))
 
@@ -215,9 +216,11 @@ extern "C" [[noreturn]] void  preempt_timer_thunk();
 
 extern "C" [[noreturn]] void user_enter_thunk(const ProcessStackFrame *frame);
 
-Process processes[process_count] {};
+using ProcessBucket = BucketArray<Process, 4>;
 
-size_t current_process_index = 0;
+ProcessBucket processes {};
+
+ProcessBucket::Iterator current_process_iterator;
 
 const uint32_t preempt_time = 0x100000;
 
@@ -258,12 +261,19 @@ extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *fram
         : "D"(&kernel_pml4_table)
     );
 
-    processes[current_process_index].frame = *frame;
+    auto old_process = *current_process_iterator;
 
-    current_process_index += 1;
-    current_process_index %= process_count;
+    old_process->frame = *frame;
 
-    auto stack_frame = &processes[current_process_index].frame;
+    ++current_process_iterator;
+
+    if(current_process_iterator.current_bucket == nullptr) {
+        current_process_iterator = begin(processes);
+    }
+
+    auto process = *current_process_iterator;
+
+    auto stack_frame_copy = process->frame;
 
     // Set timer value
     apic_registers[0x380 / 4] = preempt_time;
@@ -274,10 +284,10 @@ extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *fram
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&processes[current_process_index].pml4_table)
+        : "D"(process->pml4_table_physical_address)
     );
 
-    user_enter_thunk(stack_frame);
+    user_enter_thunk(&stack_frame_copy);
 }
 
 __attribute((interrupt))
@@ -378,8 +388,10 @@ IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt
 
 extern uint8_t user_mode_test[];
 
+uint8_t *current_elf_binary;
+
 static bool elf_read(el_ctx *context, void *destination, size_t length, size_t offset) {
-    memcpy(destination, &user_mode_test[offset], length);
+    memcpy(destination, &current_elf_binary[offset], length);
 
     return true;
 }
@@ -387,6 +399,239 @@ static bool elf_read(el_ctx *context, void *destination, size_t length, size_t o
 static void *elf_allocate(el_ctx *context, Elf_Addr physical_memory_start, Elf_Addr virtual_memory_start, Elf_Addr size) {
     return (void*)physical_memory_start;
 }
+
+size_t next_process_id = 0;
+
+static bool create_process_from_elf(
+    uint8_t *elf_binary,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    Process **result_processs,
+    ProcessBucket::Iterator *result_process_iterator
+) {
+    auto process_iterator = find_unoccupied_bucket_slot(&processes);
+
+    if(process_iterator.current_bucket == nullptr) {
+        auto new_bucket = (ProcessBucket::Bucket*)map_free_memory(sizeof(ProcessBucket::Bucket), bitmap_entries, bitmap_size);
+        if(new_bucket == nullptr) {
+            printf("Error: Unable to allocate new process bucket\n");
+
+            return false;
+        }
+
+        memset((void*)new_bucket, 0, sizeof(ProcessBucket::Bucket));
+
+        {
+            auto current_bucket = &processes.first_bucket;
+            while(current_bucket->next != nullptr) {
+                current_bucket = current_bucket->next;
+            }
+
+            current_bucket->next = new_bucket;
+        }
+
+        process_iterator = {
+            new_bucket,
+            0
+        };
+    }
+
+    process_iterator.current_bucket->occupied[process_iterator.current_sub_index] = true;
+
+    auto process = *process_iterator;
+
+    memset((void*)process, 0, sizeof(Process));
+
+    process->id = next_process_id;
+    next_process_id += 1;
+
+    size_t bitmap_index = 0;
+    size_t bitmap_sub_bit_index = 0;
+
+    size_t pml4_physical_page_index;
+    if(!allocate_next_physical_page(
+        &bitmap_index,
+        &bitmap_sub_bit_index,
+        bitmap_entries,
+        bitmap_size,
+        &pml4_physical_page_index
+    )) {
+        return false;
+    }
+
+    auto pml4_table = (PageTableEntry*)map_memory(
+        pml4_physical_page_index * page_size,
+        sizeof(PageTableEntry[page_table_length]),
+        bitmap_entries,
+        bitmap_size
+    );
+    if(pml4_table == nullptr) {
+        return false;
+    }
+
+    memset((void*)pml4_table, 0, sizeof(PageTableEntry[page_table_length]));
+
+    process->pml4_table_physical_address = pml4_physical_page_index * page_size;
+
+    current_elf_binary = elf_binary;
+
+    el_ctx elf_context {};
+    elf_context.pread = &elf_read;
+
+    {
+        auto status = el_init(&elf_context);
+        if(status != EL_OK) {
+            printf("Error: Unable to initialize elfloader (%d)\n", status);
+
+            return false;
+        }
+    }
+
+    for(size_t j = kernel_pages_start; j < kernel_pages_end; j += 1) {
+        if(!set_page(j, j, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
+            printf("Error: Unable to map kernel pages in user-space for process %zu\n", process->id);
+
+            return false;
+        }
+    }
+
+    auto process_page_count = divide_round_up(elf_context.memsz, page_size);
+
+    size_t process_user_pages_start;
+    if(!find_free_logical_pages(
+        process_page_count,
+        process->pml4_table_physical_address,
+        bitmap_entries,
+        bitmap_index,
+        &process_user_pages_start
+    )) {
+        printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", elf_context.memsz, process->id);
+
+        return false;
+    }
+
+    size_t process_kernel_pages_start;
+    if(!find_free_logical_pages(process_page_count, &process_kernel_pages_start)) {
+        printf("Error: Unable to find unoccupied kernel memory of size %zu for process %zu\n", elf_context.memsz, process->id);
+
+        return false;
+    }
+
+    for(size_t j = 0; j < process_page_count; j += 1) {
+        size_t physical_page_index;
+        if(!allocate_next_physical_page(
+            &bitmap_index,
+            &bitmap_sub_bit_index,
+            bitmap_entries,
+            bitmap_size,
+            &physical_page_index
+        )){
+            printf("Error: Unable to allocate page for process %zu\n", process->id);
+
+            return false;
+        }
+
+        // The order of these is IMPORTANT, otherwise the kernel pages will get overwritten!!!
+
+        if(!set_page(process_user_pages_start + j, physical_page_index, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
+            printf("Error: Unable to map user page for process %zu\n", process->id);
+
+            return false;
+        }
+
+        if(!set_page(process_kernel_pages_start + j, physical_page_index, bitmap_entries, bitmap_size)) {
+            printf("Error: Unable to map kernel page for process %zu\n", process->id);
+
+            return false;
+        }
+    }
+
+    {
+        auto status = el_init(&elf_context);
+        if(status != EL_OK) {
+            printf("Error: Unable to initialize elfloader (%d)\n", status);
+
+            return false;
+        }
+    }
+
+    elf_context.base_load_paddr = (Elf64_Addr)(process_kernel_pages_start * page_size);
+    elf_context.base_load_vaddr = (Elf64_Addr)(process_user_pages_start * page_size);
+
+    {
+        auto status = el_load(&elf_context, &elf_allocate);
+        if(status != EL_OK) {
+            printf("Error: Unable to load ELF binary (%d)\n", status);
+
+            return false;
+        }
+    }
+
+    {
+        auto status = el_relocate(&elf_context);
+        if(status != EL_OK) {
+            printf("Error: Unable to perform ELF relocations (%d)\n", status);
+
+            return false;
+        }
+    }
+
+    unmap_pages(process_kernel_pages_start, process_page_count);
+
+    const size_t process_stack_size = 4096;
+    const size_t process_stack_page_count = divide_round_up(process_stack_size, page_size);
+
+    size_t process_stack_pages_start;
+    if(!find_free_logical_pages(
+        process_stack_page_count,
+        process->pml4_table_physical_address,
+        bitmap_entries,
+        bitmap_index,
+        &process_stack_pages_start
+    )) {
+        printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", elf_context.memsz, process->id);
+
+        return false;
+    }
+
+    for(size_t j = 0; j < process_stack_page_count; j += 1) {
+        size_t physical_page_index;
+        if(!allocate_next_physical_page(
+            &bitmap_index,
+            &bitmap_sub_bit_index,
+            bitmap_entries,
+            bitmap_size,
+            &physical_page_index
+        )){
+            printf("Error: Unable to allocate page for process %zu\n", process->id);
+
+            return false;
+        }
+
+        if(!set_page(process_stack_pages_start + j, physical_page_index, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
+            printf("Error: Unable to map user page for process %zu\n", process->id);
+
+            return false;
+        }
+    }
+
+    auto stack_top = (void*)(process_stack_pages_start * page_size + process_stack_size);
+
+    auto entry_point = (void*)(process_user_pages_start * page_size + (size_t)elf_context.ehdr.e_entry);
+
+    process->frame.interrupt_frame.instruction_pointer = entry_point;
+    process->frame.interrupt_frame.code_segment = 0x23;
+    process->frame.interrupt_frame.cpu_flags = 1 << 9;
+    process->frame.interrupt_frame.stack_pointer = stack_top;
+    process->frame.interrupt_frame.stack_segment = 0x1B;
+
+    *result_processs = process;
+    *result_process_iterator = process_iterator;
+    return true;
+}
+
+uint8_t *global_bitmap_entries;
+size_t global_bitmap_size;
 
 extern "C" void syscall_thunk();
 
@@ -397,12 +642,24 @@ extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
         : "D"(&kernel_pml4_table)
     );
 
-    printf("Syscall at %p from process %zu\n", stack_frame->interrupt_frame.instruction_pointer, current_process_index);
+    auto process = *current_process_iterator;
+
+    printf("Syscall at %p from process %zu\n", stack_frame->interrupt_frame.instruction_pointer, process->id);
+
+    if(next_process_id <= 4) {
+        printf("Creating new process..\n");
+
+        Process *new_process;
+        ProcessBucket::Iterator new_process_iterator;
+        create_process_from_elf(user_mode_test, global_bitmap_entries, global_bitmap_size, &new_process, &new_process_iterator);
+
+        printf("Created new process %zu\n", new_process->id);
+    }
 
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&processes[current_process_index].pml4_table)
+        : "D"(process->pml4_table_physical_address)
     );
 }
 
@@ -507,9 +764,6 @@ static void deallocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count)
         }
     }
 }
-
-uint8_t *global_bitmap_entries;
-size_t global_bitmap_size;
 
 extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t bootstrap_memory_map_size) {
     auto initializer_count = ((size_t)init_array_end - (size_t)init_array_start) / sizeof(void (*)());
@@ -962,164 +1216,25 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
         // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
     );
 
-    printf("Loading user mode processes...\n");
+    printf("Loading init process...\n");
 
-    for(size_t i = 0; i < process_count; i += 1) {
-        el_ctx elf_context {};
-        elf_context.pread = &elf_read;
-
-        {
-            auto status = el_init(&elf_context);
-            if(status != EL_OK) {
-                printf("Error: Unable to initialize elfloader (%d)\n", status);
-
-                return;
-            }
-        }
-
-        size_t bitmap_index = 0;
-        size_t bitmap_sub_bit_index = 0;
-
-        for(size_t j = kernel_pages_start; j < kernel_pages_end; j += 1) {
-            if(!set_page(j, j, processes[i].pml4_table, bitmap_entries, bitmap_size)) {
-                printf("Error: Unable to map kernel pages in user-space for process %zu\n", i);
-
-                return;
-            }
-        }
-
-        auto process_page_count = divide_round_up(elf_context.memsz, page_size);
-
-        size_t process_user_pages_start;
-        if(!find_free_logical_pages(
-            process_page_count,
-            processes[i].pml4_table,
-            bitmap_entries,
-            bitmap_index,
-            &process_user_pages_start
-        )) {
-            printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", elf_context.memsz, i);
-
-            return;
-        }
-
-        size_t process_kernel_pages_start;
-        if(!find_free_logical_pages(process_page_count, &process_kernel_pages_start)) {
-            printf("Error: Unable to find unoccupied kernel memory of size %zu for process %zu\n", elf_context.memsz, i);
-
-            return;
-        }
-
-        for(size_t j = 0; j < process_page_count; j += 1) {
-            size_t physical_page_index;
-            if(!allocate_next_physical_page(
-                &bitmap_index,
-                &bitmap_sub_bit_index,
-                bitmap_entries,
-                bitmap_size,
-                &physical_page_index
-            )){
-                printf("Error: Unable to allocate page for process %zu\n", i);
-
-                return;
-            }
-
-            // The order of these is IMPORTANT, otherwise the kernel pages will get overwritten!!!
-
-            if(!set_page(process_user_pages_start + j, physical_page_index, processes[i].pml4_table, bitmap_entries, bitmap_size)) {
-                printf("Error: Unable to map user page for process %zu\n", i);
-
-                return;
-            }
-
-            if(!set_page(process_kernel_pages_start + j, physical_page_index, bitmap_entries, bitmap_size)) {
-                printf("Error: Unable to map kernel page for process %zu\n", i);
-
-                return;
-            }
-        }
-
-        {
-            auto status = el_init(&elf_context);
-            if(status != EL_OK) {
-                printf("Error: Unable to initialize elfloader (%d)\n", status);
-
-                return;
-            }
-        }
-
-        elf_context.base_load_paddr = (Elf64_Addr)(process_kernel_pages_start * page_size);
-        elf_context.base_load_vaddr = (Elf64_Addr)(process_user_pages_start * page_size);
-
-        {
-            auto status = el_load(&elf_context, &elf_allocate);
-            if(status != EL_OK) {
-                printf("Error: Unable to load ELF binary (%d)\n", status);
-
-                return;
-            }
-        }
-
-        {
-            auto status = el_relocate(&elf_context);
-            if(status != EL_OK) {
-                printf("Error: Unable to perform ELF relocations (%d)\n", status);
-
-                return;
-            }
-        }
-
-        unmap_pages(process_kernel_pages_start, process_page_count);
-
-        const size_t process_stack_size = 4096;
-        const size_t process_stack_page_count = divide_round_up(process_stack_size, page_size);
-
-        size_t process_stack_pages_start;
-        if(!find_free_logical_pages(
-            process_stack_page_count,
-            processes[i].pml4_table,
-            bitmap_entries,
-            bitmap_index,
-            &process_stack_pages_start
-        )) {
-            printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", elf_context.memsz, i);
-
-            return;
-        }
-
-        for(size_t j = 0; j < process_stack_page_count; j += 1) {
-            size_t physical_page_index;
-            if(!allocate_next_physical_page(
-                &bitmap_index,
-                &bitmap_sub_bit_index,
-                bitmap_entries,
-                bitmap_size,
-                &physical_page_index
-            )){
-                printf("Error: Unable to allocate page for process %zu\n", i);
-
-                return;
-            }
-
-            if(!set_page(process_stack_pages_start + j, physical_page_index, processes[i].pml4_table, bitmap_entries, bitmap_size)) {
-                printf("Error: Unable to map user page for process %zu\n", i);
-
-                return;
-            }
-        }
-
-        auto stack_top = (void*)(process_stack_pages_start * page_size + process_stack_size);
-
-        auto entry_point = (void*)(process_user_pages_start * page_size + (size_t)elf_context.ehdr.e_entry);
-
-        processes[i].frame.interrupt_frame.instruction_pointer = entry_point;
-        processes[i].frame.interrupt_frame.code_segment = 0x23;
-        processes[i].frame.interrupt_frame.cpu_flags = 1 << 9;
-        processes[i].frame.interrupt_frame.stack_pointer = stack_top;
-        processes[i].frame.interrupt_frame.stack_segment = 0x1B;
+    Process *process;
+    ProcessBucket::Iterator process_iterator;
+    if(!create_process_from_elf(user_mode_test, bitmap_entries, bitmap_size, &process, &process_iterator)) {
+        return;
     }
 
-    current_process_index = 0;
+    {
+        Process *process;
+        ProcessBucket::Iterator process_iterator;
+        if(!create_process_from_elf(user_mode_test, bitmap_entries, bitmap_size, &process, &process_iterator)) {
+            return;
+        }
+    }
+
+    current_process_iterator = begin(processes);
+
+    auto stack_frame_copy = process->frame;
 
     // Set timer value
     apic_registers[0x380 / 4] = preempt_time;
@@ -1127,10 +1242,10 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     __asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(&processes[0].pml4_table)
+        : "D"(process->pml4_table_physical_address)
     );
 
-    user_enter_thunk(&processes[0].frame);
+    user_enter_thunk(&stack_frame_copy);
 }
 
 void *allocate(size_t size) {

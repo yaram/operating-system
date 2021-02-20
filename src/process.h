@@ -1,7 +1,6 @@
 #pragma once
 
 #include <stdint.h>
-#include "paging.h"
 #include "interrupts.h"
 
 struct __attribute__((packed)) ProcessStackFrame {
@@ -25,10 +24,9 @@ struct __attribute__((packed)) ProcessStackFrame {
 };
 
 struct Process {
-    __attribute__((aligned(page_size)))
-    PageTableEntry pml4_table[page_table_length];
+    size_t pml4_table_physical_address;
+
+    size_t id;
 
     ProcessStackFrame frame;
 };
-
-const size_t process_count = 2;

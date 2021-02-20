@@ -131,7 +131,7 @@ void *map_free_memory(
 
 bool find_free_logical_pages(
     size_t page_count,
-    PageTableEntry pml4_table[page_table_length],
+    size_t pml4_table_physical_address,
     uint8_t *bitmap_entries,
     size_t bitmap_size,
     size_t *logical_pages_start
@@ -140,7 +140,7 @@ bool find_free_logical_pages(
 bool set_page(
     size_t logical_page_index,
     size_t physical_page_index,
-    PageTableEntry pml4_table[page_table_length],
+    size_t pml4_table_physical_address,
     uint8_t *bitmap_entries,
     size_t bitmap_size
 );

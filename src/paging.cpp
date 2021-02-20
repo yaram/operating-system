@@ -717,7 +717,7 @@ void *map_free_memory(
 
 bool find_free_logical_pages(
     size_t page_count,
-    PageTableEntry pml4_table[page_table_length],
+    size_t pml4_table_physical_address,
     uint8_t *bitmap_entries,
     size_t bitmap_size,
     size_t *logical_pages_start
@@ -725,6 +725,16 @@ bool find_free_logical_pages(
     auto last_full = true;
     auto found = false;
     size_t free_page_range_start;
+
+    auto pml4_table = (PageTableEntry*)map_memory(
+        pml4_table_physical_address,
+        sizeof(PageTableEntry[page_table_length]),
+        bitmap_entries,
+        bitmap_size
+    );
+    if(pml4_table == nullptr) {
+        return false;
+    }
 
     size_t total_page_index = 0;
     for(size_t pml4_index = 0; pml4_index < page_table_length; pml4_index += 1) {
@@ -873,7 +883,7 @@ bool find_free_logical_pages(
 bool set_page(
     size_t logical_page_index,
     size_t physical_page_index,
-    PageTableEntry pml4_table[page_table_length],
+    size_t pml4_table_physical_address,
     uint8_t *bitmap_entries,
     size_t bitmap_size
 ) {
@@ -889,6 +899,16 @@ bool set_page(
     pd_index %= page_table_length;
     pdp_index %= page_table_length;
     pml4_index %= page_table_length;
+
+    auto pml4_table = (PageTableEntry*)map_memory(
+        pml4_table_physical_address,
+        sizeof(PageTableEntry[page_table_length]),
+        bitmap_entries,
+        bitmap_size
+    );
+    if(pml4_table == nullptr) {
+        return false;
+    }
 
     PageTableEntry *pdp_table;
     if(pml4_table[pml4_index].present) {
