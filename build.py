@@ -13,9 +13,21 @@ configuration = 'debug'
 if len(sys.argv) >= 2:
     configuration = sys.argv[1]
 
-    if configuration != 'debug' and configuration != 'release':
-        print('Unknown configuration \'{}\''.format(configuration), file=sys.stderr)
-        exit(1)
+optimize = None
+debug_info = None
+
+if configuration.lower() == 'debug':
+    optimize = False
+    debug_info = True
+elif configuration.lower() == 'release':
+    optimize = True
+    debug_info = False
+elif configuration.lower() == "relwithdebinfo":
+    optimize = True
+    debug_info = True
+else:
+    print('Unknown configuration \'{}\''.format(configuration), file=sys.stderr)
+    exit(1)
 
 parent_directory = os.path.dirname(os.path.realpath(__file__))
 
@@ -40,8 +52,8 @@ def build_objects(objects, target, object_subdirectory, *extra_arguments):
             '-mno-mmx',
             '-mno-sse',
             '-mno-sse2',
-            *(['-g'] if configuration == 'debug' else []),
-            *(['-O2'] if configuration == 'release' else []),
+            *(['-g'] if debug_info else []),
+            *(['-O2'] if optimize else []),
             *extra_arguments,
             '-c',
             '-o', os.path.join(object_directory, object_subdirectory_full, object_name),
