@@ -8,8 +8,6 @@ struct Bucket {
 
     bool occupied[N];
 
-    size_t physical_address;
-
     Bucket<T, N> *next;
 };
 

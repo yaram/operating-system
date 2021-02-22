@@ -758,7 +758,9 @@ void unmap_and_deallocate_memory(
     size_t bitmap_size
 ) {
     auto logical_pages_start = (size_t)logical_memory_start / page_size;
-    auto page_count = divide_round_up(size, page_size);
+    auto logical_pages_end = divide_round_up((size_t)logical_memory_start + size, page_size);
+
+    auto page_count = logical_pages_end - logical_pages_start;
 
     unmap_and_deallocate_pages(logical_pages_start, page_count, bitmap_entries, bitmap_size);
 }

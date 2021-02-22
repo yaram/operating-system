@@ -15,6 +15,22 @@ extern "C" {
 
 #define do_ranges_intersect(a_start, a_end, b_start, b_end) (!((a_end) <= (b_start) || (b_end) <= (a_start)))
 
+inline void print_time(const char *name) {
+    uint32_t time_low;
+    uint32_t time_high;
+    asm volatile(
+        "cpuid\n" // Using CPUID instruction to serialize instruction execution
+        "rdtsc"
+        : "=a"(time_low), "=d"(time_high)
+        :
+        : "ebx", "ecx"
+    );
+
+    auto time = (size_t)time_low | (size_t)time_high << 32;
+
+    printf("Time at %s: %zu\n", name, time);
+}
+
 struct MCFGTable {
     ACPI_TABLE_MCFG preamble;
 
@@ -294,7 +310,13 @@ size_t global_bitmap_size;
 extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStackFrame *frame, size_t error_code) {
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, error_code, frame->instruction_pointer);
 
-    if(currently_in_process) {
+    if(
+        currently_in_process &&
+        (
+            (size_t)frame->instruction_pointer < kernel_memory_start ||
+            (size_t)frame->instruction_pointer >= kernel_memory_end
+        )
+    ) {
         asm volatile(
             "mov %0, %%cr3"
             :
@@ -304,89 +326,6 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStac
         auto process = *current_process_iterator;
 
         printf(" in process %zu\n", process->id);
-
-        for(size_t relative_page_index = 0; relative_page_index < process->page_count; relative_page_index += 1) {
-            auto page_index = process->logical_pages_start + relative_page_index;
-            auto pd_index = page_index / page_table_length;
-            auto pdp_index = pd_index / page_table_length;
-            auto pml4_index = pdp_index / page_table_length;
-
-            page_index %= page_table_length;
-            pd_index %= page_table_length;
-            pdp_index %= page_table_length;
-            pml4_index %= page_table_length;
-
-            auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
-
-            auto page_address = page_table[page_index].page_address;
-
-            auto bitmap_index = page_address / 8;
-            auto bitmap_sub_bit_index = page_address % 8;
-
-            global_bitmap_entries[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
-        }
-
-        auto pml4_table = (PageTableEntry*)map_memory(
-            process->pml4_table_physical_address,
-            sizeof(PageTableEntry[page_table_length]),
-            global_bitmap_entries,
-            global_bitmap_size
-        );
-        if(pml4_table == nullptr) {
-            printf("Unable to map memory for process tables\n");
-
-            halt();
-        }
-
-        size_t total_page_index = 0;
-        for(size_t pml4_index = 0; pml4_index < page_table_length; pml4_index += 1) {
-            if(pml4_table[pml4_index].present) {
-                auto pdp_table = (PageTableEntry*)map_memory(
-                    pml4_table[pml4_index].page_address * page_size,
-                    sizeof(PageTableEntry[page_table_length]),
-                    global_bitmap_entries,
-                    global_bitmap_size
-                );
-                if(pdp_table == nullptr) {
-                    printf("Unable to map memory for process tables\n");
-
-                    halt();
-                }
-
-                for(size_t pdp_index = 0; pdp_index < page_table_length; pdp_index += 1) {
-                    if(pdp_table[pdp_index].present) {
-                        auto pd_table = (PageTableEntry*)map_memory(
-                            pdp_table[pdp_index].page_address * page_size,
-                            sizeof(PageTableEntry[page_table_length]),
-                            global_bitmap_entries,
-                            global_bitmap_size
-                        );
-                        if(pd_table == nullptr) {
-                            printf("Unable to map memory for process tables\n");
-
-                            halt();
-                        }
-
-                        for(size_t pd_index = 0; pd_index < page_table_length; pd_index += 1) {
-                            if(!pd_table[pd_index].present) {
-                                auto page_index = pd_table[pd_index].page_address;
-
-                                auto bitmap_index = page_index / 8;
-                                auto bitmap_sub_bit_index = page_index % 8;
-
-                                global_bitmap_entries[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
-                            }
-                        }
-
-                        unmap_and_deallocate_memory(pd_table, sizeof(PageTableEntry[page_table_length]), global_bitmap_entries, global_bitmap_size);
-                    }
-                }
-
-                unmap_and_deallocate_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), global_bitmap_entries, global_bitmap_size);
-            }
-        }
-
-        unmap_and_deallocate_memory(pml4_table, sizeof(PageTableEntry[page_table_length]), global_bitmap_entries, global_bitmap_size);
 
         current_process_iterator.current_bucket->occupied[current_process_iterator.current_sub_index] = false;
 
@@ -524,6 +463,81 @@ static void *elf_allocate(el_ctx *context, Elf_Addr physical_memory_start, Elf_A
 
 size_t next_process_id = 0;
 
+static bool map_and_maybe_allocate_table(
+    size_t *current_parent_index,
+    PageTableEntry **current_table,
+    PageTableEntry *parent_table,
+    size_t parent_index,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    size_t *bitmap_index,
+    size_t *bitmap_sub_bit_index
+) {
+    if(parent_table[parent_index].present) {
+        if(*current_table == nullptr || parent_index != *current_parent_index) {
+            if(*current_table != nullptr) {
+                unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
+
+                *current_table = nullptr;
+            }
+
+            size_t logical_page_index;
+            if(!map_pages(
+                parent_table[parent_index].page_address,
+                1,
+                bitmap_entries,
+                bitmap_size,
+                &logical_page_index
+            )) {
+                return false;
+            }
+
+            *current_table = (PageTableEntry*)(logical_page_index * page_size);
+            *current_parent_index = parent_index;
+        }
+    } else {
+        if(*current_table != nullptr) {
+            unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
+
+            *current_table = nullptr;
+        }
+
+        size_t physical_page_index;
+        if(!allocate_next_physical_page(
+            bitmap_index,
+            bitmap_sub_bit_index,
+            bitmap_entries,
+            bitmap_size,
+            &physical_page_index
+        )) {
+            return false;
+        }
+
+        size_t logical_page_index;
+        if(!map_pages(
+            physical_page_index,
+            1,
+            bitmap_entries,
+            bitmap_size,
+            &logical_page_index
+        )) {
+            return false;
+        }
+
+        *current_table = (PageTableEntry*)(logical_page_index * page_size);
+        *current_parent_index = parent_index;
+
+        memset(*current_table, 0, sizeof(PageTableEntry[page_table_length]));
+
+        parent_table[parent_index].present = true;
+        parent_table[parent_index].write_allowed = true;
+        parent_table[parent_index].user_mode_allowed = true;
+        parent_table[parent_index].page_address = physical_page_index;
+    }
+
+    return true;
+}
+
 static bool create_process_from_elf(
     uint8_t *elf_binary,
     uint8_t *bitmap_entries,
@@ -581,18 +595,6 @@ static bool create_process_from_elf(
         return false;
     }
 
-    auto pml4_table = (PageTableEntry*)map_memory(
-        pml4_physical_page_index * page_size,
-        sizeof(PageTableEntry[page_table_length]),
-        bitmap_entries,
-        bitmap_size
-    );
-    if(pml4_table == nullptr) {
-        return false;
-    }
-
-    memset((void*)pml4_table, 0, sizeof(PageTableEntry[page_table_length]));
-
     process->pml4_table_physical_address = pml4_physical_page_index * page_size;
 
     current_elf_binary = elf_binary;
@@ -609,12 +611,99 @@ static bool create_process_from_elf(
         }
     }
 
-    for(size_t j = kernel_pages_start; j < kernel_pages_end; j += 1) {
-        if(!set_page(j, j, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
+    { // Initalize process page tables with kernel pages
+        auto pml4_table = (PageTableEntry*)map_memory(
+            pml4_physical_page_index * page_size,
+            sizeof(PageTableEntry[page_table_length]),
+            bitmap_entries,
+            bitmap_size
+        );
+        if(pml4_table == nullptr) {
             printf("Error: Unable to map kernel pages in user-space for process %zu\n", process->id);
 
             return false;
         }
+
+        memset(pml4_table, 0, sizeof(PageTableEntry[page_table_length]));
+
+        size_t current_pml4_index;
+        PageTableEntry *pdp_table = nullptr;
+
+        size_t current_pdp_index;
+        PageTableEntry *pd_table = nullptr;
+
+        size_t current_pd_index;
+        PageTableEntry *page_table = nullptr;
+
+        for(size_t absolute_page_index = kernel_pages_start; absolute_page_index < kernel_pages_end; absolute_page_index += 1) {
+            auto page_index = absolute_page_index;
+            auto pd_index = page_index / page_table_length;
+            auto pdp_index = pd_index / page_table_length;
+            auto pml4_index = pdp_index / page_table_length;
+
+            page_index %= page_table_length;
+            pd_index %= page_table_length;
+            pdp_index %= page_table_length;
+            pml4_index %= page_table_length;
+
+            if(
+                !map_and_maybe_allocate_table(
+                    &current_pml4_index,
+                    &pdp_table,
+                    pml4_table,
+                    pml4_index,
+                    bitmap_entries,
+                    bitmap_size,
+                    &bitmap_index,
+                    &bitmap_sub_bit_index
+                ) ||
+                !map_and_maybe_allocate_table(
+                    &current_pdp_index,
+                    &pd_table,
+                    pdp_table,
+                    pdp_index,
+                    bitmap_entries,
+                    bitmap_size,
+                    &bitmap_index,
+                    &bitmap_sub_bit_index
+                ) ||
+                !map_and_maybe_allocate_table(
+                    &current_pd_index,
+                    &page_table,
+                    pd_table,
+                    pd_index,
+                    bitmap_entries,
+                    bitmap_size,
+                    &bitmap_index,
+                    &bitmap_sub_bit_index
+                )
+            ) {
+                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
+                if(pdp_table != nullptr) {
+                    unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
+                }
+
+                if(pd_table != nullptr) {
+                    unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
+                }
+
+                if(page_table != nullptr) {
+                    unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
+                }
+
+                printf("Error: Unable to map kernel pages in user-space for process %zu\n", process->id);
+
+                return false;
+            }
+
+            page_table[page_index].present = true;
+            page_table[page_index].write_allowed = true;
+            page_table[page_index].user_mode_allowed = true;
+            page_table[page_index].page_address = absolute_page_index;
+        }
+
+        unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
     }
 
     auto process_page_count = divide_round_up(elf_context.memsz, page_size);
@@ -1140,8 +1229,6 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     }
 
     auto bitmap_entries = (uint8_t*)(kernel_pages_end * page_size);
-
-    bitmap_entries[0] = 0;
 
     memset((void*)bitmap_entries, 0xFF, bitmap_size);
 
