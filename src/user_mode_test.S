@@ -1,6 +1,11 @@
 .globl entry
 
 entry:
+    mov $2, %rbx
     syscall
 
-    ud2
+    mov $1, %rbx
+    syscall
+
+    mov $0, %rbx
+    syscall

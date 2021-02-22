@@ -232,8 +232,6 @@ ProcessBucket processes {};
 
 ProcessBucket::Iterator current_process_iterator;
 
-bool currently_in_process = false;
-
 const size_t kernel_memory_start = 0;
 const size_t kernel_memory_end = 0x800000;
 
@@ -307,15 +305,18 @@ PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 uint8_t *global_bitmap_entries;
 size_t global_bitmap_size;
 
+static bool destroy_process(ProcessBucket::Iterator iterator) {
+    iterator.current_bucket->occupied[iterator.current_sub_index] = false;
+
+    return true;
+}
+
 extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStackFrame *frame, size_t error_code) {
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, error_code, frame->instruction_pointer);
 
     if(
-        currently_in_process &&
-        (
-            (size_t)frame->instruction_pointer < kernel_memory_start ||
-            (size_t)frame->instruction_pointer >= kernel_memory_end
-        )
+        (size_t)frame->instruction_pointer < kernel_memory_start ||
+        (size_t)frame->instruction_pointer >= kernel_memory_end
     ) {
         asm volatile(
             "mov %0, %%cr3"
@@ -327,7 +328,11 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStac
 
         printf(" in process %zu\n", process->id);
 
-        current_process_iterator.current_bucket->occupied[current_process_iterator.current_sub_index] = false;
+        if(!destroy_process(current_process_iterator)) {
+            printf("Error: Unable to destroy process %zu\n", process->id);
+
+            halt();
+        }
 
         enter_next_process();
     } else {
@@ -855,16 +860,44 @@ extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
 
     auto process = *current_process_iterator;
 
-    printf("Syscall at %p from process %zu\n", stack_frame->interrupt_frame.instruction_pointer, process->id);
+    auto syscall_index = stack_frame->rbx;
 
-    if(next_process_id <= 4) {
-        printf("Creating new process..\n");
+    switch(syscall_index) {
+        case 0: { // exit
+            if(!destroy_process(current_process_iterator)) {
+                printf("Error: Unable to destroy process %zu\n", process->id);
 
-        Process *new_process;
-        ProcessBucket::Iterator new_process_iterator;
-        create_process_from_elf(user_mode_test, global_bitmap_entries, global_bitmap_size, &new_process, &new_process_iterator);
+                halt();
+            }
 
-        printf("Created new process %zu\n", new_process->id);
+            enter_next_process();
+        } break;
+
+        case 1: { // relinquish_time
+            process->frame = *stack_frame;
+
+            enter_next_process();
+        } break;
+
+        case 2: { // create_process
+            if(next_process_id <= 4) {
+                Process *new_process;
+                ProcessBucket::Iterator new_process_iterator;
+                create_process_from_elf(user_mode_test, global_bitmap_entries, global_bitmap_size, &new_process, &new_process_iterator);
+            }
+        } break;
+
+        default: { // unknown syscall
+            printf("Unknown syscall from process %zu at %p\n", process->id, stack_frame->interrupt_frame.instruction_pointer);
+
+            if(!destroy_process(current_process_iterator)) {
+                printf("Error: Unable to destroy process %zu\n", process->id);
+
+                halt();
+            }
+
+            enter_next_process();
+        } break;
     }
 
     asm volatile(
