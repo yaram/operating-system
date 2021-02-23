@@ -44,11 +44,13 @@ def build_objects(objects, target, object_subdirectory, *extra_arguments):
         os.makedirs(object_subdirectory_full)
 
     for source_path, object_name in objects:
+        is_cpp = source_path.endswith('.cpp')
+
         run_command(
-            shutil.which('clang++' if source_path.endswith('.cpp') else 'clang'),
+            shutil.which('clang++' if is_cpp else 'clang'),
             '-target', target,
             '-march=x86-64',
-            '-std=gnu++11' if source_path.endswith('.cpp') else '-std=gnu11',
+            '-std=gnu++11' if is_cpp else '-std=gnu11',
             '-ffreestanding',
             '-mno-mmx',
             '-mno-sse',
@@ -120,12 +122,14 @@ if not os.path.exists(elfload_archive):
     )
 
 user_mode_test_objects = [
-    (os.path.join(source_directory, 'user_mode_test.S'), 'user_mode_test.o')
+    (os.path.join(source_directory, 'user_mode_test.cpp'), 'user_mode_test.o'),
+    (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
 ]
 
 build_objects_64bit(
     user_mode_test_objects,
     'user_mode_test',
+    '-I{}'.format(os.path.join(printf_directory)),
     '-fpie'
 )
 

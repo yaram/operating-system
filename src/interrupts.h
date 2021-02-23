@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-struct __attribute__((packed)) InterruptStackFrame {
+struct InterruptStackFrame {
     void *instruction_pointer;
     uint64_t code_segment;
     uint64_t cpu_flags;

@@ -24,5 +24,6 @@ run_command(
     '-monitor', 'stdio',
     '-machine', 'q35',
     '-m', '4G',
+    "-vga", 'virtio',
     '-kernel', os.path.join(build_directory, 'kernel32.elf')
 )

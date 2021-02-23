@@ -19,3 +19,7 @@ void _putchar(char character) {
 
     out(0x3F8, character);
 }
+
+void putchar(char character) {
+    _putchar(character);
+}

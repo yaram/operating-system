@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include "interrupts.h"
 
-struct __attribute__((packed)) ProcessStackFrame {
+struct ProcessStackFrame {
     uint64_t rax;
     uint64_t rbx;
     uint64_t rcx;

@@ -4,3 +4,4 @@
 #include "printf.h"
 
 void clear_console();
+void putchar(char character);

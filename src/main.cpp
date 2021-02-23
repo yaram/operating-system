@@ -10,6 +10,8 @@ extern "C" {
 #include "process.h"
 #include "memory.h"
 #include "bucket_array.h"
+#include "syscalls.h"
+#include "pcie.h"
 
 #define divide_round_up(dividend, divisor) (((dividend) + (divisor) - 1) / (divisor))
 
@@ -851,7 +853,9 @@ static bool create_process_from_elf(
 
 extern "C" void syscall_thunk();
 
-extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
+#define bits_to_mask(bits) ((1 << (bits)) - 1)
+
+extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
     asm volatile(
         "mov %0, %%cr3"
         :
@@ -861,9 +865,15 @@ extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
     auto process = *current_process_iterator;
 
     auto syscall_index = stack_frame->rbx;
+    auto parameter = stack_frame->rdx;
 
-    switch(syscall_index) {
-        case 0: { // exit
+    auto return_1 = &stack_frame->rbx;
+    auto return_2 = &stack_frame->rdx;
+
+    static_assert(configuration_area_size == page_size, "PCI-E MMIO area not page-sized");
+
+    switch((SyscallType)syscall_index) {
+        case SyscallType::Exit: {
             if(!destroy_process(current_process_iterator)) {
                 printf("Error: Unable to destroy process %zu\n", process->id);
 
@@ -873,18 +883,361 @@ extern "C" void syscall_entrance(const ProcessStackFrame *stack_frame) {
             enter_next_process();
         } break;
 
-        case 1: { // relinquish_time
+        case SyscallType::RelinquishTime: { // relinquish_time
             process->frame = *stack_frame;
 
             enter_next_process();
         } break;
 
-        case 2: { // create_process
-            if(next_process_id <= 4) {
-                Process *new_process;
-                ProcessBucket::Iterator new_process_iterator;
-                create_process_from_elf(user_mode_test, global_bitmap_entries, global_bitmap_size, &new_process, &new_process_iterator);
+        case SyscallType::DebugPrint: { // Debug print character
+            putchar((char)parameter);
+        } break;
+
+        case SyscallType::FindPCIEDevice: {
+            auto desired_device_id = (uint16_t)parameter;
+            auto desired_vendor_id = (uint16_t)(parameter >> 16);
+
+            MCFGTable *mcfg_table;
+            {
+                auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
+                if(status != AE_OK) {
+                    printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
+
+                    return;
+                }
             }
+
+            *return_1 = 0;
+
+            auto done = false;
+            for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
+                auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
+                auto segment = (size_t)mcfg_table->allocations[i].PciSegment;
+                auto start_bus_number = (size_t)mcfg_table->allocations[i].StartBusNumber;
+                auto end_bus_number = (size_t)mcfg_table->allocations[i].EndBusNumber;
+                auto bus_count = end_bus_number - start_bus_number + 1;
+
+                for(size_t bus = 0; bus < bus_count; bus += 1) {
+                    auto bus_memory_size = device_count * function_count * configuration_area_size;
+
+                    auto bus_memory = map_memory(
+                        physical_memory_start + bus * device_count * function_count * configuration_area_size,
+                        bus_memory_size,
+                        global_bitmap_entries,
+                        global_bitmap_size
+                    );
+                    if(bus_memory == nullptr) {
+                        printf(
+                            "Error: Unable to map pages for PCI-E bus %zu on segment %zu at 0x%0zx(%zx)\n",
+                            bus + start_bus_number,
+                            segment,
+                            physical_memory_start,
+                            bus_memory_size
+                        );
+
+                        done = true;
+                        break;
+                    }
+
+                    for(size_t device = 0; device < device_count; device += 1) {
+                        for(size_t function = 0; function < function_count; function += 1) {
+                            auto device_base_index = 
+                                device * function_count * configuration_area_size +
+                                function * configuration_area_size;
+
+                            auto header = *(PCIHeader*)((size_t)bus_memory + device_base_index);
+
+                            if(header.vendor_id == 0xFFFF) {
+                                continue;
+                            }
+
+                            if(header.device_id == desired_device_id && header.vendor_id == desired_vendor_id) {
+                                *return_1 = 1;
+                                *return_2 =
+                                    function |
+                                    device << function_bits |
+                                    bus << (function_bits + device_bits) |
+                                    segment << (function_bits + device_bits + bus_bits);
+
+                                done = true;
+                                break;
+                            }
+                        }
+
+                        if(done) {
+                            break;
+                        }
+                    }
+
+                    unmap_memory((void*)bus_memory, bus_memory_size);
+
+                    if(done) {
+                        break;
+                    }
+                }
+
+                if(done) {
+                    break;
+                }
+            }
+
+            AcpiPutTable(&mcfg_table->preamble.Header);
+        } break;
+
+        case SyscallType::MapPCIEConfiguration: {
+            auto function = parameter & bits_to_mask(function_bits);
+            auto device = parameter >> function_bits & bits_to_mask(device_bits);
+            auto bus = parameter >> (function_bits + device_bits) & bits_to_mask(bus_bits);
+            auto target_segment = parameter >> (function_bits + device_bits + bus_bits);
+
+            MCFGTable *mcfg_table;
+            {
+                auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
+                if(status != AE_OK) {
+                    printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
+
+                    return;
+                }
+            }
+
+            *return_1 = 0;
+
+            for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
+                auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
+                auto segment = (size_t)mcfg_table->allocations[i].PciSegment;
+                auto start_bus_number = (size_t)mcfg_table->allocations[i].StartBusNumber;
+
+                if(segment == target_segment) {
+                    size_t logical_pages_start;
+                    if(!find_free_logical_pages(
+                        1,
+                        process->pml4_table_physical_address,
+                        global_bitmap_entries,
+                        global_bitmap_size,
+                        &logical_pages_start
+                    )) {
+                        printf(
+                            "Error: Unable to find free user page for PCI-E bus %zu on segment %zu at 0x%0zx(%zx)\n",
+                            bus + start_bus_number,
+                            segment,
+                            physical_memory_start,
+                            configuration_area_size
+                        );
+
+                        break;
+                    }
+
+                    if(!set_page(
+                        logical_pages_start,
+                        physical_memory_start / page_size +
+                            bus * device_count * function_count +
+                            device * function_count +
+                            function,
+                        process->pml4_table_physical_address,
+                        global_bitmap_entries,
+                        global_bitmap_size
+                    )) {
+                        printf(
+                            "Error: Unable to map configuration for PCI-E bus %zu on segment %zu at 0x%0zx(%zx)\n",
+                            bus + start_bus_number,
+                            segment,
+                            physical_memory_start,
+                            configuration_area_size
+                        );
+
+                        break;
+                    }
+
+                    *return_1 = 1;
+                    *return_2 = logical_pages_start * page_size;
+                    break;
+                }
+            }
+
+            AcpiPutTable(&mcfg_table->preamble.Header);
+        } break;
+
+        case SyscallType::MapPCIEBar: {
+            auto bar_index = parameter & bits_to_mask(bar_index_bits);
+            auto function = parameter >> bar_index_bits & bits_to_mask(function_bits);
+            auto device = parameter >> (bar_index_bits + function_bits) & bits_to_mask(device_bits);
+            auto bus = parameter >> (bar_index_bits + function_bits + device_bits) & bits_to_mask(bus_bits);
+            auto target_segment = parameter >> (bar_index_bits + function_bits + device_bits + bus_bits);
+
+            MCFGTable *mcfg_table;
+            {
+                auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
+                if(status != AE_OK) {
+                    printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
+
+                    return;
+                }
+            }
+
+            *return_1 = 0;
+
+            for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
+                auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
+                auto segment = (size_t)mcfg_table->allocations[i].PciSegment;
+                auto start_bus_number = (size_t)mcfg_table->allocations[i].StartBusNumber;
+
+                if(segment == target_segment) {
+                    auto configuration_memory = map_memory(
+                        physical_memory_start +
+                            (bus * device_count * function_count +
+                            device * function_count +
+                            function) * configuration_area_size,
+                        configuration_area_size,
+                        global_bitmap_entries,
+                        global_bitmap_size
+                    );
+                    if(configuration_memory == nullptr) {
+                        printf(
+                            "Error: Unable to map configuration for PCI-E device %zu:%zu:%zu on segment %zu at 0x%0zx(%zx)\n",
+                            bus + start_bus_number,
+                            device,
+                            function,
+                            segment,
+                            physical_memory_start,
+                            configuration_area_size
+                        );
+
+                        break;
+                    }
+
+                    auto header = (PCIHeader*)configuration_memory;
+
+                    auto bar_value = header->bars[bar_index];
+
+                    auto bar_type = bar_value & bits_to_mask(bar_type_bits);
+
+                    size_t address;
+                    size_t size;
+                    auto valid_bar = true;
+                    if(bar_type == 0) { // Memory BAR
+                        auto memory_bar_type = bar_value >> bar_type_bits & bits_to_mask(memory_bar_type_bits);
+
+                        const auto info_bits = bar_type_bits + memory_bar_type_bits + memory_bar_prefetchable_bits;
+
+                        switch(memory_bar_type) {
+                            case 0b00: { // 32-bit memory BAR
+                                address = (size_t)(bar_value & ~bits_to_mask(info_bits));
+
+                                header->bars[bar_index] = -1;
+
+                                auto temp_bar_value = header->bars[bar_index] & ~bits_to_mask(info_bits);
+
+                                temp_bar_value = ~temp_bar_value;
+                                temp_bar_value += 1;
+
+                                size = (size_t)temp_bar_value;
+
+                                header->bars[bar_index] = bar_value;
+                            } break;
+
+                            case 0b10: { // 64-bit memory BAR
+                                auto second_bar_value = header->bars[bar_index + 1];
+
+                                address = (size_t)(bar_value & ~bits_to_mask(info_bits)) | (size_t)second_bar_value << 32;
+
+                                size = address;
+
+                                header->bars[bar_index] = -1;
+                                header->bars[bar_index + 1] = -1;
+
+                                size = (header->bars[bar_index] & ~bits_to_mask(info_bits)) | (size_t)header->bars[bar_index + 1] << 32;
+
+                                size = ~size;
+                                size += 1;
+
+                                header->bars[bar_index] = bar_value;
+                                header->bars[bar_index + 1] = second_bar_value;
+                            } break;
+
+                            default: {
+                                valid_bar = false;
+                            } break;
+                        }
+                    } else { // IO BAR
+                        auto info_bits = bar_type_bits + io_bar_reserved_bits;
+
+                        address = bar_value & ~bits_to_mask(info_bits);
+
+                        header->bars[bar_index] = -1;
+
+                        auto temp_bar_value = header->bars[bar_index] & ~bits_to_mask(info_bits);
+
+                        temp_bar_value = ~temp_bar_value;
+                        temp_bar_value += 1;
+
+                        size = (size_t)temp_bar_value;
+
+                        header->bars[bar_index] = bar_value;
+                    }
+
+                    if(!valid_bar) {
+                        break;
+                    }
+
+                    unmap_memory((void*)configuration_memory, configuration_area_size);
+
+                    auto physical_pages_start = address / page_size;
+                    auto physical_pages_end = divide_round_up(address + size, page_size);
+                    auto page_count = physical_pages_end - physical_pages_start;
+
+                    size_t logical_pages_start;
+                    if(!find_free_logical_pages(
+                        page_count,
+                        process->pml4_table_physical_address,
+                        global_bitmap_entries,
+                        global_bitmap_size,
+                        &logical_pages_start
+                    )) {
+                        printf(
+                            "Error: Unable to find free user pages for PCI-E BAR %zu from device %zu:%zu:%zu on segment %zu\n",
+                            bar_index,
+                            bus + start_bus_number,
+                            device,
+                            function,
+                            segment
+                        );
+
+                        break;
+                    }
+
+                    auto failed = false;
+                    for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
+                        if(!set_page(
+                            logical_pages_start + relative_page_index,
+                            physical_pages_start + relative_page_index,
+                            process->pml4_table_physical_address,
+                            global_bitmap_entries,
+                            global_bitmap_size
+                        )) {
+                            printf(
+                                "Error: Unable to map pages for PCI-E BAR %zu on device %zu:%zu:%zu on segment %zu\n",
+                                bar_index,
+                                bus + start_bus_number,
+                                device,
+                                function,
+                                segment
+                            );
+
+                            failed = true;
+                            break;
+                        }
+                    }
+
+                    if(failed) {
+                        break;
+                    }
+
+                    *return_1 = 1;
+                    *return_2 = logical_pages_start * page_size;
+                }
+            }
+
+            AcpiPutTable(&mcfg_table->preamble.Header);
         } break;
 
         default: { // unknown syscall
@@ -1292,73 +1645,6 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     AcpiInitializeSubsystem();
 
     AcpiInitializeTables(nullptr, 8, TRUE);
-
-    MCFGTable *mcfg_table;
-    {
-        auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
-        if(status != AE_OK) {
-            printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
-
-            return;
-        }
-    }
-
-    const size_t device_count = 32;
-    const size_t function_count = 8;
-
-    const size_t function_area_size = 4096;
-
-    for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
-        auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
-        auto segment = (size_t)mcfg_table->allocations[i].PciSegment;
-        auto start_bus_number = (size_t)mcfg_table->allocations[i].StartBusNumber;
-        auto end_bus_number = (size_t)mcfg_table->allocations[i].EndBusNumber;
-        auto bus_count = end_bus_number - start_bus_number + 1;
-
-        for(size_t bus = 0; bus < bus_count; bus += 1) {
-            auto bus_memory_size = device_count * function_count * function_area_size;
-
-            auto bus_memory = (uint8_t*)map_memory(
-                physical_memory_start + bus * device_count * function_count * function_area_size,
-                bus_memory_size,
-                bitmap_entries,
-                bitmap_size
-            );
-            if(bus_memory == nullptr) {
-                printf(
-                    "Error: Unable to map pages for PCI-E bus %zu on segment %u at 0x%0zx(%zx)\n",
-                    bus + start_bus_number,
-                    segment,
-                    physical_memory_start,
-                    bus_memory_size
-                );
-
-                return;
-            }
-
-            for(size_t device = 0; device < device_count; device += 1) {
-                for(size_t function = 0; function < function_count; function += 1) {
-                    auto device_base_index = 
-                        device * function_count * function_area_size +
-                        function * function_area_size;
-
-                    auto vendor_id = *(uint16_t*)&bus_memory[device_base_index + 0];
-
-                    if(vendor_id == 0xFFFF) {
-                        continue;
-                    }
-
-                    auto device_id = *(uint16_t*)&bus_memory[device_base_index + 2];
-
-                    printf("PCI-E device 0x%4.X:0x%4.X at %d/%d/%d\n", vendor_id, device_id, bus + start_bus_number, device, function);
-                }
-            }
-
-            unmap_memory((void*)bus_memory, bus_memory_size);
-        }
-    }
-
-    AcpiPutTable(&mcfg_table->preamble.Header);
 
     MADTTable *madt_table;
     {
