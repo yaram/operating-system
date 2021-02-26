@@ -1043,13 +1043,13 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                                 device * function_count * configuration_area_size +
                                 function * configuration_area_size;
 
-                            auto header = *(PCIHeader*)((size_t)bus_memory + device_base_index);
+                            auto header = (volatile PCIHeader*)((size_t)bus_memory + device_base_index);
 
-                            if(header.vendor_id == 0xFFFF) {
+                            if(header->vendor_id == 0xFFFF) {
                                 continue;
                             }
 
-                            if(header.device_id == desired_device_id && header.vendor_id == desired_vendor_id) {
+                            if(header->device_id == desired_device_id && header->vendor_id == desired_vendor_id) {
                                 *return_1 = 1;
                                 *return_2 =
                                     function |
@@ -1202,7 +1202,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         break;
                     }
 
-                    auto header = (PCIHeader*)configuration_memory;
+                    auto header = (volatile PCIHeader*)configuration_memory;
 
                     auto bar_value = header->bars[bar_index];
 
