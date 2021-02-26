@@ -80,6 +80,17 @@ bool allocate_next_physical_page(
     size_t *physical_page_index
 );
 
+bool allocate_consecutive_physical_pages(
+    size_t page_count,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    size_t *physical_pages_start
+);
+
+void allocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count);
+
+void deallocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count);
+
 // Kernel table-specific functions
 
 bool set_page(

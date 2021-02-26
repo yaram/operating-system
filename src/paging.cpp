@@ -257,6 +257,120 @@ bool allocate_next_physical_page(
     return false;
 }
 
+bool allocate_consecutive_physical_pages(
+    size_t page_count,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    size_t *physical_pages_start
+) {
+    size_t free_pages_start;
+    auto in_free_pages = false;
+    auto found = false;
+
+    for(size_t bitmap_index = 0; bitmap_index < bitmap_size; bitmap_index += 1) {
+        auto byte = &bitmap_entries[bitmap_index];
+
+        if(*byte != 0xFF) {
+            for(size_t bitmap_sub_bit_index = 0; bitmap_sub_bit_index < 8; bitmap_sub_bit_index += 1) {
+                auto page_index = bitmap_index * 8 + bitmap_sub_bit_index;
+
+                if(in_free_pages && page_index - free_pages_start == page_count) {
+                    found = true;
+                    break;
+                }
+
+                if((*byte & (1 << bitmap_sub_bit_index)) == 0) {
+                    if(!in_free_pages) {
+                        free_pages_start = page_index;
+                        in_free_pages = true;
+                    }
+                } else {
+                    in_free_pages = false;
+                }
+            }
+        }
+
+        if(found) {
+            break;
+        }
+    }
+
+    if(!found) {
+        return false;
+    }
+
+    allocate_bitmap_range(bitmap_entries, free_pages_start, page_count);
+
+    *physical_pages_start = free_pages_start;
+    return true;
+}
+
+void allocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
+    auto start_bit = start;
+    auto end_bit = start + count;
+
+    auto start_byte = start_bit / 8;
+    auto end_byte = divide_round_up(end_bit, 8);
+
+    auto sub_start_bit = start_bit % 8;
+    auto sub_end_bit = end_bit % 8;
+
+    if(sub_end_bit == 0) {
+        sub_end_bit = 8;
+    }
+
+    if(end_byte - start_byte == 1) {
+        for(size_t i = sub_start_bit; i < sub_end_bit; i += 1) {
+            bitmap[start_byte] |= 1 << i;
+        }
+    } else {
+        for(size_t i = sub_start_bit; i < 8; i += 1) {
+            bitmap[start_byte] |= 1 << i;
+        }
+
+        for(size_t i = start_byte + 1; i < end_byte - 1; i += 1) {
+            bitmap[i] = 0b11111111;
+        }
+
+        for(size_t i = 0; i < sub_end_bit; i += 1) {
+            bitmap[end_byte - 1] |= 1 << i;
+        }
+    }
+}
+
+void deallocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
+    auto start_bit = start;
+    auto end_bit = start + count;
+
+    auto start_byte = start_bit / 8;
+    auto end_byte = divide_round_up(end_bit, 8);
+
+    auto sub_start_bit = start_bit % 8;
+    auto sub_end_bit = end_bit % 8;
+
+    if(sub_end_bit == 0) {
+        sub_end_bit = 8;
+    }
+
+    if(end_byte - start_byte == 1) {
+        for(size_t i = sub_start_bit; i < sub_end_bit; i += 1) {
+            bitmap[start_byte] &= ~(1 << i);
+        }
+    } else {
+        for(size_t i = sub_start_bit; i < 8; i += 1) {
+            bitmap[start_byte] &= ~(1 << i);
+        }
+
+        for(size_t i = start_byte + 1; i < end_byte - 1; i += 1) {
+            bitmap[i] = 0;
+        }
+
+        for(size_t i = 0; i < sub_end_bit; i += 1) {
+            bitmap[end_byte - 1] &= ~(1 << i);
+        }
+    }
+}
+
 bool set_page(
     size_t logical_page_index,
     size_t physical_page_index,

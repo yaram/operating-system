@@ -883,14 +883,112 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             enter_next_process();
         } break;
 
-        case SyscallType::RelinquishTime: { // relinquish_time
+        case SyscallType::RelinquishTime: {
             process->frame = *stack_frame;
 
             enter_next_process();
         } break;
 
-        case SyscallType::DebugPrint: { // Debug print character
+        case SyscallType::DebugPrint: {
             putchar((char)parameter);
+        } break;
+
+        case SyscallType::MapFreeMemory: {
+            *return_1 = 0;
+
+            auto page_count = divide_round_up(parameter, page_size);
+
+            size_t logical_pages_start;
+            if(!find_free_logical_pages(
+                parameter,
+                process->pml4_table_physical_address,
+                global_bitmap_entries,
+                global_bitmap_size,
+                &logical_pages_start
+            )) {
+                break;
+            }
+
+            size_t bitmap_index = 0;
+            size_t bitmap_sub_bit_index = 0;
+
+            auto success = true;
+            for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
+                size_t physical_page_index;
+                if(!allocate_next_physical_page(
+                    &bitmap_index,
+                    &bitmap_sub_bit_index,
+                    global_bitmap_entries,
+                    global_bitmap_size,
+                    &physical_page_index
+                )) {
+                    success = false;
+                    break;
+                }
+
+                if(!set_page(
+                    logical_pages_start + relative_page_index,
+                    physical_page_index,
+                    process->pml4_table_physical_address,
+                    global_bitmap_entries,
+                    global_bitmap_size
+                )) {
+                    success = false;
+                    break;
+                }
+            }
+
+            if(success) {
+                *return_1 = logical_pages_start * page_size;
+            }
+        } break;
+
+        case SyscallType::MapFreeConsecutiveMemory: {
+            *return_1 = 0;
+
+            auto page_count = divide_round_up(parameter, page_size);
+
+            size_t logical_pages_start;
+            if(!find_free_logical_pages(
+                parameter,
+                process->pml4_table_physical_address,
+                global_bitmap_entries,
+                global_bitmap_size,
+                &logical_pages_start
+            )) {
+                break;
+            }
+
+            size_t physical_pages_start;
+            if(!allocate_consecutive_physical_pages(
+                page_count,
+                global_bitmap_entries,
+                global_bitmap_size,
+                &physical_pages_start
+            )) {
+                break;
+            }
+
+            auto success = true;
+            for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
+                if(!set_page(
+                    logical_pages_start + relative_page_index,
+                    physical_pages_start + relative_page_index,
+                    process->pml4_table_physical_address,
+                    global_bitmap_entries,
+                    global_bitmap_size
+                )) {
+                    success = false;
+                    break;
+                }
+            }
+
+            if(!success) {
+                break;
+            }
+
+            *return_1 = logical_pages_start * page_size;
+            *return_2 = physical_pages_start * page_size;
         } break;
 
         case SyscallType::FindPCIEDevice: {
@@ -1048,8 +1146,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         break;
                     }
 
-                    *return_1 = 1;
-                    *return_2 = logical_pages_start * page_size;
+                    *return_1 = logical_pages_start * page_size;
                     break;
                 }
             }
@@ -1140,8 +1237,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
                                 address = (size_t)(bar_value & ~bits_to_mask(info_bits)) | (size_t)second_bar_value << 32;
 
-                                size = address;
-
                                 header->bars[bar_index] = -1;
                                 header->bars[bar_index + 1] = -1;
 
@@ -1159,27 +1254,14 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                             } break;
                         }
                     } else { // IO BAR
-                        auto info_bits = bar_type_bits + io_bar_reserved_bits;
-
-                        address = bar_value & ~bits_to_mask(info_bits);
-
-                        header->bars[bar_index] = -1;
-
-                        auto temp_bar_value = header->bars[bar_index] & ~bits_to_mask(info_bits);
-
-                        temp_bar_value = ~temp_bar_value;
-                        temp_bar_value += 1;
-
-                        size = (size_t)temp_bar_value;
-
-                        header->bars[bar_index] = bar_value;
+                        valid_bar = false;
                     }
 
                     if(!valid_bar) {
                         break;
                     }
 
-                    unmap_memory((void*)configuration_memory, configuration_area_size);
+                    unmap_memory(configuration_memory, configuration_area_size);
 
                     auto physical_pages_start = address / page_size;
                     auto physical_pages_end = divide_round_up(address + size, page_size);
@@ -1232,8 +1314,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         break;
                     }
 
-                    *return_1 = 1;
-                    *return_2 = logical_pages_start * page_size;
+                    *return_1 = logical_pages_start * page_size;
                 }
             }
 
@@ -1302,64 +1383,6 @@ static bool find_free_physical_pages_in_bootstrap(
     }
 
     return false;
-}
-
-static void allocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
-    auto start_bit = start;
-    auto end_bit = start + count;
-
-    auto start_byte = start_bit / 8;
-    auto end_byte = divide_round_up(end_bit, 8);
-
-    auto sub_start_bit = start_bit % 8;
-    auto sub_end_bit = end_bit % 8;
-
-    if(end_byte - start_byte == 1) {
-        for(size_t i = sub_start_bit; i < sub_end_bit; i += 1) {
-            bitmap[start_byte] |= 1 << i;
-        }
-    } else {
-        for(size_t i = sub_start_bit; i < 8; i += 1) {
-            bitmap[start_byte] |= 1 << i;
-        }
-
-        for(size_t i = start_byte + 1; i < end_byte - 1; i += 1) {
-            bitmap[i] = 0b11111111;
-        }
-
-        for(size_t i = 0; i < sub_end_bit; i += 1) {
-            bitmap[end_byte - 1] |= 1 << i;
-        }
-    }
-}
-
-static void deallocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
-    auto start_bit = start;
-    auto end_bit = start + count;
-
-    auto start_byte = start_bit / 8;
-    auto end_byte = divide_round_up(end_bit, 8);
-
-    auto sub_start_bit = start_bit % 8;
-    auto sub_end_bit = end_bit % 8;
-
-    if(end_byte - start_byte == 1) {
-        for(size_t i = sub_start_bit; i < sub_end_bit; i += 1) {
-            bitmap[start_byte] &= ~(1 << i);
-        }
-    } else {
-        for(size_t i = sub_start_bit; i < 8; i += 1) {
-            bitmap[start_byte] &= ~(1 << i);
-        }
-
-        for(size_t i = start_byte + 1; i < end_byte - 1; i += 1) {
-            bitmap[i] = 0;
-        }
-
-        for(size_t i = 0; i < sub_end_bit; i += 1) {
-            bitmap[end_byte - 1] &= ~(1 << i);
-        }
-    }
 }
 
 extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t bootstrap_memory_map_size) {
