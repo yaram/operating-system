@@ -169,6 +169,57 @@ struct virtio_gpu_resp_display_info : virtio_gpu_ctrl_hdr {
     } pmodes[VIRTIO_GPU_MAX_SCANOUTS];
 };
 
+enum struct virtio_gpu_formats : uint32_t {
+    VIRTIO_GPU_FORMAT_B8G8R8A8_UNORM = 1,
+    VIRTIO_GPU_FORMAT_B8G8R8X8_UNORM = 2,
+    VIRTIO_GPU_FORMAT_A8R8G8B8_UNORM = 3,
+    VIRTIO_GPU_FORMAT_X8R8G8B8_UNORM = 4,
+
+    VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM = 67,
+    VIRTIO_GPU_FORMAT_X8B8G8R8_UNORM = 68,
+
+    VIRTIO_GPU_FORMAT_A8B8G8R8_UNORM = 121,
+    VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM = 134
+};
+
+struct virtio_gpu_resource_create_2d : virtio_gpu_ctrl_hdr {
+    uint32_t resource_id;
+    virtio_gpu_formats format;
+    uint32_t width;
+    uint32_t height;
+};
+
+struct virtio_gpu_mem_entry {
+    uint64_t addr;
+    uint32_t length;
+    uint32_t padding;
+};
+
+struct virtio_gpu_resource_attach_backing : virtio_gpu_ctrl_hdr {
+    uint32_t resource_id;
+    uint32_t nr_entries;
+    virtio_gpu_mem_entry entries[];
+};
+
+struct virtio_gpu_set_scanout : virtio_gpu_ctrl_hdr {
+    struct virtio_gpu_rect r;
+    uint32_t scanout_id;
+    uint32_t resource_id;
+};
+
+struct virtio_gpu_transfer_to_host_2d : virtio_gpu_ctrl_hdr {
+    struct virtio_gpu_rect r;
+    uint64_t offset;
+    uint32_t resource_id;
+    uint32_t padding;
+};
+
+struct virtio_gpu_resource_flush : virtio_gpu_ctrl_hdr {
+    struct virtio_gpu_rect r;
+    uint32_t resource_id;
+    uint32_t padding;
+};
+
 [[noreturn]] inline void exit() {
     syscall(SyscallType::Exit, 0);
 
@@ -194,6 +245,34 @@ static volatile virtio_pci_cap *find_capability(size_t configuration_address, ui
     }
 
     return nullptr;
+}
+
+const size_t queue_descriptor_count = 2;
+
+const size_t buffer_size = 1024;
+
+static volatile virtio_gpu_ctrl_hdr *send_command(
+    const virtio_gpu_ctrl_hdr *command_header,
+    size_t command_size,
+    size_t buffers_address,
+    volatile virtq_desc* queue_descriptors,
+    volatile virtq_avail* available_ring,
+    volatile virtq_used* used_ring,
+    volatile uint16_t* notify
+) {
+    memcpy((void*)buffers_address, command_header, command_size);
+
+    available_ring->ring[available_ring->idx % queue_descriptor_count] = 0;
+
+    auto previous_used_index = used_ring->idx;
+
+    available_ring->idx += 1;
+
+    *notify = 0;
+
+    while(used_ring->idx == previous_used_index);
+
+    return (volatile virtio_gpu_ctrl_hdr*)(buffers_address + buffer_size);
 }
 
 extern "C" [[noreturn]] void entry() {
@@ -256,8 +335,6 @@ extern "C" [[noreturn]] void entry() {
 
     common_configuration->queue_select = 0; // Select controlq queue
 
-    const size_t queue_descriptor_count = 2;
-
     size_t queue_descriptors_physical_address;
     auto queue_descriptors = (volatile virtq_desc*)syscall(SyscallType::MapFreeConsecutiveMemory, sizeof(virtq_desc) * queue_descriptor_count, &queue_descriptors_physical_address);
     if(queue_descriptors == nullptr) {
@@ -272,8 +349,6 @@ extern "C" [[noreturn]] void entry() {
     queue_descriptors[0].next = 1; // Link to second descriptor
 
     queue_descriptors[1].flags = 0b10; // Set device writable (device buffer)
-
-    const auto buffer_size = 1024;
 
     size_t buffers_physical_address;
     auto buffers_address = syscall(SyscallType::MapFreeConsecutiveMemory, buffer_size * queue_descriptor_count, &buffers_physical_address);
@@ -344,31 +419,179 @@ extern "C" [[noreturn]] void entry() {
 
     common_configuration->device_status |= 1 << 2; // Set DRIVER_OK flag
 
-    auto command_header = (volatile virtio_gpu_ctrl_hdr*)buffers_address;
-    command_header->type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
-    command_header->flags = 0;
+    virtio_gpu_ctrl_hdr get_display_info_command;
+    get_display_info_command.type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
+    get_display_info_command.flags = 0;
 
-    queue_descriptors[0].len = sizeof(virtio_gpu_ctrl_hdr);
+    auto get_display_info_response = (volatile virtio_gpu_resp_display_info*)send_command(
+        &get_display_info_command,
+        sizeof(virtio_gpu_ctrl_hdr),
+        buffers_address,
+        queue_descriptors,
+        available_ring,
+        used_ring,
+        notify
+    );
 
-    available_ring->ring[available_ring->idx % queue_descriptor_count] = 0;
-
-    auto previous_used_index = used_ring->idx;
-
-    available_ring->idx += 1;
-
-    *notify = 0;
-
-    while(used_ring->idx == previous_used_index);
-
-    auto response = (volatile virtio_gpu_resp_display_info*)(buffers_address + buffer_size);
-
-    if(response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
+    if(get_display_info_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
         printf("Error: Invalid response from VIRTIO_GPU_CMD_GET_DISPLAY_INFO command\n");
 
         exit();
     }
 
-    printf("Display 0 size: %u by %u\n", response->pmodes[0].r.width, response->pmodes[0].r.height);
+    auto display_width = (size_t)get_display_info_response->pmodes[0].r.width;
+    auto display_height = (size_t)get_display_info_response->pmodes[0].r.height;
+
+    virtio_gpu_resource_create_2d create_resource_command;
+    create_resource_command.type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+    create_resource_command.flags = 0;
+    create_resource_command.resource_id = 1;
+    create_resource_command.format = virtio_gpu_formats::VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+    create_resource_command.width = display_width;
+    create_resource_command.height = display_height;
+
+    auto create_resource_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+        &create_resource_command,
+        sizeof(virtio_gpu_resource_create_2d),
+        buffers_address,
+        queue_descriptors,
+        available_ring,
+        used_ring,
+        notify
+    );
+
+    if(create_resource_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+        printf("Error: Invalid response from VIRTIO_GPU_CMD_RESOURCE_CREATE_2D command\n");
+
+        exit();
+    }
+
+    auto framebuffer_size = display_height * display_width * 4;
+
+    size_t framebuffer_physical_address;
+    auto framebuffer_address = syscall(SyscallType::MapFreeConsecutiveMemory, framebuffer_size, &framebuffer_physical_address);
+    if(framebuffer_address == 0) {
+        printf("Error: Unable to allocate memory for framebuffer\n");
+
+        exit();
+    }
+
+    uint8_t attach_backing_command_bytes[sizeof(virtio_gpu_resource_attach_backing) + sizeof(virtio_gpu_mem_entry)];
+    auto attach_backing_command = (virtio_gpu_resource_attach_backing*)attach_backing_command_bytes;
+
+    attach_backing_command->type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+    attach_backing_command->flags = 0;
+    attach_backing_command->resource_id = 1;
+    attach_backing_command->nr_entries = 1;
+    attach_backing_command->entries[0].addr = framebuffer_physical_address;
+    attach_backing_command->entries[0].length = framebuffer_size;
+
+    auto attach_backing_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+        attach_backing_command,
+        sizeof(virtio_gpu_resource_attach_backing) + sizeof(virtio_gpu_mem_entry),
+        buffers_address,
+        queue_descriptors,
+        available_ring,
+        used_ring,
+        notify
+    );
+
+    if(attach_backing_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+        printf("Error: Invalid response from VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING command\n");
+
+        exit();
+    }
+
+    virtio_gpu_set_scanout set_scanout_command;
+    set_scanout_command.type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_SET_SCANOUT;
+    set_scanout_command.flags = 0;
+    set_scanout_command.r.x = 0;
+    set_scanout_command.r.y = 0;
+    set_scanout_command.r.width = display_width;
+    set_scanout_command.r.height = display_height;
+    set_scanout_command.scanout_id = 0;
+    set_scanout_command.resource_id = 1;
+
+    auto set_scanout_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+        &set_scanout_command,
+        sizeof(virtio_gpu_set_scanout),
+        buffers_address,
+        queue_descriptors,
+        available_ring,
+        used_ring,
+        notify
+    );
+
+    if(set_scanout_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+        printf("Error: Invalid response from VIRTIO_GPU_CMD_SET_SCANOUT command\n");
+
+        exit();
+    }
+
+    size_t counter = 0;
+
+    while(true) {
+        auto framebuffer = (uint32_t*)framebuffer_address;
+
+        for(size_t y = 0; y < display_height; y += 1) {
+            for(size_t x = 0; x < display_width; x += 1) {
+                framebuffer[y * display_width + x] = ((x + counter) & 0xFF) | ((y & 0xFF) << 8);
+            }
+        }
+
+        counter += 1;
+
+        virtio_gpu_transfer_to_host_2d transfer_command;
+        transfer_command.type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;
+        transfer_command.flags = 0;
+        transfer_command.r.x = 0;
+        transfer_command.r.y = 0;
+        transfer_command.r.width = display_width;
+        transfer_command.r.height = display_height;
+        transfer_command.offset = 0;
+        transfer_command.resource_id = 1;
+
+        auto transfer_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+            &transfer_command,
+            sizeof(virtio_gpu_transfer_to_host_2d),
+            buffers_address,
+            queue_descriptors,
+            available_ring,
+            used_ring,
+            notify
+        );
+
+        if(transfer_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+            printf("Error: Invalid response from VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D command\n");
+
+            exit();
+        }
+
+        virtio_gpu_resource_flush flush_command;
+        flush_command.type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_RESOURCE_FLUSH;
+        flush_command.flags = 0;
+        flush_command.r.x = 0;
+        flush_command.r.y = 0;
+        flush_command.r.width = display_width;
+        flush_command.r.height = display_height;
+        flush_command.resource_id = 1;
+
+        auto flush_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+            &flush_command,
+            sizeof(virtio_gpu_resource_flush),
+            buffers_address,
+            queue_descriptors,
+            available_ring,
+            used_ring,
+            notify
+        );
+
+        if(flush_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+            printf("Error: Invalid response from VIRTIO_GPU_CMD_RESOURCE_FLUSH command\n");
+
+            exit();
+        }
+    }
 
     exit();
 }

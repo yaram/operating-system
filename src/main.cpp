@@ -950,7 +950,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
             size_t logical_pages_start;
             if(!find_free_logical_pages(
-                parameter,
+                page_count,
                 process->pml4_table_physical_address,
                 global_bitmap_entries,
                 global_bitmap_size,
