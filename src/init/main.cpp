@@ -3,7 +3,7 @@
 #include "printf.h"
 #include "syscalls.h"
 #include "pcie.h"
-#include "openlibm_math.h"
+#include "HandmadeMath.h"
 
 #define bits_to_mask(bits) ((1 << (bits)) - 1)
 
@@ -523,24 +523,123 @@ extern "C" [[noreturn]] void entry() {
     size_t counter = 0;
 
     while(true) {
+        auto time = (float)counter / 100;
+
+        const size_t triangle_count = 1;
+        hmm_vec3 triangles[triangle_count][3] {
+            {
+                { 100.0f + HMM_CosF(time * HMM_PI32 * 2) * 10, 120.0f - HMM_SinF(time * HMM_PI32 * 2) * 10, 0.0f },
+                { 130.0f, 200.0f, 0.0f },
+                { 300.0f, 150.0f, 0.0f }
+            }
+        };
+
         auto framebuffer = (uint32_t*)framebuffer_address;
 
-        auto time = counter * 0.1f;
+        memset(framebuffer, 0, framebuffer_size);
 
-        auto offset_x = cosf(time * M_PI) * 50;
-        auto offset_y = sinf(time * M_PI) * 50;
+        for(size_t i = 0; i < triangle_count; i += 1) {
+            auto first = triangles[i][0];
+            auto second = triangles[i][1];
+            auto third = triangles[i][2];
 
-        for(size_t y = 0; y < display_height; y += 1) {
-            auto full_y = y + offset_y;
+            if(first.Y > second.Y) {
+                auto temp = first;
+                first = second;
+                second = temp;
+            }
 
-            auto integer_y = (int32_t)full_y;
+            if(first.Y > third.Y) {
+                auto temp = first;
+                first = third;
+                third = temp;
+            }
 
-            for(size_t x = 0; x < display_width; x += 1) {
-                auto full_x = x + offset_x;
+            if(second.Y > third.Y) {
+                auto temp = second;
+                second = third;
+                third = temp;
+            }
 
-                auto integer_x = (int32_t)full_x;
+            auto long_mid_x = HMM_Lerp(first.X, ((float)second.Y - first.Y) / (third.Y - first.Y), third.X);
+            auto short_mid_x = second.X;
 
-                framebuffer[y * display_width + x] = (((uint32_t)integer_x + counter) & 0xFF) | (((uint32_t)integer_y & 0xFF) << 8);
+            auto first_y_pixel = HMM_MIN((size_t)HMM_MAX(first.Y, 0), display_height);
+            auto second_y_pixel = HMM_MIN((size_t)HMM_MAX(second.Y, 0), display_height);
+            auto third_y_pixel = HMM_MIN((size_t)HMM_MAX(third.Y, 0), display_height);
+
+            if(long_mid_x < short_mid_x) {
+                for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
+                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
+
+                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
+
+                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), display_width);
+
+                    auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
+
+                    auto short_x = HMM_Lerp(first.X, short_progress, second.X);
+
+                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), display_width);
+
+                    for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
+                        framebuffer[y * display_width + x] = 0xFFFFFF;
+                    }
+                }
+
+                for(size_t y = second_y_pixel; y < third_y_pixel; y += 1) {
+                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
+
+                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
+
+                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), display_width);
+
+                    auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
+
+                    auto short_x = HMM_Lerp(second.X, short_progress, third.X);
+
+                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), display_width);
+
+                    for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
+                        framebuffer[y * display_width + x] = 0xFFFFFF;
+                    }
+                }
+            } else {
+                for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
+                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
+
+                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
+
+                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), display_width);
+
+                    auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
+
+                    auto short_x = HMM_Lerp(first.X, short_progress, second.X);
+
+                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), display_width);
+
+                    for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
+                        framebuffer[y * display_width + x] = 0xFFFFFF;
+                    }
+                }
+
+                for(size_t y = second_y_pixel; y < third_y_pixel; y += 1) {
+                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
+
+                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
+
+                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), display_width);
+
+                    auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
+
+                    auto short_x = HMM_Lerp(second.X, short_progress, third.X);
+
+                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), display_width);
+
+                    for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
+                        framebuffer[y * display_width + x] = 0xFFFFFF;
+                    }
+                }
             }
         }
 
