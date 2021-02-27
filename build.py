@@ -69,6 +69,7 @@ def build_objects_32bit(objects, object_subdirectory, *extra_arguments):
 acpica_directory = os.path.join(thirdparty_directory, 'acpica')
 printf_directory = os.path.join(thirdparty_directory, 'printf')
 elfload_directory = os.path.join(thirdparty_directory, 'elfload')
+openlibm_directory = os.path.join(thirdparty_directory, 'openlibm')
 
 acpica_archive = os.path.join(build_directory, 'acpica.a')
 
@@ -124,6 +125,33 @@ if not os.path.exists(elfload_archive):
         *[os.path.join(object_directory, 'elfload', object_name) for _, object_name in objects]
     )
 
+user_openlibm_archive = os.path.join(build_directory, 'user_openlibm.a')
+
+if not os.path.exists(user_openlibm_archive):
+    objects = [
+        (os.path.join(openlibm_directory, 'src', name), name[:name.index('.c')] + '.o')
+        for name in filter(lambda name: name.endswith('.c'), os.listdir(os.path.join(openlibm_directory, 'src')))
+    ]
+
+    build_objects_64bit(
+        objects,
+        'user_openlibm',
+        '-I{}'.format(os.path.join(source_directory)),
+        '-I{}'.format(os.path.join(openlibm_directory, 'src')),
+        '-I{}'.format(os.path.join(openlibm_directory, 'include')),
+        '-I{}'.format(os.path.join(openlibm_directory, 'amd64')),
+        '-I{}'.format(os.path.join(openlibm_directory, 'ld80')),
+        '-D__BSD_VISIBLE=1',
+        '-fpie'
+    )
+
+    run_command(
+        shutil.which('llvm-ar'),
+        '-rs',
+        user_openlibm_archive,
+        *[os.path.join(object_directory, 'user_openlibm', object_name) for _, object_name in objects]
+    )
+
 user_mode_test_objects = [
     (os.path.join(source_directory, 'user_mode_test.cpp'), 'user_mode_test.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
@@ -133,6 +161,8 @@ build_objects_64bit(
     user_mode_test_objects,
     'user_mode_test',
     '-I{}'.format(os.path.join(printf_directory)),
+    '-I{}'.format(os.path.join(openlibm_directory, 'include')),
+    '-D__BSD_VISIBLE=1',
     '-fpie'
 )
 
@@ -141,6 +171,7 @@ run_command(
     '-e', 'entry',
     '-pie',
     '-o', os.path.join(build_directory, 'user_mode_test.elf'),
+    user_openlibm_archive,
     *[os.path.join(object_directory, 'user_mode_test', object_name) for _, object_name in user_mode_test_objects]
 )
 

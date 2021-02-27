@@ -3,6 +3,7 @@
 #include "printf.h"
 #include "syscalls.h"
 #include "pcie.h"
+#include "openlibm_math.h"
 
 #define bits_to_mask(bits) ((1 << (bits)) - 1)
 
@@ -524,9 +525,22 @@ extern "C" [[noreturn]] void entry() {
     while(true) {
         auto framebuffer = (uint32_t*)framebuffer_address;
 
+        auto time = counter * 0.1f;
+
+        auto offset_x = cosf(time * M_PI) * 50;
+        auto offset_y = sinf(time * M_PI) * 50;
+
         for(size_t y = 0; y < display_height; y += 1) {
+            auto full_y = y + offset_y;
+
+            auto integer_y = (int32_t)full_y;
+
             for(size_t x = 0; x < display_width; x += 1) {
-                framebuffer[y * display_width + x] = ((x + counter) & 0xFF) | ((y & 0xFF) << 8);
+                auto full_x = x + offset_x;
+
+                auto integer_x = (int32_t)full_x;
+
+                framebuffer[y * display_width + x] = (((uint32_t)integer_x + counter) & 0xFF) | (((uint32_t)integer_y & 0xFF) << 8);
             }
         }
 
