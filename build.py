@@ -136,7 +136,7 @@ if not os.path.exists(user_openlibm_archive):
     build_objects_64bit(
         objects,
         'user_openlibm',
-        '-I{}'.format(os.path.join(source_directory)),
+        '-I{}'.format(os.path.join(source_directory, 'init')),
         '-I{}'.format(os.path.join(openlibm_directory, 'src')),
         '-I{}'.format(os.path.join(openlibm_directory, 'include')),
         '-I{}'.format(os.path.join(openlibm_directory, 'amd64')),
@@ -152,14 +152,15 @@ if not os.path.exists(user_openlibm_archive):
         *[os.path.join(object_directory, 'user_openlibm', object_name) for _, object_name in objects]
     )
 
-user_mode_test_objects = [
-    (os.path.join(source_directory, 'user_mode_test.cpp'), 'user_mode_test.o'),
+init_objects = [
+    (os.path.join(source_directory, 'init', 'main.cpp'), 'main.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
 ]
 
 build_objects_64bit(
-    user_mode_test_objects,
-    'user_mode_test',
+    init_objects,
+    'init',
+    '-I{}'.format(os.path.join(source_directory, 'shared')),
     '-I{}'.format(os.path.join(printf_directory)),
     '-I{}'.format(os.path.join(openlibm_directory, 'include')),
     '-D__BSD_VISIBLE=1',
@@ -170,27 +171,28 @@ run_command(
     shutil.which('ld.lld'),
     '-e', 'entry',
     '-pie',
-    '-o', os.path.join(build_directory, 'user_mode_test.elf'),
+    '-o', os.path.join(build_directory, 'init.elf'),
     user_openlibm_archive,
-    *[os.path.join(object_directory, 'user_mode_test', object_name) for _, object_name in user_mode_test_objects]
+    *[os.path.join(object_directory, 'init', object_name) for _, object_name in init_objects]
 )
 
 objects_kernel64 = [
-    (os.path.join(source_directory, 'static_init.S'), 'static_init.o'),
-    (os.path.join(source_directory, 'entry64.S'), 'entry64.o'),
-    (os.path.join(source_directory, 'syscall.S'), 'syscall.o'),
-    (os.path.join(source_directory, 'preempt.S'), 'preempt.o'),
-    (os.path.join(source_directory, 'interrupts.S'), 'interrupts.o'),
-    (os.path.join(source_directory, 'main.cpp'), 'main.o'),
-    (os.path.join(source_directory, 'console.cpp'), 'console.o'),
-    (os.path.join(source_directory, 'paging.cpp'), 'paging.o'),
-    (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
-    (os.path.join(source_directory, 'acpi_environment.cpp'), 'acpi_environment.o')
+    (os.path.join(source_directory, 'kernel64', 'static_init.S'), 'static_init.o'),
+    (os.path.join(source_directory, 'kernel64', 'entry.S'), 'entry.o'),
+    (os.path.join(source_directory, 'kernel64', 'syscall.S'), 'syscall.o'),
+    (os.path.join(source_directory, 'kernel64', 'preempt.S'), 'preempt.o'),
+    (os.path.join(source_directory, 'kernel64', 'interrupts.S'), 'interrupts.o'),
+    (os.path.join(source_directory, 'kernel64', 'main.cpp'), 'main.o'),
+    (os.path.join(source_directory, 'kernel64', 'console.cpp'), 'console.o'),
+    (os.path.join(source_directory, 'kernel64', 'paging.cpp'), 'paging.o'),
+    (os.path.join(source_directory, 'kernel64', 'acpi_environment.cpp'), 'acpi_environment.o'),
+    (os.path.join(printf_directory, 'printf.c'), 'printf.o')
 ]
 
 build_objects_64bit(
     objects_kernel64,
     'kernel64',
+    '-I{}'.format(os.path.join(source_directory, 'shared')),
     '-I{}'.format(os.path.join(acpica_directory, 'include')),
     '-I{}'.format(os.path.join(printf_directory)),
     '-I{}'.format(os.path.join(elfload_directory)),
@@ -205,7 +207,7 @@ build_objects_64bit(
 run_command(
     shutil.which('ld.lld'),
     '-e', 'entry',
-    '-T', os.path.join(source_directory, 'linker64.ld'),
+    '-T', os.path.join(source_directory, 'kernel64', 'linker.ld'),
     '-o', os.path.join(build_directory, 'kernel64.elf'),
     acpica_archive,
     elfload_archive,
@@ -223,8 +225,8 @@ run_command(
 )
 
 objects_kernel32 = [
-    (os.path.join(source_directory, 'entry.S'), 'entry.o'),
-    (os.path.join(source_directory, 'multiboot.S'), 'multiboot.o'),
+    (os.path.join(source_directory, 'kernel32', 'entry.S'), 'entry.o'),
+    (os.path.join(source_directory, 'kernel32', 'multiboot.S'), 'multiboot.o'),
 ]
 
 build_objects_32bit(
@@ -241,7 +243,7 @@ build_objects_32bit(
 run_command(
     shutil.which('ld.lld'),
     '-e', 'entry',
-    '-T', os.path.join(source_directory, 'linker32.ld'),
+    '-T', os.path.join(source_directory, 'kernel32', 'linker.ld'),
     '-o', os.path.join(build_directory, 'kernel32.elf'),
     *[os.path.join(object_directory, 'kernel32', object_name) for _, object_name in objects_kernel32]
 )

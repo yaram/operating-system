@@ -454,7 +454,7 @@ IDTEntry idt_entries[idt_length] {
 
 IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt_entries };
 
-extern uint8_t user_mode_test[];
+extern uint8_t init[];
 
 uint8_t *current_elf_binary;
 
@@ -1786,7 +1786,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 
     Process *process;
     ProcessBucket::Iterator process_iterator;
-    if(!create_process_from_elf(user_mode_test, bitmap_entries, bitmap_size, &process, &process_iterator)) {
+    if(!create_process_from_elf(init, bitmap_entries, bitmap_size, &process, &process_iterator)) {
         return;
     }
 

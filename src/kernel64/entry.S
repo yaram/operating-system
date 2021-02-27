@@ -33,7 +33,7 @@ stack_top:
 
 .section .rodata
 
-.globl user_mode_test
+.globl init
 
-user_mode_test:
-.incbin "build/user_mode_test.elf"
+init:
+.incbin "build/init.elf"
