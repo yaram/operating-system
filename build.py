@@ -52,9 +52,6 @@ def build_objects(objects, target, object_subdirectory, *extra_arguments):
             '-march=x86-64',
             '-std=gnu++11' if is_cpp else '-std=gnu11',
             '-ffreestanding',
-            '-mno-mmx',
-            '-mno-sse',
-            '-mno-sse2',
             *(['-g'] if debug_info else []),
             *(['-O2'] if optimize else []),
             *extra_arguments,
@@ -87,7 +84,10 @@ if not os.path.exists(acpica_archive):
         '-I{}'.format(os.path.join(acpica_directory, 'include')),
         '-mcmodel=kernel',
         '-fno-stack-protector',
-        '-mno-red-zone'
+        '-mno-red-zone',
+        '-mno-mmx',
+        '-mno-sse',
+        '-mno-sse2'
     )
 
     run_command(
@@ -111,7 +111,10 @@ if not os.path.exists(elfload_archive):
         '-I{}'.format(os.path.join(elfload_directory, 'include')),
         '-mcmodel=kernel',
         '-fno-stack-protector',
-        '-mno-red-zone'
+        '-mno-red-zone',
+        '-mno-mmx',
+        '-mno-sse',
+        '-mno-sse2'
     )
 
     run_command(
@@ -162,7 +165,10 @@ build_objects_64bit(
     '-I{}'.format(os.path.join(elfload_directory)),
     '-mcmodel=kernel',
     '-fno-stack-protector',
-    '-mno-red-zone'
+    '-mno-red-zone',
+    '-mno-mmx',
+    '-mno-sse',
+    '-mno-sse2'
 )
 
 run_command(
@@ -196,6 +202,9 @@ build_objects_32bit(
     '-mcmodel=kernel',
     '-fno-stack-protector',
     '-mno-red-zone',
+    '-mno-mmx',
+    '-mno-sse',
+    '-mno-sse2'
 )
 
 run_command(

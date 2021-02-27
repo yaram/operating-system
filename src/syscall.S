@@ -15,6 +15,13 @@ syscall_thunk:
     pushq $0x23
     push %rcx
 
+    sub $8, %rsp
+
+    sub $512, %rsp
+    fxsave64 (%rsp)
+
+    sub $8, %rsp
+
     push %rbp
     push %r15
     push %r14
@@ -50,6 +57,13 @@ syscall_thunk:
     pop %r14
     pop %r15
     pop %rbp
+
+    add $8, %rsp
+
+    fxrstor64 (%rsp)
+    add $512, %rsp
+
+    add $8, %rsp
 
     pop %rcx
     add $8, %rsp

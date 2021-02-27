@@ -1386,6 +1386,21 @@ static bool find_free_physical_pages_in_bootstrap(
 }
 
 extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t bootstrap_memory_map_size) {
+    // Enable sse
+    asm volatile(
+        "mov %%cr0, %%rax\n"
+        "or $(1 << 1), %%rax\n"
+        "and $~(1 << 2), %%rax\n"
+        "mov %%rax, %%cr0\n"
+        "mov %%cr4, %%rax\n"
+        "or $(1 << 9), %%rax\n"
+        "or $(1 << 10), %%rax\n"
+        "mov %%rax, %%cr4"
+        :
+        :
+        : "rax"
+    );
+
     auto initializer_count = ((size_t)init_array_end - (size_t)init_array_start) / sizeof(void (*)());
 
     for(size_t i = 0; i < initializer_count; i += 1) {

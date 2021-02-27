@@ -5,6 +5,13 @@
 exception_handler_thunk_##index: ;\
     cli ;\
 ;\
+    sub $8, %rsp ;\
+;\
+    sub $512, %rsp ;\
+    fxsave64 (%rsp) ;\
+;\
+    sub $8, %rsp ;\
+;\
     push %rbp ;\
     push %r15 ;\
     push %r14 ;\
@@ -31,6 +38,13 @@ exception_handler_thunk_##index: ;\
 .globl exception_handler_thunk_##index ;\
 exception_handler_thunk_##index: ;\
     cli ;\
+;\
+    sub $8, %rsp ;\
+;\
+    sub $512, %rsp ;\
+    fxsave64 (%rsp) ;\
+;\
+    sub $8, %rsp ;\
 ;\
     push %rbp ;\
     push %r15 ;\

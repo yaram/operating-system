@@ -2,6 +2,13 @@
 
 .globl preempt_timer_thunk
 preempt_timer_thunk:
+    sub $8, %rsp
+
+    sub $512, %rsp
+    fxsave64 (%rsp)
+
+    sub $8, %rsp
+
     push %rbp
     push %r15
     push %r14
@@ -43,5 +50,12 @@ user_enter_thunk:
     pop %r14
     pop %r15
     pop %rbp
+
+    add $8, %rsp
+
+    fxrstor64 (%rsp)
+    add $512, %rsp
+
+    add $8, %rsp
 
     iretq
