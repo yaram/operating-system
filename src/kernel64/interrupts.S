@@ -29,7 +29,7 @@ exception_handler_thunk_##index: ;\
     push %rax ;\
 ;\
     mov $index, %rdi ;\
-    lea 0x78(%rsp), %rsi ;\
+    lea 0x288(%rsp), %rsi ;\
     mov $0, %rdx ;\
 ;\
     call exception_handler
@@ -63,8 +63,8 @@ exception_handler_thunk_##index: ;\
     push %rax ;\
 ;\
     mov $index, %rdi ;\
-    lea 0x80(%rsp), %rsi ;\
-    mov 0x78(%rsp), %rdx ;\
+    lea 0x290(%rsp), %rsi ;\
+    mov 0x288(%rsp), %rdx ;\
 ;\
     call exception_handler
 
