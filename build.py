@@ -68,7 +68,6 @@ def build_objects_32bit(objects, object_subdirectory, *extra_arguments):
 
 acpica_directory = os.path.join(thirdparty_directory, 'acpica')
 printf_directory = os.path.join(thirdparty_directory, 'printf')
-elfload_directory = os.path.join(thirdparty_directory, 'elfload')
 openlibm_directory = os.path.join(thirdparty_directory, 'openlibm')
 
 acpica_archive = os.path.join(build_directory, 'acpica.a')
@@ -96,33 +95,6 @@ if not os.path.exists(acpica_archive):
         '-rs',
         acpica_archive,
         *[os.path.join(object_directory, 'acpica', object_name) for _, object_name in objects]
-    )
-
-elfload_archive = os.path.join(build_directory, 'elfload.a')
-
-if not os.path.exists(elfload_archive):
-    objects = [
-        (os.path.join(elfload_directory, 'elfload.c'), 'elfload.o'),
-        (os.path.join(elfload_directory, 'elfreloc_amd64.c'), 'elfreloc_amd64.o')
-    ]
-
-    build_objects_64bit(
-        objects,
-        'elfload',
-        '-I{}'.format(os.path.join(elfload_directory, 'include')),
-        '-mcmodel=kernel',
-        '-fno-stack-protector',
-        '-mno-red-zone',
-        '-mno-mmx',
-        '-mno-sse',
-        '-mno-sse2'
-    )
-
-    run_command(
-        shutil.which('llvm-ar'),
-        '-rs',
-        elfload_archive,
-        *[os.path.join(object_directory, 'elfload', object_name) for _, object_name in objects]
     )
 
 user_openlibm_archive = os.path.join(build_directory, 'user_openlibm.a')
@@ -197,7 +169,6 @@ build_objects_64bit(
     '-I{}'.format(os.path.join(source_directory, 'shared')),
     '-I{}'.format(os.path.join(acpica_directory, 'include')),
     '-I{}'.format(os.path.join(printf_directory)),
-    '-I{}'.format(os.path.join(elfload_directory)),
     '-mcmodel=kernel',
     '-fno-stack-protector',
     '-mno-red-zone',
@@ -212,7 +183,6 @@ run_command(
     '-T', os.path.join(source_directory, 'kernel64', 'linker.ld'),
     '-o', os.path.join(build_directory, 'kernel64.elf'),
     acpica_archive,
-    elfload_archive,
     *[os.path.join(object_directory, 'kernel64', object_name) for _, object_name in objects_kernel64]
 )
 

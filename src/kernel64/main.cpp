@@ -6,7 +6,6 @@ extern "C" {
 #include "console.h"
 #include "heap.h"
 #include "paging.h"
-#include "elfload.h"
 #include "process.h"
 #include "memory.h"
 #include "bucket_array.h"
@@ -454,19 +453,7 @@ IDTEntry idt_entries[idt_length] {
 
 IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt_entries };
 
-extern uint8_t init[];
-
-uint8_t *current_elf_binary;
-
-static bool elf_read(el_ctx *context, void *destination, size_t length, size_t offset) {
-    memcpy(destination, &current_elf_binary[offset], length);
-
-    return true;
-}
-
-static void *elf_allocate(el_ctx *context, Elf_Addr physical_memory_start, Elf_Addr virtual_memory_start, Elf_Addr size) {
-    return (void*)physical_memory_start;
-}
+extern uint8_t embedded_init_binary[];
 
 size_t next_process_id = 0;
 
@@ -545,6 +532,56 @@ static bool map_and_maybe_allocate_table(
     return true;
 }
 
+struct ELFHeader {
+    struct {
+        uint8_t magic[4];
+        uint8_t format;
+        uint8_t data_type;
+        uint8_t version;
+        uint8_t abi;
+        uint8_t abi_version;
+        uint8_t unused[7];
+    } identity;
+
+    uint16_t type;
+    uint16_t isa;
+    uint8_t version;
+    size_t entry_point;
+    size_t program_header_offset;
+    size_t section_header_offset;
+    uint32_t flags;
+    uint16_t header_size;
+    uint16_t program_header_size;
+    uint16_t program_header_count;
+    uint16_t section_header_size;
+    uint16_t section_header_count;
+    uint16_t section_names_entry_index;
+};
+
+struct ELFProgramHeader {
+    uint32_t type;
+    uint32_t flags;
+    size_t offset;
+    size_t virtual_address;
+    size_t physical_address;
+    size_t in_file_size;
+    size_t in_memory_size;
+    size_t alignment;
+};
+
+struct ELFSectionHeader {
+    uint32_t name_offset;
+    uint32_t type;
+    size_t flags;
+    size_t address;
+    size_t in_file_offset;
+    size_t in_file_size;
+    uint32_t link;
+    uint32_t info;
+    size_t alignment;
+    size_t entry_size;
+};
+
 static bool create_process_from_elf(
     uint8_t *elf_binary,
     uint8_t *bitmap_entries,
@@ -604,17 +641,18 @@ static bool create_process_from_elf(
 
     process->pml4_table_physical_address = pml4_physical_page_index * page_size;
 
-    current_elf_binary = elf_binary;
+    // Currently assumes correct and specific elf header & content, no validation is done.
 
-    el_ctx elf_context {};
-    elf_context.pread = &elf_read;
+    auto elf_header = (ELFHeader*)elf_binary;
 
-    {
-        auto status = el_init(&elf_context);
-        if(status != EL_OK) {
-            printf("Error: Unable to initialize elfloader (%d)\n", status);
+    auto program_headers = (ELFProgramHeader*)((size_t)elf_binary + elf_header->program_header_offset);
 
-            return false;
+    size_t program_memory_size = 0;
+    for(size_t i = 0; i < elf_header->program_header_count; i += 1) {
+        auto end = program_headers[i].virtual_address + program_headers[i].in_memory_size;
+
+        if(end > program_memory_size) {
+            program_memory_size = end;
         }
     }
 
@@ -713,7 +751,7 @@ static bool create_process_from_elf(
         unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
     }
 
-    auto process_page_count = divide_round_up(elf_context.memsz, page_size);
+    auto process_page_count = divide_round_up(program_memory_size, page_size);
 
     size_t process_user_pages_start;
     if(!find_free_logical_pages(
@@ -723,7 +761,7 @@ static bool create_process_from_elf(
         bitmap_index,
         &process_user_pages_start
     )) {
-        printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", elf_context.memsz, process->id);
+        printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", program_memory_size, process->id);
 
         return false;
     }
@@ -733,7 +771,7 @@ static bool create_process_from_elf(
 
     size_t process_kernel_pages_start;
     if(!find_free_logical_pages(process_page_count, &process_kernel_pages_start)) {
-        printf("Error: Unable to find unoccupied kernel memory of size %zu for process %zu\n", elf_context.memsz, process->id);
+        printf("Error: Unable to find unoccupied kernel memory of size %zu for process %zu\n", program_memory_size, process->id);
 
         return false;
     }
@@ -767,37 +805,19 @@ static bool create_process_from_elf(
         }
     }
 
-    {
-        auto status = el_init(&elf_context);
-        if(status != EL_OK) {
-            printf("Error: Unable to initialize elfloader (%d)\n", status);
+    auto process_kernel_memory_start = process_kernel_pages_start * page_size;
 
-            return false;
+    memset((void*)process_kernel_memory_start, 0, process_page_count * page_size);
+
+    for(size_t i = 0; i < elf_header->program_header_count; i += 1) {
+        if(program_headers[i].type == 1) { // Loadable segment
+            memcpy(
+                (void*)(process_kernel_memory_start + program_headers[i].virtual_address),
+                (void*)((size_t)elf_binary + program_headers[i].offset),
+                program_headers[i].in_file_size
+            );
         }
     }
-
-    elf_context.base_load_paddr = (Elf64_Addr)(process_kernel_pages_start * page_size);
-    elf_context.base_load_vaddr = (Elf64_Addr)(process_user_pages_start * page_size);
-
-    {
-        auto status = el_load(&elf_context, &elf_allocate);
-        if(status != EL_OK) {
-            printf("Error: Unable to load ELF binary (%d)\n", status);
-
-            return false;
-        }
-    }
-
-    {
-        auto status = el_relocate(&elf_context);
-        if(status != EL_OK) {
-            printf("Error: Unable to perform ELF relocations (%d)\n", status);
-
-            return false;
-        }
-    }
-
-    unmap_pages(process_kernel_pages_start, process_page_count);
 
     const size_t process_stack_size = 4096;
     const size_t process_stack_page_count = divide_round_up(process_stack_size, page_size);
@@ -810,10 +830,12 @@ static bool create_process_from_elf(
         bitmap_index,
         &process_stack_pages_start
     )) {
-        printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", elf_context.memsz, process->id);
+        printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", program_memory_size, process->id);
 
         return false;
     }
+
+    unmap_pages(process_kernel_pages_start, process_page_count);
 
     for(size_t j = 0; j < process_stack_page_count; j += 1) {
         size_t physical_page_index;
@@ -836,9 +858,11 @@ static bool create_process_from_elf(
         }
     }
 
+    memset((void*)(process_stack_pages_start * page_size), 0, process_stack_page_count * page_size);
+
     auto stack_top = (void*)(process_stack_pages_start * page_size + process_stack_size);
 
-    auto entry_point = (void*)(process_user_pages_start * page_size + (size_t)elf_context.ehdr.e_entry);
+    auto entry_point = (void*)(process_user_pages_start * page_size + elf_header->entry_point);
 
     process->frame.interrupt_frame.instruction_pointer = entry_point;
     process->frame.interrupt_frame.code_segment = 0x23;
@@ -1786,7 +1810,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 
     Process *process;
     ProcessBucket::Iterator process_iterator;
-    if(!create_process_from_elf(init, bitmap_entries, bitmap_size, &process, &process_iterator)) {
+    if(!create_process_from_elf(embedded_init_binary, bitmap_entries, bitmap_size, &process, &process_iterator)) {
         return;
     }
 

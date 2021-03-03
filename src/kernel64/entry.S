@@ -33,7 +33,7 @@ stack_top:
 
 .section .rodata
 
-.globl init
+.globl embedded_init_binary
 
-init:
+embedded_init_binary:
 .incbin "build/init.elf"
