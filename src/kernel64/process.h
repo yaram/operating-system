@@ -24,7 +24,9 @@ struct __attribute__((aligned(16))) ProcessStackFrame {
     uint8_t padding_before[8];
 
     // x87/MMX/SSE registers, must be 16-byte aligned from the start and end of the struct
-    uint8_t flags[32];
+    uint8_t other_flags[24];
+    uint32_t mxcsr;
+    uint32_t mxcsr_mask;
     uint8_t mmx_x87[8][16];
     uint8_t sse[16][16];
     uint8_t reserved[96];

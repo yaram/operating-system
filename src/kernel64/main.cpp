@@ -1724,6 +1724,10 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 
     current_process_iterator = begin(processes);
 
+    // Set ABI-specified intial register states
+
+    process->frame.mxcsr |= bits_to_mask(6) << 7;
+
     auto stack_frame_copy = process->frame;
 
     // Set timer value
