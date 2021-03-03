@@ -1477,7 +1477,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     )) {
         printf("Error: Out of bootstrap memory\n");
 
-        return;
+        halt();
     }
 
     auto new_page_table_count = count_page_tables_needed_for_logical_pages(kernel_pages_end, bitmap_page_count);
@@ -1493,7 +1493,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     )) {
         printf("Error: Out of bootstrap memory\n");
 
-        return;
+        halt();
     }
 
     size_t next_new_physical_page_index = 0;
@@ -1620,7 +1620,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
         if(status != AE_OK) {
             printf("Error: Unable to get MADT ACPI table (0x%X)\n", status);
 
-            return;
+            halt();
         }
     }
 
@@ -1649,7 +1649,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     if(apic_registers == nullptr) {
         printf("Error: Out of memory\n");
 
-        return;
+        halt();
     }
 
     // Set APIC to known state
@@ -1719,7 +1719,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     if(!create_process_from_elf(embedded_init_binary, bitmap_entries, bitmap_size, &process, &process_iterator)) {
         printf("Error: Out of memory\n");
 
-        return;
+        halt();
     }
 
     current_process_iterator = begin(processes);
