@@ -306,10 +306,8 @@ PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 uint8_t *global_bitmap_entries;
 size_t global_bitmap_size;
 
-static bool destroy_process(ProcessBucket::Iterator iterator) {
+static void destroy_process(ProcessBucket::Iterator iterator) {
     iterator.current_bucket->occupied[iterator.current_sub_index] = false;
-
-    return true;
 }
 
 extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStackFrame *frame, size_t error_code) {
@@ -329,11 +327,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStac
 
         printf(" in process %zu\n", process->id);
 
-        if(!destroy_process(current_process_iterator)) {
-            printf("Error: Unable to destroy process %zu\n", process->id);
-
-            halt();
-        }
+        destroy_process(current_process_iterator);
 
         enter_next_process();
     } else {
@@ -594,8 +588,6 @@ static bool create_process_from_elf(
     if(process_iterator.current_bucket == nullptr) {
         auto new_bucket = (ProcessBucket::Bucket*)map_and_allocate_memory(sizeof(ProcessBucket::Bucket), bitmap_entries, bitmap_size);
         if(new_bucket == nullptr) {
-            printf("Error: Unable to allocate new process bucket\n");
-
             return false;
         }
 
@@ -664,8 +656,6 @@ static bool create_process_from_elf(
             bitmap_size
         );
         if(pml4_table == nullptr) {
-            printf("Error: Unable to map kernel pages in user-space for process %zu\n", process->id);
-
             return false;
         }
 
@@ -737,8 +727,6 @@ static bool create_process_from_elf(
                     unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
                 }
 
-                printf("Error: Unable to map kernel pages in user-space for process %zu\n", process->id);
-
                 return false;
             }
 
@@ -761,8 +749,6 @@ static bool create_process_from_elf(
         bitmap_index,
         &process_user_pages_start
     )) {
-        printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", program_memory_size, process->id);
-
         return false;
     }
 
@@ -771,8 +757,6 @@ static bool create_process_from_elf(
 
     size_t process_kernel_pages_start;
     if(!find_free_logical_pages(process_page_count, &process_kernel_pages_start)) {
-        printf("Error: Unable to find unoccupied kernel memory of size %zu for process %zu\n", program_memory_size, process->id);
-
         return false;
     }
 
@@ -785,22 +769,16 @@ static bool create_process_from_elf(
             bitmap_size,
             &physical_page_index
         )){
-            printf("Error: Unable to allocate page for process %zu\n", process->id);
-
             return false;
         }
 
         // The order of these is IMPORTANT, otherwise the kernel pages will get overwritten!!!
 
         if(!set_page(process_user_pages_start + j, physical_page_index, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
-            printf("Error: Unable to map user page for process %zu\n", process->id);
-
             return false;
         }
 
         if(!set_page(process_kernel_pages_start + j, physical_page_index, bitmap_entries, bitmap_size)) {
-            printf("Error: Unable to map kernel page for process %zu\n", process->id);
-
             return false;
         }
     }
@@ -830,8 +808,6 @@ static bool create_process_from_elf(
         bitmap_index,
         &process_stack_pages_start
     )) {
-        printf("Error: Unable to find unoccupied user logical memory of size %zu for process %zu\n", program_memory_size, process->id);
-
         return false;
     }
 
@@ -846,14 +822,10 @@ static bool create_process_from_elf(
             bitmap_size,
             &physical_page_index
         )){
-            printf("Error: Unable to allocate page for process %zu\n", process->id);
-
             return false;
         }
 
         if(!set_page(process_stack_pages_start + j, physical_page_index, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
-            printf("Error: Unable to map user page for process %zu\n", process->id);
-
             return false;
         }
     }
@@ -898,11 +870,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
     switch((SyscallType)syscall_index) {
         case SyscallType::Exit: {
-            if(!destroy_process(current_process_iterator)) {
-                printf("Error: Unable to destroy process %zu\n", process->id);
-
-                halt();
-            }
+            destroy_process(current_process_iterator);
 
             enter_next_process();
         } break;
@@ -1023,9 +991,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             {
                 auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
                 if(status != AE_OK) {
-                    printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
-
-                    return;
+                    break;
                 }
             }
 
@@ -1049,14 +1015,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         global_bitmap_size
                     );
                     if(bus_memory == nullptr) {
-                        printf(
-                            "Error: Unable to map pages for PCI-E bus %zu on segment %zu at 0x%0zx(%zx)\n",
-                            bus + start_bus_number,
-                            segment,
-                            physical_memory_start,
-                            bus_memory_size
-                        );
-
                         done = true;
                         break;
                     }
@@ -1116,9 +1074,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             {
                 auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
                 if(status != AE_OK) {
-                    printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
-
-                    return;
+                    break;
                 }
             }
 
@@ -1138,14 +1094,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         global_bitmap_size,
                         &logical_pages_start
                     )) {
-                        printf(
-                            "Error: Unable to find free user page for PCI-E bus %zu on segment %zu at 0x%0zx(%zx)\n",
-                            bus + start_bus_number,
-                            segment,
-                            physical_memory_start,
-                            configuration_area_size
-                        );
-
                         break;
                     }
 
@@ -1159,14 +1107,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         global_bitmap_entries,
                         global_bitmap_size
                     )) {
-                        printf(
-                            "Error: Unable to map configuration for PCI-E bus %zu on segment %zu at 0x%0zx(%zx)\n",
-                            bus + start_bus_number,
-                            segment,
-                            physical_memory_start,
-                            configuration_area_size
-                        );
-
                         break;
                     }
 
@@ -1189,9 +1129,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             {
                 auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
                 if(status != AE_OK) {
-                    printf("Error: Unable to get MCFG ACPI table (0x%X)\n", status);
-
-                    return;
+                    break;
                 }
             }
 
@@ -1213,16 +1151,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         global_bitmap_size
                     );
                     if(configuration_memory == nullptr) {
-                        printf(
-                            "Error: Unable to map configuration for PCI-E device %zu:%zu:%zu on segment %zu at 0x%0zx(%zx)\n",
-                            bus + start_bus_number,
-                            device,
-                            function,
-                            segment,
-                            physical_memory_start,
-                            configuration_area_size
-                        );
-
                         break;
                     }
 
@@ -1299,15 +1227,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         global_bitmap_size,
                         &logical_pages_start
                     )) {
-                        printf(
-                            "Error: Unable to find free user pages for PCI-E BAR %zu from device %zu:%zu:%zu on segment %zu\n",
-                            bar_index,
-                            bus + start_bus_number,
-                            device,
-                            function,
-                            segment
-                        );
-
                         break;
                     }
 
@@ -1320,15 +1239,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                             global_bitmap_entries,
                             global_bitmap_size
                         )) {
-                            printf(
-                                "Error: Unable to map pages for PCI-E BAR %zu on device %zu:%zu:%zu on segment %zu\n",
-                                bar_index,
-                                bus + start_bus_number,
-                                device,
-                                function,
-                                segment
-                            );
-
                             failed = true;
                             break;
                         }
@@ -1348,11 +1258,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         default: { // unknown syscall
             printf("Unknown syscall from process %zu at %p\n", process->id, stack_frame->interrupt_frame.instruction_pointer);
 
-            if(!destroy_process(current_process_iterator)) {
-                printf("Error: Unable to destroy process %zu\n", process->id);
-
-                halt();
-            }
+            destroy_process(current_process_iterator);
 
             enter_next_process();
         } break;
@@ -1569,7 +1475,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
         0,
         &bitmap_physical_pages_start
     )) {
-        printf("Error: Unable to find %zu free pages for page bitmap\n", bitmap_page_count);
+        printf("Error: Out of bootstrap memory\n");
 
         return;
     }
@@ -1585,7 +1491,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
         bitmap_page_count,
         &new_physical_pages_start
     )) {
-        printf("Error: Unable to find %zu free pages for new page tables\n", new_page_table_count);
+        printf("Error: Out of bootstrap memory\n");
 
         return;
     }
@@ -1741,7 +1647,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 
     apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap_entries, bitmap_size);
     if(apic_registers == nullptr) {
-        printf("Error: Unable to map memory for APIC registers\n");
+        printf("Error: Out of memory\n");
 
         return;
     }
@@ -1811,6 +1717,8 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     Process *process;
     ProcessBucket::Iterator process_iterator;
     if(!create_process_from_elf(embedded_init_binary, bitmap_entries, bitmap_size, &process, &process_iterator)) {
+        printf("Error: Out of memory\n");
+
         return;
     }
 
