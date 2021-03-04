@@ -314,7 +314,7 @@ bool create_process_from_elf(
         return false;
     }
 
-    if(!register_process_allocation(process, process_user_pages_start, process_page_count, bitmap_entries, bitmap_size)) {
+    if(!register_process_mapping(process, process_user_pages_start, process_page_count, true, bitmap_entries, bitmap_size)) {
         destroy_process(process_iterator, bitmap_entries, bitmap_size);
 
         return false;
@@ -401,7 +401,7 @@ bool create_process_from_elf(
         return false;
     }
 
-    if(!register_process_allocation(process, process_stack_user_pages_start, process_stack_page_count, bitmap_entries, bitmap_size)) {
+    if(!register_process_mapping(process, process_stack_user_pages_start, process_stack_page_count, true, bitmap_entries, bitmap_size)) {
         destroy_process(process_iterator, bitmap_entries, bitmap_size);
 
         return false;
@@ -498,77 +498,47 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
 
     auto process = *iterator;
 
-    // Deallocate free memory allocations for process
+    // Deallocate owned memory mappings for process
 
-    auto pml4_table = (PageTableEntry*)map_memory(
-        process->pml4_table_physical_address,
-        sizeof(PageTableEntry[page_table_length]),
-        bitmap_entries,
-        bitmap_size
-    );
-    if(pml4_table == nullptr) {
-        return false;
+    for(auto mapping : process->mappings) {
+        if(!unmap_pages(
+            mapping->logical_pages_start,
+            mapping->page_count,
+            process->pml4_table_physical_address,
+            false,
+            bitmap_entries,
+            bitmap_size
+        )) {
+            return false;
+        }
     }
 
-    size_t current_pml4_index;
-    PageTableEntry *pdp_table = nullptr;
+    // Deallocate the memory mappings bucket array
 
-    size_t current_pdp_index;
-    PageTableEntry *pd_table = nullptr;
+    if(process->mappings.first_bucket.next != nullptr) {
+        auto current_bucket = process->mappings.first_bucket.next;
 
-    size_t current_pd_index;
-    PageTableEntry *page_table = nullptr;
+        while(true) {
+            auto next_bucket = current_bucket->next;
 
-    for(auto allocation : process->allocations) {
-        for(
-            size_t absolute_page_index = allocation->logical_pages_start;
-            absolute_page_index < allocation->logical_pages_start + allocation->page_count;
-            absolute_page_index += 1
-        ) {
-            auto page_index = absolute_page_index;
-            auto pd_index = page_index / page_table_length;
-            auto pdp_index = pd_index / page_table_length;
-            auto pml4_index = pdp_index / page_table_length;
+            unmap_and_deallocate_memory(current_bucket, sizeof(ProcessPageMappings::Bucket), bitmap_entries, bitmap_size);
 
-            page_index %= page_table_length;
-            pd_index %= page_table_length;
-            pdp_index %= page_table_length;
-            pml4_index %= page_table_length;
-
-            if(
-                !map_table(
-                    &current_pml4_index,
-                    &pdp_table,
-                    pml4_table,
-                    pml4_index,
-                    bitmap_entries,
-                    bitmap_size
-                ) ||
-                !map_table(
-                    &current_pdp_index,
-                    &pd_table,
-                    pdp_table,
-                    pdp_index,
-                    bitmap_entries,
-                    bitmap_size
-                ) ||
-                !map_table(
-                    &current_pd_index,
-                    &page_table,
-                    pd_table,
-                    pd_index,
-                    bitmap_entries,
-                    bitmap_size
-                )
-            ) {
-                return false;
+            if(next_bucket == nullptr) {
+                break;
+            } else {
+                current_bucket = next_bucket;
             }
-
-            deallocate_page(page_table[page_index].page_address, bitmap_entries);
         }
     }
 
     // Deallocate the page tables themselves
+
+    auto pml4_table = (PageTableEntry*)map_memory(
+        process->pml4_table_physical_address * page_size,
+        sizeof(PageTableEntry[page_table_length]),
+        bitmap_entries,
+        bitmap_size
+    );
 
     for(size_t pml4_index = 0; pml4_index < page_table_length; pml4_index += 1) {
         if(pml4_table[pml4_index].present) {
@@ -624,19 +594,26 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
     return true;
 }
 
-bool register_process_allocation(Process *process, size_t logical_pages_start, size_t page_count, uint8_t *bitmap_entries, size_t bitmap_size) {
-    auto allocation_iterator = find_unoccupied_bucket_slot(&process->allocations);
+bool register_process_mapping(
+    Process *process,
+    size_t logical_pages_start,
+    size_t page_count,
+    bool is_owned,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+) {
+    auto mapping_iterator = find_unoccupied_bucket_slot(&process->mappings);
 
-    if(allocation_iterator.current_bucket == nullptr) {
-        auto new_bucket = (ProcessAllocations::Bucket*)map_and_allocate_memory(sizeof(ProcessAllocations::Bucket), bitmap_entries, bitmap_size);
+    if(mapping_iterator.current_bucket == nullptr) {
+        auto new_bucket = (ProcessPageMappings::Bucket*)map_and_allocate_memory(sizeof(ProcessPageMappings::Bucket), bitmap_entries, bitmap_size);
         if(new_bucket == nullptr) {
             return false;
         }
 
-        memset((void*)new_bucket, 0, sizeof(ProcessAllocations::Bucket));
+        memset((void*)new_bucket, 0, sizeof(ProcessPageMappings::Bucket));
 
         {
-            auto current_bucket = &process->allocations.first_bucket;
+            auto current_bucket = &process->mappings.first_bucket;
             while(current_bucket->next != nullptr) {
                 current_bucket = current_bucket->next;
             }
@@ -644,19 +621,20 @@ bool register_process_allocation(Process *process, size_t logical_pages_start, s
             current_bucket->next = new_bucket;
         }
 
-        allocation_iterator = {
+        mapping_iterator = {
             new_bucket,
             0
         };
     }
 
-    allocation_iterator.current_bucket->occupied[allocation_iterator.current_sub_index] = true;
+    mapping_iterator.current_bucket->occupied[mapping_iterator.current_sub_index] = true;
 
-    auto allocation = *allocation_iterator;
+    auto mapping = *mapping_iterator;
 
-    *allocation = {
+    *mapping = {
         logical_pages_start,
-        page_count
+        page_count,
+        is_owned
     };
 
     return true;

@@ -1237,3 +1237,150 @@ bool set_page(
 
     return true;
 }
+
+static bool map_table(
+    size_t *current_parent_index,
+    PageTableEntry **current_table,
+    PageTableEntry *parent_table,
+    size_t parent_index,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+) {
+    if(*current_table == nullptr || parent_index != *current_parent_index) {
+        if(*current_table != nullptr) {
+            unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
+
+            *current_table = nullptr;
+        }
+
+        size_t logical_page_index;
+        if(!map_pages(
+            parent_table[parent_index].page_address,
+            1,
+            bitmap_entries,
+            bitmap_size,
+            &logical_page_index
+        )) {
+            return false;
+        }
+
+        *current_table = (PageTableEntry*)(logical_page_index * page_size);
+        *current_parent_index = parent_index;
+    }
+
+    return true;
+}
+
+bool unmap_pages(
+    size_t logical_pages_start,
+    size_t page_count,
+    size_t pml4_table_physical_address,
+    bool deallocate,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+) {
+    auto pml4_table = (PageTableEntry*)map_memory(
+        pml4_table_physical_address,
+        sizeof(PageTableEntry[page_table_length]),
+        bitmap_entries,
+        bitmap_size
+    );
+    if(pml4_table == nullptr) {
+        return false;
+    }
+
+    size_t current_pml4_index;
+    PageTableEntry *pdp_table = nullptr;
+
+    size_t current_pdp_index;
+    PageTableEntry *pd_table = nullptr;
+
+    size_t current_pd_index;
+    PageTableEntry *page_table = nullptr;
+
+    for(
+        size_t absolute_page_index = logical_pages_start;
+        absolute_page_index < logical_pages_start + page_count;
+        absolute_page_index += 1
+    ) {
+        auto page_index = absolute_page_index;
+        auto pd_index = page_index / page_table_length;
+        auto pdp_index = pd_index / page_table_length;
+        auto pml4_index = pdp_index / page_table_length;
+
+        page_index %= page_table_length;
+        pd_index %= page_table_length;
+        pdp_index %= page_table_length;
+        pml4_index %= page_table_length;
+
+        if(
+            !map_table(
+                &current_pml4_index,
+                &pdp_table,
+                pml4_table,
+                pml4_index,
+                bitmap_entries,
+                bitmap_size
+            ) ||
+            !map_table(
+                &current_pdp_index,
+                &pd_table,
+                pdp_table,
+                pdp_index,
+                bitmap_entries,
+                bitmap_size
+            ) ||
+            !map_table(
+                &current_pd_index,
+                &page_table,
+                pd_table,
+                pd_index,
+                bitmap_entries,
+                bitmap_size
+            )
+        ) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
+            if(pdp_table != nullptr) {
+                unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
+            }
+
+            if(pd_table != nullptr) {
+                unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
+            }
+
+            if(page_table != nullptr) {
+                unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
+            }
+
+            return false;
+        }
+
+        page_table[page_index].present = false;
+
+        if(deallocate) {
+            auto physical_page_index = page_table[page_index].page_address;
+
+            auto byte_index = physical_page_index / 8;
+            auto sub_byte_index = physical_page_index % 8;
+
+            bitmap_entries[byte_index] &= ~(1 << sub_byte_index);
+        }
+    }
+
+    unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
+    if(pdp_table != nullptr) {
+        unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
+    }
+
+    if(pd_table != nullptr) {
+        unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
+    }
+
+    if(page_table != nullptr) {
+        unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
+    }
+
+    return true;
+}

@@ -37,12 +37,14 @@ struct __attribute__((aligned(16))) ProcessStackFrame {
     InterruptStackFrame interrupt_frame;
 };
 
-struct ProcessAllocation {
+struct ProcessPageMapping {
     size_t logical_pages_start;
     size_t page_count;
+
+    bool is_owned;
 };
 
-using ProcessAllocations = BucketArray<ProcessAllocation, 16>;
+using ProcessPageMappings = BucketArray<ProcessPageMapping, 16>;
 
 struct Process {
     size_t logical_pages_start;
@@ -52,7 +54,7 @@ struct Process {
 
     size_t id;
 
-    ProcessAllocations allocations;
+    ProcessPageMappings mappings;
 
     ProcessStackFrame frame;
 };
@@ -70,4 +72,11 @@ bool create_process_from_elf(
     Processes::Iterator *result_process_iterator
 );
 bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size_t bitmap_size);
-bool register_process_allocation(Process *process, size_t logical_pages_start, size_t page_count, uint8_t *bitmap_entries, size_t bitmap_size);
+bool register_process_mapping(
+    Process *process,
+    size_t logical_pages_start,
+    size_t page_count,
+    bool is_owned,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+);

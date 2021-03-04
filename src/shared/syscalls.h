@@ -8,6 +8,7 @@ enum struct SyscallType : size_t {
     DebugPrint,
     MapFreeMemory,
     MapFreeConsecutiveMemory,
+    UnmapMemory,
     FindPCIEDevice,
     MapPCIEConfiguration,
     MapPCIEBar

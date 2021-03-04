@@ -522,7 +522,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                 break;
             }
 
-            if(!register_process_allocation(process, logical_pages_start, page_count, global_bitmap_entries, global_bitmap_size)) {
+            if(!register_process_mapping(process, logical_pages_start, page_count, true, global_bitmap_entries, global_bitmap_size)) {
                 break;
             }
 
@@ -573,12 +573,35 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                 break;
             }
 
-            if(!register_process_allocation(process, logical_pages_start, page_count, global_bitmap_entries, global_bitmap_size)) {
+            if(!register_process_mapping(process, logical_pages_start, page_count, true, global_bitmap_entries, global_bitmap_size)) {
                 break;
             }
 
             *return_1 = logical_pages_start * page_size;
             *return_2 = physical_pages_start * page_size;
+        } break;
+
+        case SyscallType::UnmapMemory: {
+            auto logical_pages_start = parameter / page_size;
+
+            for(auto iterator = begin(process->mappings); iterator != end(process->mappings); ++iterator) {
+                auto mapping = *iterator;
+
+                if(mapping->logical_pages_start == logical_pages_start) {
+                    iterator.current_bucket->occupied[iterator.current_sub_index] = false;
+
+                    unmap_pages(
+                        mapping->logical_pages_start,
+                        mapping->page_count,
+                        process->pml4_table_physical_address,
+                        mapping->is_owned,
+                        global_bitmap_entries,
+                        global_bitmap_size
+                    );
+
+                    break;
+                }
+            }
         } break;
 
         case SyscallType::FindPCIEDevice: {
@@ -708,7 +731,12 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         break;
                     }
 
+                    if(!register_process_mapping(process, logical_pages_start, 1, false, global_bitmap_entries, global_bitmap_size)) {
+                        break;
+                    }
+
                     *return_1 = logical_pages_start * page_size;
+
                     break;
                 }
             }
@@ -846,6 +874,10 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         break;
                     }
 
+                    if(!register_process_mapping(process, logical_pages_start, page_count, false, global_bitmap_entries, global_bitmap_size)) {
+                        break;
+                    }
+
                     *return_1 = logical_pages_start * page_size;
                 }
             }
@@ -868,9 +900,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         : "D"(process->pml4_table_physical_address)
     );
 }
-
-extern void (*init_array_start[])();
-extern void (*init_array_end[])();
 
 struct BootstrapMemoryMapEntry {
     void* address;
@@ -912,6 +941,9 @@ static bool find_free_physical_pages_in_bootstrap(
 
     return false;
 }
+
+extern void (*init_array_start[])();
+extern void (*init_array_end[])();
 
 extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t bootstrap_memory_map_size) {
     // Enable sse

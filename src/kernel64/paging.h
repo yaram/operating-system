@@ -177,3 +177,12 @@ bool set_page(
     uint8_t *bitmap_entries,
     size_t bitmap_size
 );
+
+bool unmap_pages(
+    size_t logical_pages_start,
+    size_t page_count,
+    size_t pml4_table_physical_address,
+    bool deallocate,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size
+);
