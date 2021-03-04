@@ -2,8 +2,6 @@
 #include <stdint.h>
 #include "memory.h"
 
-#define divide_round_up(dividend, divisor) (((dividend) + (divisor) - 1) / (divisor))
-
 bool find_free_logical_pages(size_t page_count, size_t *logical_pages_start) {
     auto last_full = true;
     auto found = false;
@@ -926,6 +924,8 @@ bool find_free_logical_pages(
                 bitmap_size
             );
             if(pdp_table == nullptr) {
+                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
                 return false;
             }
 
@@ -954,6 +954,7 @@ bool find_free_logical_pages(
                         bitmap_size
                     );
                     if(pd_table == nullptr) {
+                        unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
                         unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
 
                         return false;
@@ -984,6 +985,7 @@ bool find_free_logical_pages(
                                 bitmap_size
                             );
                             if(page_table == nullptr) {
+                                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
                                 unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
                                 unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
 
@@ -1034,6 +1036,8 @@ bool find_free_logical_pages(
         }
     }
 
+    unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
     if(!found) {
         return false;
     }
@@ -1081,6 +1085,8 @@ bool set_page(
             bitmap_size
         );
         if(pdp_table == nullptr) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
             return false;
         }
     } else {
@@ -1092,6 +1098,8 @@ bool set_page(
             bitmap_size,
             &physical_page_index
         )) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
             return false;
         }
 
@@ -1102,6 +1110,8 @@ bool set_page(
             bitmap_size
         );
         if(pdp_table == nullptr) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
             return false;
         }
 
@@ -1122,6 +1132,7 @@ bool set_page(
             bitmap_size
         );
         if(pd_table == nullptr) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
             unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
 
             return false;
@@ -1147,6 +1158,7 @@ bool set_page(
             bitmap_size
         );
         if(pd_table == nullptr) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
             unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
 
             return false;
@@ -1169,6 +1181,7 @@ bool set_page(
             bitmap_size
         );
         if(page_table == nullptr) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
             unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
             unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
 
@@ -1183,6 +1196,7 @@ bool set_page(
             bitmap_size,
             &physical_page_index
         )) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
             unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
             unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
 
@@ -1196,6 +1210,7 @@ bool set_page(
             bitmap_size
         );
         if(page_table == nullptr) {
+            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
             unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
             unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
 
@@ -1215,6 +1230,7 @@ bool set_page(
     page_table[page_index].user_mode_allowed = true;
     page_table[page_index].page_address = physical_page_index;
 
+    unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
     unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
     unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
     unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
