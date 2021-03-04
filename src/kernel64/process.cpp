@@ -378,20 +378,30 @@ bool create_process_from_elf(
     const size_t process_stack_size = 4096;
     const size_t process_stack_page_count = divide_round_up(process_stack_size, page_size);
 
-    size_t process_stack_pages_start;
+    size_t process_stack_user_pages_start;
     if(!find_free_logical_pages(
         process_stack_page_count,
         process->pml4_table_physical_address,
         bitmap_entries,
         bitmap_index,
-        &process_stack_pages_start
+        &process_stack_user_pages_start
     )) {
         destroy_process(process_iterator, bitmap_entries, bitmap_size);
 
         return false;
     }
 
-    if(!register_process_allocation(process, process_stack_pages_start, process_page_count, bitmap_entries, bitmap_size)) {
+    size_t process_stack_kernel_pages_start;
+    if(!find_free_logical_pages(
+        process_stack_page_count,
+        &process_stack_kernel_pages_start
+    )) {
+        destroy_process(process_iterator, bitmap_entries, bitmap_size);
+
+        return false;
+    }
+
+    if(!register_process_allocation(process, process_stack_user_pages_start, process_stack_page_count, bitmap_entries, bitmap_size)) {
         destroy_process(process_iterator, bitmap_entries, bitmap_size);
 
         return false;
@@ -411,16 +421,24 @@ bool create_process_from_elf(
             return false;
         }
 
-        if(!set_page(process_stack_pages_start + j, physical_page_index, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
+        if(!set_page(process_stack_user_pages_start + j, physical_page_index, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
+            destroy_process(process_iterator, bitmap_entries, bitmap_size);
+
+            return false;
+        }
+
+        if(!set_page(process_stack_kernel_pages_start + j, physical_page_index, bitmap_entries, bitmap_size)) {
             destroy_process(process_iterator, bitmap_entries, bitmap_size);
 
             return false;
         }
     }
 
-    memset((void*)(process_stack_pages_start * page_size), 0, process_stack_page_count * page_size);
+    memset((void*)(process_stack_user_pages_start * page_size), 0, process_stack_page_count * page_size);
 
-    auto stack_top = (void*)(process_stack_pages_start * page_size + process_stack_size);
+    unmap_pages(process_stack_kernel_pages_start, process_stack_page_count);
+
+    auto stack_top = (void*)(process_stack_user_pages_start * page_size + process_stack_size);
 
     auto entry_point = (void*)(process_user_pages_start * page_size + elf_header->entry_point);
 
@@ -561,6 +579,8 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
                 bitmap_size
             );
             if(pdp_table == nullptr) {
+                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+
                 return false;
             }
 
@@ -573,6 +593,7 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
                         bitmap_size
                     );
                     if(pd_table == nullptr) {
+                        unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
                         unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
 
                         return false;
@@ -580,22 +601,7 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
 
                     for(size_t pd_index = 0; pd_index < page_table_length; pd_index += 1) {
                         if(pd_table[pd_index].present) {
-                            auto page_table = (PageTableEntry*)map_memory(
-                                pd_table[pd_index].page_address * page_size,
-                                sizeof(PageTableEntry[page_table_length]),
-                                bitmap_entries,
-                                bitmap_size
-                            );
-                            if(page_table == nullptr) {
-                                unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
-                                unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
-
-                                return false;
-                            }
-
                             deallocate_page(pd_table[pd_index].page_address, bitmap_entries);
-
-                            unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
                         }
                     }
 
