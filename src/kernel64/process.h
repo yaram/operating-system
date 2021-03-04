@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "interrupts.h"
+#include "bucket_array.h"
 
 struct __attribute__((aligned(16))) ProcessStackFrame {
     // Base integer registers
@@ -36,6 +37,13 @@ struct __attribute__((aligned(16))) ProcessStackFrame {
     InterruptStackFrame interrupt_frame;
 };
 
+struct ProcessAllocation {
+    size_t logical_pages_start;
+    size_t page_count;
+};
+
+using ProcessAllocations = BucketArray<ProcessAllocation, 16>;
+
 struct Process {
     size_t logical_pages_start;
     size_t page_count;
@@ -44,5 +52,22 @@ struct Process {
 
     size_t id;
 
+    ProcessAllocations allocations;
+
     ProcessStackFrame frame;
 };
+
+using Processes = BucketArray<Process, 4>;
+
+extern Processes global_processes;
+
+bool create_process_from_elf(
+    uint8_t *elf_binary,
+    uint8_t *bitmap_entries,
+    size_t bitmap_size,
+    Processes *processes,
+    Process **result_processs,
+    Processes::Iterator *result_process_iterator
+);
+bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size_t bitmap_size);
+bool register_process_allocation(Process *process, size_t logical_pages_start, size_t page_count, uint8_t *bitmap_entries, size_t bitmap_size);

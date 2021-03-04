@@ -3,7 +3,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define divide_round_up(dividend, divisor) (((dividend) + (divisor) - 1) / (divisor))
+
 const size_t page_size = 4096;
+
+const size_t kernel_memory_start = 0;
+const size_t kernel_memory_end = 0x800000;
+
+const auto kernel_pages_start = kernel_memory_start / page_size;
+const auto kernel_pages_end = divide_round_up(kernel_memory_end, page_size);
 
 struct __attribute__((packed)) PageTableEntry {
     bool present: 1;

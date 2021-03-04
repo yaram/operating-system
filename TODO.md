@@ -1,6 +1,6 @@
 ## Complete
 
-
+- process memory deallocation
 
 ## In progress
 

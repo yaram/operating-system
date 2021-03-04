@@ -93,7 +93,7 @@ static bool operator !=(const ConstBucketArrayIterator<T, N> &a, const ConstBuck
     return a.current_bucket != b.current_bucket || a.current_sub_index != b.current_sub_index;
 }
 
-template <typename T, size_t N = alignof(T)>
+template <typename T, size_t N>
 struct BucketArray {
     using Type = T;
     const static auto size = N;
