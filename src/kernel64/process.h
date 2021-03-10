@@ -4,6 +4,7 @@
 #include "interrupts.h"
 #include "bucket_array.h"
 
+// Positions of members in this struct are VERY IMPORTANT and relied on by assembly code and the architecture
 struct __attribute__((aligned(16))) ProcessStackFrame {
     // Base integer registers
     uint64_t rax;
@@ -22,17 +23,15 @@ struct __attribute__((aligned(16))) ProcessStackFrame {
     uint64_t r15;
     uint64_t rbp;
 
-    uint8_t padding_before[8];
+    uint8_t padding[8];
 
-    // x87/MMX/SSE registers, must be 16-byte aligned from the start and end of the struct
-    uint8_t other_flags[24];
+    // x87/MMX/SSE registers
+    uint8_t x87_flags[24];
     uint32_t mxcsr;
     uint32_t mxcsr_mask;
     uint8_t mmx_x87[8][16];
     uint8_t sse[16][16];
     uint8_t reserved[96];
-
-    uint8_t padding_after[8];
 
     InterruptStackFrame interrupt_frame;
 };

@@ -15,7 +15,7 @@ syscall_thunk:
     pushq $0x23
     push %rcx
 
-    sub $8, %rsp
+    pushq $0
 
     sub $512, %rsp
     fxsave64 (%rsp)

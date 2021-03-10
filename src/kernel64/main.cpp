@@ -298,12 +298,12 @@ Processes global_processes {};
     user_enter_thunk(&stack_frame_copy);
 }
 
-extern "C" [[noreturn]] void exception_handler(size_t index, const InterruptStackFrame *frame, size_t error_code) {
-    printf("EXCEPTION 0x%X(0x%X) AT %p", index, error_code, frame->instruction_pointer);
+extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackFrame *frame) {
+    printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
     if(
-        (size_t)frame->instruction_pointer < kernel_memory_start ||
-        (size_t)frame->instruction_pointer >= kernel_memory_end
+        (size_t)frame->interrupt_frame.instruction_pointer < kernel_memory_start ||
+        (size_t)frame->interrupt_frame.instruction_pointer >= kernel_memory_end
     ) {
         asm volatile(
             "mov %0, %%cr3"

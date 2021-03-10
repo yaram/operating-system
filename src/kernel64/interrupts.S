@@ -5,7 +5,7 @@
 exception_handler_thunk_##index: ;\
     cli ;\
 ;\
-    sub $8, %rsp ;\
+    pushq $0 ;\
 ;\
     sub $512, %rsp ;\
     fxsave64 (%rsp) ;\
@@ -29,8 +29,7 @@ exception_handler_thunk_##index: ;\
     push %rax ;\
 ;\
     mov $index, %rdi ;\
-    lea 0x288(%rsp), %rsi ;\
-    mov $0, %rdx ;\
+    mov %rsp, %rsi ;\
 ;\
     call exception_handler
 
@@ -39,8 +38,6 @@ exception_handler_thunk_##index: ;\
 exception_handler_thunk_##index: ;\
     cli ;\
 ;\
-    sub $8, %rsp ;\
-;\
     sub $512, %rsp ;\
     fxsave64 (%rsp) ;\
 ;\
@@ -63,8 +60,7 @@ exception_handler_thunk_##index: ;\
     push %rax ;\
 ;\
     mov $index, %rdi ;\
-    lea 0x290(%rsp), %rsi ;\
-    mov 0x288(%rsp), %rdx ;\
+    mov %rsp, %rsi ;\
 ;\
     call exception_handler
 

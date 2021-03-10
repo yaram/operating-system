@@ -2,7 +2,7 @@
 
 .globl preempt_timer_thunk
 preempt_timer_thunk:
-    sub $8, %rsp
+    pushq $0
 
     sub $512, %rsp
     fxsave64 (%rsp)
