@@ -20,3 +20,5 @@
 - \[user\] first-party/reference/example std library / hardware abstraction library
 - custom object/binary format with custom 'linker'
 - memory page execution/read/write protection for user pages
+- use custom polymorphic array type for runtime array bounds checking
+- use semantic user & kernel memory/page range types for more compile-time checking/type safety & runtime bounds checking
