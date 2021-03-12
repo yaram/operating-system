@@ -46,9 +46,6 @@ struct ProcessPageMapping {
 using ProcessPageMappings = BucketArray<ProcessPageMapping, 16>;
 
 struct Process {
-    size_t logical_pages_start;
-    size_t page_count;
-
     size_t pml4_table_physical_address;
 
     size_t id;
@@ -62,7 +59,13 @@ using Processes = BucketArray<Process, 4>;
 
 extern Processes global_processes;
 
-bool create_process_from_elf(
+enum struct CreateProcessFromELFResult {
+    Success,
+    OutOfMemory,
+    InvalidELF
+};
+
+CreateProcessFromELFResult create_process_from_elf(
     uint8_t *elf_binary,
     uint8_t *bitmap_entries,
     size_t bitmap_size,

@@ -144,7 +144,7 @@ build_objects_64bit(
 run_command(
     shutil.which('ld.lld'),
     '-e', 'entry',
-    '-pie',
+    '--relocatable',
     '-o', os.path.join(build_directory, 'init.elf'),
     user_openlibm_archive,
     *[os.path.join(object_directory, 'init', object_name) for _, object_name in init_objects]

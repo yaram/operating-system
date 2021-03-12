@@ -1,10 +1,12 @@
 ## Complete
 
 - process memory deallocation
+- relocatable-type ELF files for everything (do linking at runtime)
 
 ## In progress
 
 - better error handling (cascade out-of-memory errors up call stack, maybe no useless "thing here" error messages)
+- ELF executable validation
 
 ## Not started / ideas
 
@@ -12,10 +14,8 @@
 - processes subscribe to hardware interrupts
 - \[user\] test keyboard input with USB keyboard maybe
 - \[user\] test ahci/sata disk access/loading
-- ELF executable validation
 - process-loading syscall, user-space program provides program to load in in-memory buffer
 - dynamic object file loading
-- relocatable-type ELF files for everything
 - \[user\] release a toolchain (just llvm or do we need binutils?)
 - \[user\] first-party/reference/example std library / hardware abstraction library
 - custom object/binary format with custom 'linker'

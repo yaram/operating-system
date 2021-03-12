@@ -1344,18 +1344,30 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 
     printf("Loading init process...\n");
 
-    Process *process;
-    if(!create_process_from_elf(embedded_init_binary, bitmap_entries, bitmap_size, &global_processes, &process, &current_process_iterator)) {
-        printf("Error: Out of memory\n");
+    Process *init_process;
+    switch(create_process_from_elf(embedded_init_binary, bitmap_entries, bitmap_size, &global_processes, &init_process, &current_process_iterator)) {
+        case CreateProcessFromELFResult::Success: break;
 
-        halt();
+        case CreateProcessFromELFResult::OutOfMemory: {
+            printf("Error: Out of memory\n");
+
+            halt();
+        } break;
+
+        case CreateProcessFromELFResult::InvalidELF: {
+            printf("Error: Init process ELF file is invalid\n");
+
+            halt();
+        } break;
+
+        default: halt();
     }
 
     // Set ABI-specified intial register states
 
-    process->frame.mxcsr |= bits_to_mask(6) << 7;
+    init_process->frame.mxcsr |= bits_to_mask(6) << 7;
 
-    auto stack_frame_copy = process->frame;
+    auto stack_frame_copy = init_process->frame;
 
     // Set timer value
     apic_registers[0x380 / 4] = preempt_time;
@@ -1363,7 +1375,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     asm volatile(
         "mov %0, %%cr3"
         :
-        : "D"(process->pml4_table_physical_address)
+        : "D"(init_process->pml4_table_physical_address)
     );
 
     user_enter_thunk(&stack_frame_copy);
