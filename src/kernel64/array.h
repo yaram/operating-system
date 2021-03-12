@@ -42,6 +42,8 @@ struct ConstArray {
 #if !defined(NDEBUG)
         if(index >= length) {
             printf("FATAL ERROR: Array overrun. Length was %zX and index was %zX\n", length, index);
+
+            halt();
         }
 #endif
 
