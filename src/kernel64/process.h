@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "interrupts.h"
 #include "bucket_array.h"
+#include "array.h"
 
 // Positions of members in this struct are VERY IMPORTANT and relied on by assembly code and the architecture
 struct __attribute__((aligned(16))) ProcessStackFrame {
@@ -67,18 +68,16 @@ enum struct CreateProcessFromELFResult {
 
 CreateProcessFromELFResult create_process_from_elf(
     uint8_t *elf_binary,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     Processes *processes,
     Process **result_processs,
     Processes::Iterator *result_process_iterator
 );
-bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size_t bitmap_size);
+bool destroy_process(Processes::Iterator iterator, Array<uint8_t> bitmap);
 bool register_process_mapping(
     Process *process,
     size_t logical_pages_start,
     size_t page_count,
     bool is_owned,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 );

@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "array.h"
 
 #define divide_round_up(dividend, divisor) (((dividend) + (divisor) - 1) / (divisor))
 
@@ -83,36 +84,32 @@ size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, si
 bool allocate_next_physical_page(
     size_t *bitmap_index,
     size_t *bitmap_sub_bit_index,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *physical_page_index
 );
 
 bool allocate_consecutive_physical_pages(
     size_t page_count,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *physical_pages_start
 );
 
-void allocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count);
+void allocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count);
 
-void deallocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count);
+void deallocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count);
 
 // Kernel table-specific functions
 
 bool set_page(
     size_t logical_page_index,
     size_t physical_page_index,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 );
 
 bool map_pages(
     size_t physical_pages_start,
     size_t page_count,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *logical_pages_start
 );
 
@@ -123,23 +120,20 @@ void unmap_pages(
 
 bool map_and_allocate_pages(
     size_t page_count,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *logical_pages_start
 );
 
 void unmap_and_deallocate_pages(
     size_t logical_pages_start,
     size_t page_count,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 );
 
 void *map_memory(
     size_t physical_memory_start,
     size_t size,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 );
 
 void unmap_memory(
@@ -149,15 +143,13 @@ void unmap_memory(
 
 void *map_and_allocate_memory(
     size_t size,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 );
 
 void unmap_and_deallocate_memory(
     void *logical_memory_start,
     size_t size,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 );
 
 // non-kernel (process) page table functions
@@ -165,8 +157,7 @@ void unmap_and_deallocate_memory(
 bool find_free_logical_pages(
     size_t page_count,
     size_t pml4_table_physical_address,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *logical_pages_start
 );
 
@@ -174,8 +165,7 @@ bool set_page(
     size_t logical_page_index,
     size_t physical_page_index,
     size_t pml4_table_physical_address,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 );
 
 bool unmap_pages(
@@ -183,6 +173,5 @@ bool unmap_pages(
     size_t page_count,
     size_t pml4_table_physical_address,
     bool deallocate,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 );

@@ -82,8 +82,7 @@ static bool map_and_maybe_allocate_table(
     PageTableEntry **current_table,
     PageTableEntry *parent_table,
     size_t parent_index,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *bitmap_index,
     size_t *bitmap_sub_bit_index
 ) {
@@ -99,8 +98,7 @@ static bool map_and_maybe_allocate_table(
             if(!map_pages(
                 parent_table[parent_index].page_address,
                 1,
-                bitmap_entries,
-                bitmap_size,
+                bitmap,
                 &logical_page_index
             )) {
                 return false;
@@ -120,8 +118,7 @@ static bool map_and_maybe_allocate_table(
         if(!allocate_next_physical_page(
             bitmap_index,
             bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )) {
             return false;
@@ -131,8 +128,7 @@ static bool map_and_maybe_allocate_table(
         if(!map_pages(
             physical_page_index,
             1,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &logical_page_index
         )) {
             return false;
@@ -173,22 +169,20 @@ static bool map_and_allocate_pages_in_process_and_kernel(
     size_t page_count,
     Process *process,
     Processes::Iterator process_iterator,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *user_pages_start,
     size_t *kernel_pages_start
 ) {
     if(!find_free_logical_pages(
         page_count,
         process->pml4_table_physical_address,
-        bitmap_entries,
-        bitmap_size,
+        bitmap,
         user_pages_start
     )) {
         return false;
     }
 
-    if(!register_process_mapping(process, *user_pages_start, page_count, true, bitmap_entries, bitmap_size)) {
+    if(!register_process_mapping(process, *user_pages_start, page_count, true, bitmap)) {
         return false;
     }
 
@@ -203,8 +197,7 @@ static bool map_and_allocate_pages_in_process_and_kernel(
         if(!allocate_next_physical_page(
             &bitmap_index,
             &bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )){
             return false;
@@ -212,11 +205,11 @@ static bool map_and_allocate_pages_in_process_and_kernel(
 
         // The order of these is IMPORTANT, otherwise the kernel pages will get overwritten!!!
 
-        if(!set_page(*user_pages_start + i, physical_page_index, process->pml4_table_physical_address, bitmap_entries, bitmap_size)) {
+        if(!set_page(*user_pages_start + i, physical_page_index, process->pml4_table_physical_address, bitmap)) {
             return false;
         }
 
-        if(!set_page(*kernel_pages_start + i, physical_page_index, bitmap_entries, bitmap_size)) {
+        if(!set_page(*kernel_pages_start + i, physical_page_index, bitmap)) {
             return false;
         }
     }
@@ -224,7 +217,7 @@ static bool map_and_allocate_pages_in_process_and_kernel(
     return true;
 }
 
-static size_t get_section_relative_address(size_t section_index, const ELFSectionHeader *section_headers) {
+static size_t get_section_relative_address(size_t section_index, ConstArray<ELFSectionHeader> section_headers) {
     size_t relative_address = 0;
     for(size_t i = 0; i < section_index; i += 1) {
         auto section_header = &section_headers[i];
@@ -249,8 +242,7 @@ inline void clear_pages(size_t page_index, size_t page_count) {
 
 CreateProcessFromELFResult create_process_from_elf(
     uint8_t *elf_binary,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     Processes *processes,
     Process **result_processs,
     Processes::Iterator *result_process_iterator
@@ -258,7 +250,7 @@ CreateProcessFromELFResult create_process_from_elf(
     auto process_iterator = find_unoccupied_bucket_slot(processes);
 
     if(process_iterator.current_bucket == nullptr) {
-        auto new_bucket = (Processes::Bucket*)map_and_allocate_memory(sizeof(Processes::Bucket), bitmap_entries, bitmap_size);
+        auto new_bucket = (Processes::Bucket*)map_and_allocate_memory(sizeof(Processes::Bucket), bitmap);
         if(new_bucket == nullptr) {
             return CreateProcessFromELFResult::OutOfMemory;
         }
@@ -296,8 +288,7 @@ CreateProcessFromELFResult create_process_from_elf(
     if(!allocate_next_physical_page(
         &bitmap_index,
         &bitmap_sub_bit_index,
-        bitmap_entries,
-        bitmap_size,
+        bitmap,
         &pml4_physical_page_index
     )) {
         process_iterator.current_bucket->occupied[process_iterator.current_sub_index] = false;
@@ -315,19 +306,24 @@ CreateProcessFromELFResult create_process_from_elf(
         return CreateProcessFromELFResult::InvalidELF;
     }
 
-    auto section_headers = (ELFSectionHeader*)((size_t)elf_binary + elf_header->section_header_offset);
+    ConstArray<ELFSectionHeader> section_headers {
+        (ELFSectionHeader*)((size_t)elf_binary + elf_header->section_header_offset),
+        elf_header->section_header_count
+    };
 
-    auto section_names = (const char*)((size_t)elf_binary + section_headers[elf_header->section_names_entry_index].in_file_offset);
+    ConstArray<char> section_names {
+        (const char*)((size_t)elf_binary + section_headers[elf_header->section_names_entry_index].in_file_offset),
+        section_headers[elf_header->section_names_entry_index].size
+    };
 
-    ELFSymbol *symbols;
-    size_t symbol_count;
+    ConstArray<ELFSymbol> symbols;
     auto symbols_found = false;
-    for(size_t i = 0; i < elf_header->section_header_count; i += 1) {
+    for(size_t i = 0; i < section_headers.length; i += 1) {
         auto section_header = &section_headers[i];
 
         if(section_header->type == 2) { // SHT_SYMTAB
-            symbols = (ELFSymbol*)((size_t)elf_binary + section_header->in_file_offset);
-            symbol_count = section_header->size / sizeof(ELFSymbol);
+            symbols.data = (ELFSymbol*)((size_t)elf_binary + section_header->in_file_offset);
+            symbols.length = section_header->size / sizeof(ELFSymbol);
 
             symbols_found = true;
             break;
@@ -338,15 +334,16 @@ CreateProcessFromELFResult create_process_from_elf(
         return CreateProcessFromELFResult::InvalidELF;
     }
 
-    const char *symbol_names;
+    ConstArray<char> symbol_names;
     auto symbol_names_found = false;
-    for(size_t i = 0; i < elf_header->section_header_count; i += 1) {
+    for(size_t i = 0; i < section_headers.length; i += 1) {
         auto section_header = &section_headers[i];
 
         auto name = &section_names[section_header->name_offset];
 
         if(c_string_equal(name, ".strtab")) {
-            symbol_names = (const char*)((size_t)elf_binary + section_header->in_file_offset);
+            symbol_names.data = (const char*)((size_t)elf_binary + section_header->in_file_offset);
+            symbol_names.length = section_header->size;
 
             symbol_names_found = true;
             break;
@@ -359,9 +356,9 @@ CreateProcessFromELFResult create_process_from_elf(
 
     const auto entry_symbol_name = "entry";
 
-    ELFSymbol *entry_symbol;
+    const ELFSymbol *entry_symbol;
     auto entry_symbol_found = false;
-    for(size_t i = 0; i < symbol_count; i += 1) {
+    for(size_t i = 0; i < symbols.length; i += 1) {
         auto symbol = &symbols[i];
 
         auto symbol_name = &symbol_names[symbol->name_index];
@@ -379,7 +376,7 @@ CreateProcessFromELFResult create_process_from_elf(
     }
 
     size_t image_size = 0;
-    for(size_t i = 0; i < elf_header->section_header_count; i += 1) {
+    for(size_t i = 0; i < section_headers.length; i += 1) {
         auto section_header = &section_headers[i];
 
         if((section_header->flags & 0b10) != 0) { // SHF_ALLOC
@@ -397,8 +394,7 @@ CreateProcessFromELFResult create_process_from_elf(
         auto pml4_table = (PageTableEntry*)map_memory(
             pml4_physical_page_index * page_size,
             sizeof(PageTableEntry[page_table_length]),
-            bitmap_entries,
-            bitmap_size
+            bitmap
         );
         if(pml4_table == nullptr) {
             process_iterator.current_bucket->occupied[process_iterator.current_sub_index] = false;
@@ -434,8 +430,7 @@ CreateProcessFromELFResult create_process_from_elf(
                     &pdp_table,
                     pml4_table,
                     pml4_index,
-                    bitmap_entries,
-                    bitmap_size,
+                    bitmap,
                     &bitmap_index,
                     &bitmap_sub_bit_index
                 ) ||
@@ -444,8 +439,7 @@ CreateProcessFromELFResult create_process_from_elf(
                     &pd_table,
                     pdp_table,
                     pdp_index,
-                    bitmap_entries,
-                    bitmap_size,
+                    bitmap,
                     &bitmap_index,
                     &bitmap_sub_bit_index
                 ) ||
@@ -454,8 +448,7 @@ CreateProcessFromELFResult create_process_from_elf(
                     &page_table,
                     pd_table,
                     pd_index,
-                    bitmap_entries,
-                    bitmap_size,
+                    bitmap,
                     &bitmap_index,
                     &bitmap_sub_bit_index
                 )
@@ -474,7 +467,7 @@ CreateProcessFromELFResult create_process_from_elf(
                     unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
                 }
 
-                destroy_process(process_iterator, bitmap_entries, bitmap_size);
+                destroy_process(process_iterator, bitmap);
 
                 return CreateProcessFromELFResult::OutOfMemory;
             }
@@ -496,12 +489,11 @@ CreateProcessFromELFResult create_process_from_elf(
         image_page_count,
         process,
         process_iterator,
-        bitmap_entries,
-        bitmap_size,
+        bitmap,
         &image_user_pages_start,
         &image_kernel_pages_start
     )) {
-        destroy_process(process_iterator, bitmap_entries, bitmap_size);
+        destroy_process(process_iterator, bitmap);
 
         return CreateProcessFromELFResult::OutOfMemory;
     }
@@ -514,7 +506,7 @@ CreateProcessFromELFResult create_process_from_elf(
         auto section_relative_address = 0;
 
         // Calculate section offset, should cache this in DynamicArray and deallocate at the end of the function...
-        for(size_t i = 0; i < elf_header->section_header_count; i += 1) {
+        for(size_t i = 0; i < section_headers.length; i += 1) {
             auto section_header = &section_headers[i];
 
             if((section_header->flags & 0b10) != 0) { // SHF_ALLOC
@@ -535,10 +527,6 @@ CreateProcessFromELFResult create_process_from_elf(
 
     auto image_user_memory_start = image_user_pages_start * page_size;
 
-    auto string_table_header = section_headers[elf_header->section_names_entry_index];
-
-    auto string_table = (const char*)((size_t)elf_binary + string_table_header.in_file_offset);
-
     // Global Offset Table memory is also used for the Procedure Translation Table,
     // will need to be separate when page read/write/execute protection is added.
     // Global Offset Table is fixed-size for now, should expand dynamically at some point.
@@ -552,8 +540,7 @@ CreateProcessFromELFResult create_process_from_elf(
         global_offset_table_page_count,
         process,
         process_iterator,
-        bitmap_entries,
-        bitmap_size,
+        bitmap,
         &global_offset_table_user_pages_start,
         &global_offset_table_kernel_pages_start
     )) {
@@ -562,14 +549,15 @@ CreateProcessFromELFResult create_process_from_elf(
 
     clear_pages(global_offset_table_kernel_pages_start, global_offset_table_page_count);
 
-    auto global_offset_table_length = global_offset_table_size / sizeof(size_t);
-
     auto global_offset_table_address = global_offset_table_user_pages_start * page_size;
 
-    auto global_offset_table = (size_t*)(global_offset_table_kernel_pages_start * page_size);
+    Array<size_t> global_offset_table {
+        (size_t*)(global_offset_table_kernel_pages_start * page_size),
+        global_offset_table_size / sizeof(size_t)
+    };
 
     size_t next_global_offset_table_index = 0;
-    for(size_t i = 0; i < elf_header->section_header_count; i += 1) {
+    for(size_t i = 0; i < section_headers.length; i += 1) {
         auto section_header = &section_headers[i];
 
         if(section_header->type == 4) { // SHT_RELA
@@ -586,10 +574,12 @@ CreateProcessFromELFResult create_process_from_elf(
             auto slot_section_kernel_address = image_kernel_memory_start + slot_section_relative_address;
             auto slot_section_user_address = image_user_memory_start + slot_section_relative_address;
 
-            auto relocations = (ELFRelocationAddend*)((size_t)elf_binary + section_header->in_file_offset);
-            auto relocation_count = section_header->size / sizeof(ELFRelocationAddend);
+            ConstArray<ELFRelocationAddend> relocations {
+                (const ELFRelocationAddend*)((size_t)elf_binary + section_header->in_file_offset),
+                section_header->size / sizeof(ELFRelocationAddend),
+            };
 
-            for(size_t j = 0; j < relocation_count; j += 1) {
+            for(size_t j = 0; j < relocations.length; j += 1) {
                 auto relocation = &relocations[j];
 
                 auto symbol = &symbols[relocation->symbol];
@@ -619,8 +609,8 @@ CreateProcessFromELFResult create_process_from_elf(
                         auto index = next_global_offset_table_index;
                         next_global_offset_table_index += 1;
 
-                        if(index == global_offset_table_length) {
-                            destroy_process(process_iterator, bitmap_entries, bitmap_size);
+                        if(index == global_offset_table.length) {
+                            destroy_process(process_iterator, bitmap);
 
                             return CreateProcessFromELFResult::OutOfMemory;
                         }
@@ -652,8 +642,8 @@ CreateProcessFromELFResult create_process_from_elf(
                         auto index = next_global_offset_table_index;
                         next_global_offset_table_index += 1;
 
-                        if(index == global_offset_table_length) {
-                            destroy_process(process_iterator, bitmap_entries, bitmap_size);
+                        if(index == global_offset_table.length) {
+                            destroy_process(process_iterator, bitmap);
 
                             return CreateProcessFromELFResult::OutOfMemory;
                         }
@@ -674,7 +664,7 @@ CreateProcessFromELFResult create_process_from_elf(
                     } break;
 
                     default: {
-                        destroy_process(process_iterator, bitmap_entries, bitmap_size);
+                        destroy_process(process_iterator, bitmap);
 
                         return CreateProcessFromELFResult::InvalidELF;
                     } break;
@@ -695,8 +685,7 @@ CreateProcessFromELFResult create_process_from_elf(
         stack_page_count,
         process,
         process_iterator,
-        bitmap_entries,
-        bitmap_size,
+        bitmap,
         &stack_user_pages_start,
         &stack_kernel_pages_start
     )) {
@@ -724,11 +713,11 @@ CreateProcessFromELFResult create_process_from_elf(
     return CreateProcessFromELFResult::Success;
 }
 
-inline void deallocate_page(size_t page_index, uint8_t *bitmap_entries) {
+inline void deallocate_page(size_t page_index, Array<uint8_t> bitmap) {
     auto byte_index = page_index / 8;
     auto sub_byte_index = page_index % 8;
 
-    bitmap_entries[byte_index] &= ~(1 << sub_byte_index);
+    bitmap[byte_index] &= ~(1 << sub_byte_index);
 }
 
 static bool map_table(
@@ -736,8 +725,7 @@ static bool map_table(
     PageTableEntry **current_table,
     PageTableEntry *parent_table,
     size_t parent_index,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     if(*current_table == nullptr || parent_index != *current_parent_index) {
         if(*current_table != nullptr) {
@@ -750,8 +738,7 @@ static bool map_table(
         if(!map_pages(
             parent_table[parent_index].page_address,
             1,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &logical_page_index
         )) {
             return false;
@@ -764,7 +751,7 @@ static bool map_table(
     return true;
 }
 
-bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size_t bitmap_size) {
+bool destroy_process(Processes::Iterator iterator, Array<uint8_t> bitmap) {
     iterator.current_bucket->occupied[iterator.current_sub_index] = false;
 
     auto process = *iterator;
@@ -777,8 +764,7 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
             mapping->page_count,
             process->pml4_table_physical_address,
             false,
-            bitmap_entries,
-            bitmap_size
+            bitmap
         )) {
             return false;
         }
@@ -792,7 +778,7 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
         while(true) {
             auto next_bucket = current_bucket->next;
 
-            unmap_and_deallocate_memory(current_bucket, sizeof(ProcessPageMappings::Bucket), bitmap_entries, bitmap_size);
+            unmap_and_deallocate_memory(current_bucket, sizeof(ProcessPageMappings::Bucket), bitmap);
 
             if(next_bucket == nullptr) {
                 break;
@@ -807,8 +793,7 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
     auto pml4_table = (PageTableEntry*)map_memory(
         process->pml4_table_physical_address * page_size,
         sizeof(PageTableEntry[page_table_length]),
-        bitmap_entries,
-        bitmap_size
+        bitmap
     );
 
     for(size_t pml4_index = 0; pml4_index < page_table_length; pml4_index += 1) {
@@ -816,8 +801,7 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
             auto pdp_table = (PageTableEntry*)map_memory(
                 pml4_table[pml4_index].page_address * page_size,
                 sizeof(PageTableEntry[page_table_length]),
-                bitmap_entries,
-                bitmap_size
+                bitmap
             );
             if(pdp_table == nullptr) {
                 unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -830,8 +814,7 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
                     auto pd_table = (PageTableEntry*)map_memory(
                         pdp_table[pdp_index].page_address * page_size,
                         sizeof(PageTableEntry[page_table_length]),
-                        bitmap_entries,
-                        bitmap_size
+                        bitmap
                     );
                     if(pd_table == nullptr) {
                         unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -842,23 +825,23 @@ bool destroy_process(Processes::Iterator iterator, uint8_t *bitmap_entries, size
 
                     for(size_t pd_index = 0; pd_index < page_table_length; pd_index += 1) {
                         if(pd_table[pd_index].present) {
-                            deallocate_page(pd_table[pd_index].page_address, bitmap_entries);
+                            deallocate_page(pd_table[pd_index].page_address, bitmap);
                         }
                     }
 
-                    deallocate_page(pdp_table[pdp_index].page_address, bitmap_entries);
+                    deallocate_page(pdp_table[pdp_index].page_address, bitmap);
 
                     unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
                 }
             }
 
-            deallocate_page(pml4_table[pml4_index].page_address, bitmap_entries);
+            deallocate_page(pml4_table[pml4_index].page_address, bitmap);
 
             unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
         }
     }
 
-    deallocate_page(process->pml4_table_physical_address / page_size, bitmap_entries);
+    deallocate_page(process->pml4_table_physical_address / page_size, bitmap);
 
     unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
 
@@ -870,13 +853,12 @@ bool register_process_mapping(
     size_t logical_pages_start,
     size_t page_count,
     bool is_owned,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     auto mapping_iterator = find_unoccupied_bucket_slot(&process->mappings);
 
     if(mapping_iterator.current_bucket == nullptr) {
-        auto new_bucket = (ProcessPageMappings::Bucket*)map_and_allocate_memory(sizeof(ProcessPageMappings::Bucket), bitmap_entries, bitmap_size);
+        auto new_bucket = (ProcessPageMappings::Bucket*)map_and_allocate_memory(sizeof(ProcessPageMappings::Bucket), bitmap);
         if(new_bucket == nullptr) {
             return false;
         }

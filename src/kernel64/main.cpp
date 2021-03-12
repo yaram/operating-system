@@ -11,6 +11,8 @@ extern "C" {
 #include "bucket_array.h"
 #include "syscalls.h"
 #include "pcie.h"
+#include "halt.h"
+#include "array.h"
 
 #define do_ranges_intersect(a_start, a_end, b_start, b_end) (!((a_end) <= (b_start) || (b_end) <= (a_start)))
 
@@ -251,18 +253,9 @@ PageTableEntry kernel_pd_tables[kernel_pdp_count][page_table_length] {};
 __attribute__((aligned(page_size)))
 PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 
-[[noreturn]] inline void halt() {
-    printf("Halting...\n");
-
-    while(true) {
-        asm volatile("hlt");
-    }
-}
-
 extern uint8_t embedded_init_binary[];
 
-uint8_t *global_bitmap_entries;
-size_t global_bitmap_size;
+Array<uint8_t> global_bitmap;
 
 Processes global_processes {};
 
@@ -315,7 +308,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackF
 
         printf(" in process %zu\n", process->id);
 
-        destroy_process(current_process_iterator, global_bitmap_entries, global_bitmap_size);
+        destroy_process(current_process_iterator, global_bitmap);
 
         enter_next_process();
     } else {
@@ -458,7 +451,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
     switch((SyscallType)syscall_index) {
         case SyscallType::Exit: {
-            destroy_process(current_process_iterator, global_bitmap_entries, global_bitmap_size);
+            destroy_process(current_process_iterator, global_bitmap);
 
             enter_next_process();
         } break;
@@ -482,8 +475,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             if(!find_free_logical_pages(
                 parameter,
                 process->pml4_table_physical_address,
-                global_bitmap_entries,
-                global_bitmap_size,
+                global_bitmap,
                 &logical_pages_start
             )) {
                 break;
@@ -498,8 +490,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                 if(!allocate_next_physical_page(
                     &bitmap_index,
                     &bitmap_sub_bit_index,
-                    global_bitmap_entries,
-                    global_bitmap_size,
+                    global_bitmap,
                     &physical_page_index
                 )) {
                     success = false;
@@ -510,8 +501,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     logical_pages_start + relative_page_index,
                     physical_page_index,
                     process->pml4_table_physical_address,
-                    global_bitmap_entries,
-                    global_bitmap_size
+                    global_bitmap
                 )) {
                     success = false;
                     break;
@@ -522,7 +512,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                 break;
             }
 
-            if(!register_process_mapping(process, logical_pages_start, page_count, true, global_bitmap_entries, global_bitmap_size)) {
+            if(!register_process_mapping(process, logical_pages_start, page_count, true, global_bitmap)) {
                 break;
             }
 
@@ -538,8 +528,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             if(!find_free_logical_pages(
                 page_count,
                 process->pml4_table_physical_address,
-                global_bitmap_entries,
-                global_bitmap_size,
+                global_bitmap,
                 &logical_pages_start
             )) {
                 break;
@@ -548,8 +537,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             size_t physical_pages_start;
             if(!allocate_consecutive_physical_pages(
                 page_count,
-                global_bitmap_entries,
-                global_bitmap_size,
+                global_bitmap,
                 &physical_pages_start
             )) {
                 break;
@@ -561,8 +549,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     logical_pages_start + relative_page_index,
                     physical_pages_start + relative_page_index,
                     process->pml4_table_physical_address,
-                    global_bitmap_entries,
-                    global_bitmap_size
+                    global_bitmap
                 )) {
                     success = false;
                     break;
@@ -573,7 +560,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                 break;
             }
 
-            if(!register_process_mapping(process, logical_pages_start, page_count, true, global_bitmap_entries, global_bitmap_size)) {
+            if(!register_process_mapping(process, logical_pages_start, page_count, true, global_bitmap)) {
                 break;
             }
 
@@ -595,8 +582,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         mapping->page_count,
                         process->pml4_table_physical_address,
                         mapping->is_owned,
-                        global_bitmap_entries,
-                        global_bitmap_size
+                        global_bitmap
                     );
 
                     break;
@@ -632,8 +618,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     auto bus_memory = map_memory(
                         physical_memory_start + bus * device_count * function_count * configuration_area_size,
                         bus_memory_size,
-                        global_bitmap_entries,
-                        global_bitmap_size
+                        global_bitmap
                     );
                     if(bus_memory == nullptr) {
                         done = true;
@@ -711,8 +696,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     if(!find_free_logical_pages(
                         1,
                         process->pml4_table_physical_address,
-                        global_bitmap_entries,
-                        global_bitmap_size,
+                        global_bitmap,
                         &logical_pages_start
                     )) {
                         break;
@@ -725,13 +709,12 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                             device * function_count +
                             function,
                         process->pml4_table_physical_address,
-                        global_bitmap_entries,
-                        global_bitmap_size
+                        global_bitmap
                     )) {
                         break;
                     }
 
-                    if(!register_process_mapping(process, logical_pages_start, 1, false, global_bitmap_entries, global_bitmap_size)) {
+                    if(!register_process_mapping(process, logical_pages_start, 1, false, global_bitmap)) {
                         break;
                     }
 
@@ -773,8 +756,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                             device * function_count +
                             function) * configuration_area_size,
                         configuration_area_size,
-                        global_bitmap_entries,
-                        global_bitmap_size
+                        global_bitmap
                     );
                     if(configuration_memory == nullptr) {
                         break;
@@ -849,8 +831,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     if(!find_free_logical_pages(
                         page_count,
                         process->pml4_table_physical_address,
-                        global_bitmap_entries,
-                        global_bitmap_size,
+                        global_bitmap,
                         &logical_pages_start
                     )) {
                         break;
@@ -862,8 +843,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                             logical_pages_start + relative_page_index,
                             physical_pages_start + relative_page_index,
                             process->pml4_table_physical_address,
-                            global_bitmap_entries,
-                            global_bitmap_size
+                            global_bitmap
                         )) {
                             failed = true;
                             break;
@@ -874,7 +854,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         break;
                     }
 
-                    if(!register_process_mapping(process, logical_pages_start, page_count, false, global_bitmap_entries, global_bitmap_size)) {
+                    if(!register_process_mapping(process, logical_pages_start, page_count, false, global_bitmap)) {
                         break;
                     }
 
@@ -888,7 +868,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         default: { // unknown syscall
             printf("Unknown syscall from process %zu at %p\n", process->id, stack_frame->interrupt_frame.instruction_pointer);
 
-            destroy_process(current_process_iterator, global_bitmap_entries, global_bitmap_size);
+            destroy_process(current_process_iterator, global_bitmap);
 
             enter_next_process();
         } break;
@@ -908,15 +888,14 @@ struct BootstrapMemoryMapEntry {
 };
 
 static bool find_free_physical_pages_in_bootstrap(
-    const BootstrapMemoryMapEntry *bootstrap_map,
-    size_t bootstrap_map_size,
+    ConstArray<BootstrapMemoryMapEntry> bootstrap_memory_map,
     size_t page_count,
     size_t extra_pages_start,
     size_t extra_page_count,
     size_t *pages_start
 ) {
-    for(size_t i = 0; i < bootstrap_map_size; i += 1) {
-        auto entry = &bootstrap_map[i];
+    for(size_t i = 0; i < bootstrap_memory_map.length; i += 1) {
+        auto entry = &bootstrap_memory_map[i];
         if(entry->available) {
             auto start = (size_t)entry->address;
             auto end = start + entry->length;
@@ -945,7 +924,12 @@ static bool find_free_physical_pages_in_bootstrap(
 extern void (*init_array_start[])();
 extern void (*init_array_end[])();
 
-extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t bootstrap_memory_map_size) {
+extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries, size_t bootstrap_memory_map_length) {
+    ConstArray<BootstrapMemoryMapEntry> bootstrap_memory_map {
+        bootstrap_memory_map_entries,
+        bootstrap_memory_map_length
+    };
+
     // Enable sse
     asm volatile(
         "mov %%cr0, %%rax\n"
@@ -1079,7 +1063,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     );
 
     size_t highest_available_memory_end = 0;
-    for(size_t i = 0; i < bootstrap_memory_map_size; i += 1) {
+    for(size_t i = 0; i < bootstrap_memory_map.length; i += 1) {
         auto entry = &bootstrap_memory_map[i];
 
         if(entry->available) {
@@ -1099,7 +1083,6 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     size_t bitmap_physical_pages_start;
     if(!find_free_physical_pages_in_bootstrap(
         bootstrap_memory_map,
-        bootstrap_memory_map_size,
         bitmap_page_count,
         0,
         0,
@@ -1115,7 +1098,6 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     size_t new_physical_pages_start;
     if(!find_free_physical_pages_in_bootstrap(
         bootstrap_memory_map,
-        bootstrap_memory_map_size,
         new_page_table_count,
         bitmap_physical_pages_start,
         bitmap_page_count,
@@ -1212,11 +1194,14 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
         );
     }
 
-    auto bitmap_entries = (uint8_t*)(kernel_pages_end * page_size);
+    Array<uint8_t> bitmap {
+        (uint8_t*)(kernel_pages_end * page_size),
+        bitmap_page_count * page_size
+    };
 
-    memset((void*)bitmap_entries, 0xFF, bitmap_size);
+    memset((void*)bitmap.data, 0xFF, bitmap_size);
 
-    for(size_t i = 0; i < bootstrap_memory_map_size; i += 1) {
+    for(size_t i = 0; i < bootstrap_memory_map.length; i += 1) {
         auto entry = &bootstrap_memory_map[i];
 
         if(entry->available) {
@@ -1227,18 +1212,17 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
             auto entry_pages_end = end / page_size;
             auto entry_page_count = entry_pages_end - entry_pages_start;
 
-            deallocate_bitmap_range(bitmap_entries, entry_pages_start, entry_page_count);
+            deallocate_bitmap_range(bitmap, entry_pages_start, entry_page_count);
         }
     }
 
-    allocate_bitmap_range(bitmap_entries, kernel_pages_start, kernel_pages_end - kernel_pages_start);
+    allocate_bitmap_range(bitmap, kernel_pages_start, kernel_pages_end - kernel_pages_start);
 
-    allocate_bitmap_range(bitmap_entries, bitmap_physical_pages_start, bitmap_page_count);
+    allocate_bitmap_range(bitmap, bitmap_physical_pages_start, bitmap_page_count);
 
-    allocate_bitmap_range(bitmap_entries, new_physical_pages_start, new_page_table_count);
+    allocate_bitmap_range(bitmap, new_physical_pages_start, new_page_table_count);
 
-    global_bitmap_entries = bitmap_entries;
-    global_bitmap_size = bitmap_size;
+    global_bitmap = bitmap;
 
     AcpiInitializeSubsystem();
 
@@ -1275,7 +1259,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 
     apic_physical_address = 0xFEE00000;
 
-    apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap_entries, bitmap_size);
+    apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap);
     if(apic_registers == nullptr) {
         printf("Error: Out of memory\n");
 
@@ -1345,7 +1329,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
     printf("Loading init process...\n");
 
     Process *init_process;
-    switch(create_process_from_elf(embedded_init_binary, bitmap_entries, bitmap_size, &global_processes, &init_process, &current_process_iterator)) {
+    switch(create_process_from_elf(embedded_init_binary, bitmap, &global_processes, &init_process, &current_process_iterator)) {
         case CreateProcessFromELFResult::Success: break;
 
         case CreateProcessFromELFResult::OutOfMemory: {
@@ -1382,7 +1366,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map, size_t
 }
 
 void *allocate(size_t size) {
-    auto base_pointer = map_and_allocate_memory(page_size + size, global_bitmap_entries, global_bitmap_size);
+    auto base_pointer = map_and_allocate_memory(page_size + size, global_bitmap);
 
     if(base_pointer == nullptr) {
         return nullptr;
@@ -1398,7 +1382,7 @@ void deallocate(void *pointer) {
 
     auto size = *(size_t*)base_pointer;
 
-    unmap_and_deallocate_memory(base_pointer, page_size + size, global_bitmap_entries, global_bitmap_size);
+    unmap_and_deallocate_memory(base_pointer, page_size + size, global_bitmap);
 }
 
 extern "C" void *memset(void *destination, int value, size_t count) {

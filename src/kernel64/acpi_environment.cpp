@@ -90,11 +90,10 @@ extern "C" void AcpiOsFree(void *Memory) {
     deallocate(Memory);
 }
 
-extern uint8_t global_bitmap_entries[];
-extern size_t global_bitmap_size;
+extern Array<uint8_t> global_bitmap;
 
 extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
-    return map_memory((size_t)Where, (size_t)Length, global_bitmap_entries, global_bitmap_size);
+    return map_memory((size_t)Where, (size_t)Length, global_bitmap);
 }
 
 extern "C" void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) {

@@ -218,11 +218,10 @@ size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, si
 bool allocate_next_physical_page(
     size_t *bitmap_index,
     size_t *bitmap_sub_bit_index,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *physical_page_index
 ) {
-    auto byte = &bitmap_entries[*bitmap_index];
+    auto byte = &bitmap[*bitmap_index];
 
     if(*byte != 0xFF) {
         for(; *bitmap_sub_bit_index < 8; *bitmap_sub_bit_index += 1) {
@@ -237,8 +236,8 @@ bool allocate_next_physical_page(
 
     *bitmap_index += 1;
 
-    for(; *bitmap_index < bitmap_size; *bitmap_index += 1) {
-        auto byte = &bitmap_entries[*bitmap_index];
+    for(; *bitmap_index < bitmap.length; *bitmap_index += 1) {
+        auto byte = &bitmap[*bitmap_index];
 
         if(*byte != 0xFF) {
             for(*bitmap_sub_bit_index = 0; *bitmap_sub_bit_index < 8; *bitmap_sub_bit_index += 1) {
@@ -257,16 +256,15 @@ bool allocate_next_physical_page(
 
 bool allocate_consecutive_physical_pages(
     size_t page_count,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *physical_pages_start
 ) {
     size_t free_pages_start;
     auto in_free_pages = false;
     auto found = false;
 
-    for(size_t bitmap_index = 0; bitmap_index < bitmap_size; bitmap_index += 1) {
-        auto byte = &bitmap_entries[bitmap_index];
+    for(size_t bitmap_index = 0; bitmap_index < bitmap.length; bitmap_index += 1) {
+        auto byte = &bitmap[bitmap_index];
 
         if(*byte != 0xFF) {
             for(size_t bitmap_sub_bit_index = 0; bitmap_sub_bit_index < 8; bitmap_sub_bit_index += 1) {
@@ -297,13 +295,13 @@ bool allocate_consecutive_physical_pages(
         return false;
     }
 
-    allocate_bitmap_range(bitmap_entries, free_pages_start, page_count);
+    allocate_bitmap_range(bitmap, free_pages_start, page_count);
 
     *physical_pages_start = free_pages_start;
     return true;
 }
 
-void allocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
+void allocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count) {
     auto start_bit = start;
     auto end_bit = start + count;
 
@@ -336,7 +334,7 @@ void allocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
     }
 }
 
-void deallocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
+void deallocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count) {
     auto start_bit = start;
     auto end_bit = start + count;
 
@@ -372,8 +370,7 @@ void deallocate_bitmap_range(uint8_t *bitmap, size_t start, size_t count) {
 bool set_page(
     size_t logical_page_index,
     size_t physical_page_index,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     size_t bitmap_index = 0;
     size_t bitmap_sub_bit_index = 0;
@@ -397,8 +394,7 @@ bool set_page(
         if(!allocate_next_physical_page(
             &bitmap_index,
             &bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )) {
             return false;
@@ -425,8 +421,7 @@ bool set_page(
         if(!allocate_next_physical_page(
             &bitmap_index,
             &bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )) {
             return false;
@@ -453,8 +448,7 @@ bool set_page(
         if(!allocate_next_physical_page(
             &bitmap_index,
             &bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )) {
             return false;
@@ -490,8 +484,7 @@ bool set_page(
 bool map_pages(
     size_t physical_pages_start,
     size_t page_count,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *logical_pages_start
 ) {
     if(!find_free_logical_pages(page_count, logical_pages_start)) {
@@ -521,8 +514,7 @@ bool map_pages(
             if(!allocate_next_physical_page(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
-                bitmap_entries,
-                bitmap_size,
+                bitmap,
                 &physical_page_index
             )) {
                 return false;
@@ -549,8 +541,7 @@ bool map_pages(
             if(!allocate_next_physical_page(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
-                bitmap_entries,
-                bitmap_size,
+                bitmap,
                 &physical_page_index
             )) {
                 return false;
@@ -577,8 +568,7 @@ bool map_pages(
             if(!allocate_next_physical_page(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
-                bitmap_entries,
-                bitmap_size,
+                bitmap,
                 &physical_page_index
             )) {
                 return false;
@@ -641,8 +631,7 @@ void unmap_pages(
 
 bool map_and_allocate_pages(
     size_t page_count,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *logical_pages_start
 ) {
     if(!find_free_logical_pages(page_count, logical_pages_start)) {
@@ -672,8 +661,7 @@ bool map_and_allocate_pages(
             if(!allocate_next_physical_page(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
-                bitmap_entries,
-                bitmap_size,
+                bitmap,
                 &physical_page_index
             )) {
                 return false;
@@ -700,8 +688,7 @@ bool map_and_allocate_pages(
             if(!allocate_next_physical_page(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
-                bitmap_entries,
-                bitmap_size,
+                bitmap,
                 &physical_page_index
             )) {
                 return false;
@@ -728,8 +715,7 @@ bool map_and_allocate_pages(
             if(!allocate_next_physical_page(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
-                bitmap_entries,
-                bitmap_size,
+                bitmap,
                 &physical_page_index
             )) {
                 return false;
@@ -753,8 +739,7 @@ bool map_and_allocate_pages(
         if(!allocate_next_physical_page(
             &bitmap_index,
             &bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )) {
             return false;
@@ -777,8 +762,7 @@ bool map_and_allocate_pages(
 void unmap_and_deallocate_pages(
     size_t logical_pages_start,
     size_t page_count,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
         auto page_index = logical_pages_start + relative_page_index;
@@ -798,7 +782,7 @@ void unmap_and_deallocate_pages(
         auto bitmap_index = page_address / 8;
         auto bitmap_sub_bit_index = page_address % 8;
 
-        bitmap_entries[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
+        bitmap[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
 
         page_table[page_index].present = false;
 
@@ -813,8 +797,7 @@ void unmap_and_deallocate_pages(
 void *map_memory(
     size_t physical_memory_start,
     size_t size,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     auto physical_pages_start = physical_memory_start / page_size;
     auto physical_pages_end = divide_round_up(physical_memory_start + size, page_size);
@@ -824,7 +807,7 @@ void *map_memory(
     auto offset = physical_memory_start - physical_pages_start * page_size;
 
     size_t logical_pages_start;
-    if(!map_pages(physical_pages_start, page_count, bitmap_entries, bitmap_size, &logical_pages_start)) {
+    if(!map_pages(physical_pages_start, page_count, bitmap, &logical_pages_start)) {
         return nullptr;
     }
 
@@ -845,16 +828,14 @@ void unmap_memory(
 
 void *map_and_allocate_memory(
     size_t size,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     auto page_count = divide_round_up(size, page_size);
 
     size_t logical_pages_start;
     if(!map_and_allocate_pages(
         page_count,
-        bitmap_entries,
-        bitmap_size,
+        bitmap,
         &logical_pages_start
     )) {
         return nullptr;
@@ -866,22 +847,20 @@ void *map_and_allocate_memory(
 void unmap_and_deallocate_memory(
     void *logical_memory_start,
     size_t size,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     auto logical_pages_start = (size_t)logical_memory_start / page_size;
     auto logical_pages_end = divide_round_up((size_t)logical_memory_start + size, page_size);
 
     auto page_count = logical_pages_end - logical_pages_start;
 
-    unmap_and_deallocate_pages(logical_pages_start, page_count, bitmap_entries, bitmap_size);
+    unmap_and_deallocate_pages(logical_pages_start, page_count, bitmap);
 }
 
 bool find_free_logical_pages(
     size_t page_count,
     size_t pml4_table_physical_address,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size,
+    Array<uint8_t> bitmap,
     size_t *logical_pages_start
 ) {
     auto last_full = true;
@@ -891,8 +870,7 @@ bool find_free_logical_pages(
     auto pml4_table = (PageTableEntry*)map_memory(
         pml4_table_physical_address,
         sizeof(PageTableEntry[page_table_length]),
-        bitmap_entries,
-        bitmap_size
+        bitmap
     );
     if(pml4_table == nullptr) {
         return false;
@@ -920,8 +898,7 @@ bool find_free_logical_pages(
             auto pdp_table = (PageTableEntry*)map_memory(
                 pml4_table[pml4_index].page_address * page_size,
                 sizeof(PageTableEntry[page_table_length]),
-                bitmap_entries,
-                bitmap_size
+                bitmap
             );
             if(pdp_table == nullptr) {
                 unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -950,8 +927,7 @@ bool find_free_logical_pages(
                     auto pd_table = (PageTableEntry*)map_memory(
                         pdp_table[pdp_index].page_address * page_size,
                         sizeof(PageTableEntry[page_table_length]),
-                        bitmap_entries,
-                        bitmap_size
+                        bitmap
                     );
                     if(pd_table == nullptr) {
                         unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -981,8 +957,7 @@ bool find_free_logical_pages(
                             auto page_table = (PageTableEntry*)map_memory(
                                 pd_table[pd_index].page_address * page_size,
                                 sizeof(PageTableEntry[page_table_length]),
-                                bitmap_entries,
-                                bitmap_size
+                                bitmap
                             );
                             if(page_table == nullptr) {
                                 unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1050,8 +1025,7 @@ bool set_page(
     size_t logical_page_index,
     size_t physical_page_index,
     size_t pml4_table_physical_address,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     size_t bitmap_index = 0;
     size_t bitmap_sub_bit_index = 0;
@@ -1069,8 +1043,7 @@ bool set_page(
     auto pml4_table = (PageTableEntry*)map_memory(
         pml4_table_physical_address,
         sizeof(PageTableEntry[page_table_length]),
-        bitmap_entries,
-        bitmap_size
+        bitmap
     );
     if(pml4_table == nullptr) {
         return false;
@@ -1081,8 +1054,7 @@ bool set_page(
         pdp_table = (PageTableEntry*)map_memory(
             pml4_table[pml4_index].page_address * page_size,
             sizeof(PageTableEntry[page_table_length]),
-            bitmap_entries,
-            bitmap_size
+            bitmap
         );
         if(pdp_table == nullptr) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1094,8 +1066,7 @@ bool set_page(
         if(!allocate_next_physical_page(
             &bitmap_index,
             &bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1106,8 +1077,7 @@ bool set_page(
         pdp_table = (PageTableEntry*)map_memory(
             physical_page_index * page_size,
             sizeof(PageTableEntry[page_table_length]),
-            bitmap_entries,
-            bitmap_size
+            bitmap
         );
         if(pdp_table == nullptr) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1128,8 +1098,7 @@ bool set_page(
         pd_table = (PageTableEntry*)map_memory(
             pdp_table[pdp_index].page_address * page_size,
             sizeof(PageTableEntry[page_table_length]),
-            bitmap_entries,
-            bitmap_size
+            bitmap
         );
         if(pd_table == nullptr) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1142,8 +1111,7 @@ bool set_page(
         if(!allocate_next_physical_page(
             &bitmap_index,
             &bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )) {
             unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
@@ -1154,8 +1122,7 @@ bool set_page(
         pd_table = (PageTableEntry*)map_memory(
             physical_page_index * page_size,
             sizeof(PageTableEntry[page_table_length]),
-            bitmap_entries,
-            bitmap_size
+            bitmap
         );
         if(pd_table == nullptr) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1177,8 +1144,7 @@ bool set_page(
         page_table = (PageTableEntry*)map_memory(
             pd_table[pd_index].page_address * page_size,
             sizeof(PageTableEntry[page_table_length]),
-            bitmap_entries,
-            bitmap_size
+            bitmap
         );
         if(page_table == nullptr) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1192,8 +1158,7 @@ bool set_page(
         if(!allocate_next_physical_page(
             &bitmap_index,
             &bitmap_sub_bit_index,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &physical_page_index
         )) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1206,8 +1171,7 @@ bool set_page(
         page_table = (PageTableEntry*)map_memory(
             physical_page_index * page_size,
             sizeof(PageTableEntry[page_table_length]),
-            bitmap_entries,
-            bitmap_size
+            bitmap
         );
         if(page_table == nullptr) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1243,8 +1207,7 @@ static bool map_table(
     PageTableEntry **current_table,
     PageTableEntry *parent_table,
     size_t parent_index,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     if(*current_table == nullptr || parent_index != *current_parent_index) {
         if(*current_table != nullptr) {
@@ -1257,8 +1220,7 @@ static bool map_table(
         if(!map_pages(
             parent_table[parent_index].page_address,
             1,
-            bitmap_entries,
-            bitmap_size,
+            bitmap,
             &logical_page_index
         )) {
             return false;
@@ -1276,14 +1238,12 @@ bool unmap_pages(
     size_t page_count,
     size_t pml4_table_physical_address,
     bool deallocate,
-    uint8_t *bitmap_entries,
-    size_t bitmap_size
+    Array<uint8_t> bitmap
 ) {
     auto pml4_table = (PageTableEntry*)map_memory(
         pml4_table_physical_address,
         sizeof(PageTableEntry[page_table_length]),
-        bitmap_entries,
-        bitmap_size
+        bitmap
     );
     if(pml4_table == nullptr) {
         return false;
@@ -1319,24 +1279,21 @@ bool unmap_pages(
                 &pdp_table,
                 pml4_table,
                 pml4_index,
-                bitmap_entries,
-                bitmap_size
+                bitmap
             ) ||
             !map_table(
                 &current_pdp_index,
                 &pd_table,
                 pdp_table,
                 pdp_index,
-                bitmap_entries,
-                bitmap_size
+                bitmap
             ) ||
             !map_table(
                 &current_pd_index,
                 &page_table,
                 pd_table,
                 pd_index,
-                bitmap_entries,
-                bitmap_size
+                bitmap
             )
         ) {
             unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1364,7 +1321,7 @@ bool unmap_pages(
             auto byte_index = physical_page_index / 8;
             auto sub_byte_index = physical_page_index % 8;
 
-            bitmap_entries[byte_index] &= ~(1 << sub_byte_index);
+            bitmap[byte_index] &= ~(1 << sub_byte_index);
         }
     }
 
