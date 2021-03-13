@@ -53,7 +53,7 @@ def build_objects(objects, target, object_subdirectory, *extra_arguments):
             '-std=gnu++11' if is_cpp else '-std=gnu11',
             '-ffreestanding',
             *(['-g'] if debug_info else []),
-            *(['-O2'] if optimize else []),
+            *(['-O2', '-DOPTIMIZED'] if optimize else []),
             *extra_arguments,
             '-c',
             '-o', os.path.join(object_directory, object_subdirectory_full, object_name),

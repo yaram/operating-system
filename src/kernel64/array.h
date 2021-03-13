@@ -9,7 +9,7 @@ struct Array {
     size_t length;
 
     inline T &operator [](size_t index) {
-#if !defined(NDEBUG)
+#ifndef OPTIMIZED
         if(index >= length) {
             printf("FATAL ERROR: Array overrun. Length was %zu and index was %zu\n", length, index);
 
@@ -39,7 +39,7 @@ struct ConstArray {
     }
 
     inline const T &operator [](size_t index) {
-#if !defined(NDEBUG)
+#ifndef OPTIMIZED
         if(index >= length) {
             printf("FATAL ERROR: Array overrun. Length was %zu and index was %zu\n", length, index);
 
