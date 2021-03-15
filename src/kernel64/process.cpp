@@ -626,6 +626,28 @@ CreateProcessFromELFResult create_process_from_elf(
                         *(uint32_t*)slot_kernel_address = (uint32_t)(symbol_user_address + relocation->addend - slot_user_address);
                     } break;
 
+                    case 9: { // R_X86_64_GOTPCREL
+                        auto index = next_global_offset_table_index;
+                        next_global_offset_table_index += 1;
+
+                        if(index == global_offset_table.length) {
+                            destroy_process(process_iterator, bitmap);
+
+                            return CreateProcessFromELFResult::OutOfMemory;
+                        }
+
+                        global_offset_table[index] = symbol_user_address;
+
+                        auto offset = index * sizeof(size_t);
+
+                        *(uint32_t*)slot_kernel_address = (uint32_t)(
+                            offset +
+                            global_offset_table_address +
+                            relocation->addend -
+                            slot_user_address
+                        );
+                    } break;
+
                     case 10: { // R_X86_64_32
                         *(uint32_t*)slot_kernel_address = (uint32_t)(symbol_user_address + relocation->addend);
                     } break;
@@ -664,6 +686,8 @@ CreateProcessFromELFResult create_process_from_elf(
                     } break;
 
                     default: {
+                        printf("%zX\n", relocation->type);
+
                         destroy_process(process_iterator, bitmap);
 
                         return CreateProcessFromELFResult::InvalidELF;
