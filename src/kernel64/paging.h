@@ -77,8 +77,6 @@ inline PageTableEntry *get_page_table_pointer(size_t pml4_index, size_t pdp_inde
     ));
 }
 
-bool find_free_logical_pages(size_t page_count, size_t *logical_pages_start);
-
 size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, size_t page_count);
 
 bool allocate_next_physical_page(
@@ -99,12 +97,6 @@ void allocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count);
 void deallocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count);
 
 // Kernel table-specific functions
-
-bool set_page(
-    size_t logical_page_index,
-    size_t physical_page_index,
-    Array<uint8_t> bitmap
-);
 
 bool map_pages(
     size_t physical_pages_start,
@@ -152,20 +144,30 @@ void unmap_and_deallocate_memory(
     Array<uint8_t> bitmap
 );
 
-// non-kernel (process) page table functions
+// non-kernel (process/user) page table functions
 
-bool find_free_logical_pages(
+bool map_pages(
+    size_t physical_pages_start,
     size_t page_count,
     size_t pml4_table_physical_address,
     Array<uint8_t> bitmap,
     size_t *logical_pages_start
 );
 
-bool set_page(
-    size_t logical_page_index,
-    size_t physical_page_index,
-    size_t pml4_table_physical_address,
-    Array<uint8_t> bitmap
+bool map_pages_from_kernel(
+    size_t kernel_logical_pages_start,
+    size_t page_count,
+    size_t user_pml4_table_physical_address,
+    Array<uint8_t> bitmap,
+    size_t *user_logical_pages_start
+);
+
+bool map_pages_from_user(
+    size_t user_logical_pages_start,
+    size_t page_count,
+    size_t user_pml4_table_physical_address,
+    Array<uint8_t> bitmap,
+    size_t *kernel_logical_pages_start
 );
 
 bool unmap_pages(

@@ -173,46 +173,29 @@ static bool map_and_allocate_pages_in_process_and_kernel(
     size_t *user_pages_start,
     size_t *kernel_pages_start
 ) {
-    if(!find_free_logical_pages(
+    if(!map_and_allocate_pages(page_count, bitmap, kernel_pages_start)) {
+        return false;
+    }
+
+    if(!map_pages_from_kernel(
+        *kernel_pages_start,
         page_count,
         process->pml4_table_physical_address,
         bitmap,
         user_pages_start
     )) {
+        unmap_and_deallocate_pages(*kernel_pages_start, page_count, bitmap);
+
         return false;
     }
 
     if(!register_process_mapping(process, *user_pages_start, page_count, true, bitmap)) {
+        unmap_and_deallocate_pages(*kernel_pages_start, page_count, bitmap);
+
         return false;
     }
 
-    if(!find_free_logical_pages(page_count, kernel_pages_start)) {
-        return false;
-    }
-
-    size_t bitmap_index = 0;
-    size_t bitmap_sub_bit_index = 0;
-    for(size_t i = 0; i < page_count; i += 1) {
-        size_t physical_page_index;
-        if(!allocate_next_physical_page(
-            &bitmap_index,
-            &bitmap_sub_bit_index,
-            bitmap,
-            &physical_page_index
-        )){
-            return false;
-        }
-
-        // The order of these is IMPORTANT, otherwise the kernel pages will get overwritten!!!
-
-        if(!set_page(*user_pages_start + i, physical_page_index, process->pml4_table_physical_address, bitmap)) {
-            return false;
-        }
-
-        if(!set_page(*kernel_pages_start + i, physical_page_index, bitmap)) {
-            return false;
-        }
-    }
+    memset((void*)(*kernel_pages_start * page_size), 0, page_count * page_size);
 
     return true;
 }
@@ -234,10 +217,6 @@ static size_t get_section_relative_address(size_t section_index, ConstArray<ELFS
     relative_address = align_round_up(relative_address, last_section_header->alignment);
 
     return relative_address;
-}
-
-inline void clear_pages(size_t page_index, size_t page_count) {
-    memset((void*)(page_index * page_size), 0, page_count * page_size);
 }
 
 CreateProcessFromELFResult create_process_from_elf(
@@ -500,8 +479,6 @@ CreateProcessFromELFResult create_process_from_elf(
 
     auto image_kernel_memory_start = image_kernel_pages_start * page_size;
 
-    clear_pages(image_kernel_pages_start, image_page_count);
-
     {
         auto section_relative_address = 0;
 
@@ -546,8 +523,6 @@ CreateProcessFromELFResult create_process_from_elf(
     )) {
         return CreateProcessFromELFResult::OutOfMemory;
     }
-
-    clear_pages(global_offset_table_kernel_pages_start, global_offset_table_page_count);
 
     auto global_offset_table_address = global_offset_table_user_pages_start * page_size;
 
@@ -700,7 +675,7 @@ CreateProcessFromELFResult create_process_from_elf(
     unmap_pages(global_offset_table_kernel_pages_start, global_offset_table_page_count);
     unmap_pages(image_kernel_pages_start, image_page_count);
 
-    const size_t stack_size = 4096;
+    const size_t stack_size = 1024 * 16;
     const size_t stack_page_count = divide_round_up(stack_size, page_size);
 
     size_t stack_user_pages_start;
@@ -715,8 +690,6 @@ CreateProcessFromELFResult create_process_from_elf(
     )) {
         return CreateProcessFromELFResult::OutOfMemory;
     }
-
-    clear_pages(stack_kernel_pages_start, stack_page_count);
 
     unmap_pages(stack_kernel_pages_start, stack_page_count);
 

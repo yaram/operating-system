@@ -432,6 +432,10 @@ extern "C" void syscall_thunk();
 
 #define bits_to_mask(bits) ((1 << (bits)) - 1)
 
+inline void clear_pages(size_t page_index, size_t page_count) {
+    memset((void*)(page_index * page_size), 0, page_count * page_size);
+}
+
 extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
     asm volatile(
         "mov %0, %%cr3"
@@ -471,68 +475,43 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
             auto page_count = divide_round_up(parameter, page_size);
 
-            size_t logical_pages_start;
-            if(!find_free_logical_pages(
-                parameter,
+            size_t kernel_pages_start;
+            if(!map_and_allocate_pages(page_count, global_bitmap, &kernel_pages_start)) {
+                break;
+            }
+
+            size_t user_pages_start;
+            if(!map_pages_from_kernel(
+                kernel_pages_start,
+                page_count,
                 process->pml4_table_physical_address,
                 global_bitmap,
-                &logical_pages_start
+                &user_pages_start
             )) {
+                unmap_and_deallocate_pages(kernel_pages_start, page_count, global_bitmap);
+
                 break;
             }
 
-            size_t bitmap_index = 0;
-            size_t bitmap_sub_bit_index = 0;
+            if(!register_process_mapping(process, user_pages_start, page_count, true, global_bitmap)) {
+                unmap_and_deallocate_pages(kernel_pages_start, page_count, global_bitmap);
 
-            auto success = true;
-            for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
-                size_t physical_page_index;
-                if(!allocate_next_physical_page(
-                    &bitmap_index,
-                    &bitmap_sub_bit_index,
-                    global_bitmap,
-                    &physical_page_index
-                )) {
-                    success = false;
-                    break;
-                }
+                unmap_pages(user_pages_start, page_count, process->pml4_table_physical_address, false, global_bitmap);
 
-                if(!set_page(
-                    logical_pages_start + relative_page_index,
-                    physical_page_index,
-                    process->pml4_table_physical_address,
-                    global_bitmap
-                )) {
-                    success = false;
-                    break;
-                }
-            }
-
-            if(!success) {
                 break;
             }
 
-            if(!register_process_mapping(process, logical_pages_start, page_count, true, global_bitmap)) {
-                break;
-            }
+            clear_pages(kernel_pages_start, page_count);
 
-            *return_1 = logical_pages_start * page_size;
+            unmap_pages(kernel_pages_start, page_count);
+
+            *return_1 = user_pages_start * page_size;
         } break;
 
         case SyscallType::MapFreeConsecutiveMemory: {
             *return_1 = 0;
 
             auto page_count = divide_round_up(parameter, page_size);
-
-            size_t logical_pages_start;
-            if(!find_free_logical_pages(
-                page_count,
-                process->pml4_table_physical_address,
-                global_bitmap,
-                &logical_pages_start
-            )) {
-                break;
-            }
 
             size_t physical_pages_start;
             if(!allocate_consecutive_physical_pages(
@@ -543,28 +522,37 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                 break;
             }
 
-            auto success = true;
-            for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
-                if(!set_page(
-                    logical_pages_start + relative_page_index,
-                    physical_pages_start + relative_page_index,
-                    process->pml4_table_physical_address,
-                    global_bitmap
-                )) {
-                    success = false;
-                    break;
-                }
-            }
-
-            if(!success) {
+            size_t kernel_pages_start;
+            if(!map_pages(physical_pages_start, page_count, global_bitmap, &kernel_pages_start)) {
                 break;
             }
 
-            if(!register_process_mapping(process, logical_pages_start, page_count, true, global_bitmap)) {
+            size_t user_pages_start;
+            if(!map_pages(
+                physical_pages_start,
+                page_count,
+                process->pml4_table_physical_address,
+                global_bitmap,
+                &user_pages_start
+            )) {
+                unmap_and_deallocate_pages(kernel_pages_start, page_count, global_bitmap);
+
                 break;
             }
 
-            *return_1 = logical_pages_start * page_size;
+            if(!register_process_mapping(process, user_pages_start, page_count, true, global_bitmap)) {
+                unmap_and_deallocate_pages(kernel_pages_start, page_count, global_bitmap);
+
+                unmap_pages(user_pages_start, page_count, process->pml4_table_physical_address, false, global_bitmap);
+
+                break;
+            }
+
+            clear_pages(kernel_pages_start, page_count);
+
+            unmap_pages(kernel_pages_start, page_count);
+
+            *return_1 = user_pages_start * page_size;
             *return_2 = physical_pages_start * page_size;
         } break;
 
@@ -693,23 +681,15 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
                 if(segment == target_segment) {
                     size_t logical_pages_start;
-                    if(!find_free_logical_pages(
-                        1,
-                        process->pml4_table_physical_address,
-                        global_bitmap,
-                        &logical_pages_start
-                    )) {
-                        break;
-                    }
-
-                    if(!set_page(
-                        logical_pages_start,
+                    if(!map_pages(
                         physical_memory_start / page_size +
                             bus * device_count * function_count +
                             device * function_count +
                             function,
+                        1,
                         process->pml4_table_physical_address,
-                        global_bitmap
+                        global_bitmap,
+                        &logical_pages_start
                     )) {
                         break;
                     }
@@ -828,29 +808,13 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     auto page_count = physical_pages_end - physical_pages_start;
 
                     size_t logical_pages_start;
-                    if(!find_free_logical_pages(
+                    if(!map_pages(
+                        physical_pages_start,
                         page_count,
                         process->pml4_table_physical_address,
                         global_bitmap,
                         &logical_pages_start
                     )) {
-                        break;
-                    }
-
-                    auto failed = false;
-                    for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
-                        if(!set_page(
-                            logical_pages_start + relative_page_index,
-                            physical_pages_start + relative_page_index,
-                            process->pml4_table_physical_address,
-                            global_bitmap
-                        )) {
-                            failed = true;
-                            break;
-                        }
-                    }
-
-                    if(failed) {
                         break;
                     }
 
