@@ -3,6 +3,7 @@
 - process memory deallocation
 - relocatable-type ELF files for everything (do linking at runtime)
 - use custom polymorphic array type for runtime array bounds checking
+- process-loading syscall, user-space program provides program to load in in-memory buffer
 
 ## In progress
 
@@ -15,7 +16,6 @@
 - processes subscribe to hardware interrupts
 - \[user\] test keyboard input with USB keyboard maybe
 - \[user\] test ahci/sata disk access/loading
-- process-loading syscall, user-space program provides program to load in in-memory buffer
 - dynamic object file loading
 - \[user\] release a toolchain (just llvm or do we need binutils?)
 - \[user\] first-party/reference/example std library / hardware abstraction library
