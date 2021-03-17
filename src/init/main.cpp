@@ -31,25 +31,25 @@ extern "C" void *memcpy(void *destination, const void *source, size_t count) {
     return destination;
 }
 
-inline size_t syscall(SyscallType syscall_type, size_t parameter, size_t *return_2) {
+inline size_t syscall(SyscallType syscall_type, size_t parameter_1, size_t parameter_2, size_t *return_2) {
     size_t return_1;
     asm volatile(
         "syscall"
-        : "=b"(return_1), "=d"(*return_2)
-        : "b"(syscall_type), "d"(parameter)
+        : "=b"(return_1), "=d"(*return_2), "=S"(parameter_2)
+        : "b"(syscall_type), "d"(parameter_1), "S"(parameter_2)
         : "rax", "rcx", "r11"
     );
 
     return return_1;
 }
 
-inline size_t syscall(SyscallType syscall_type, size_t parameter) {
+inline size_t syscall(SyscallType syscall_type, size_t parameter_1, size_t parameter_2) {
     size_t return_2;
-    return syscall(syscall_type, parameter, &return_2);
+    return syscall(syscall_type, parameter_1, parameter_2, &return_2);
 }
 
 void _putchar(char character) {
-    syscall(SyscallType::DebugPrint, character);
+    syscall(SyscallType::DebugPrint, character, 0);
 }
 
 struct __attribute__((packed)) virtio_pci_cap {
@@ -222,7 +222,7 @@ struct virtio_gpu_resource_flush : virtio_gpu_ctrl_hdr {
 };
 
 [[noreturn]] inline void exit() {
-    syscall(SyscallType::Exit, 0);
+    syscall(SyscallType::Exit, 0, 0);
 
     while(true);
 }
@@ -273,6 +273,9 @@ static volatile virtio_gpu_ctrl_hdr *send_command(
     return (volatile virtio_gpu_ctrl_hdr*)(buffers_address + buffer_size);
 }
 
+extern uint8_t secondary_executable[];
+extern uint8_t secondary_executable_end[];
+
 extern "C" [[noreturn]] void entry() {
     const uint16_t virtio_gpu_vendor_id = 0x1Af4;
     const uint16_t virtio_gpu_device_id = 0x1050;
@@ -281,6 +284,7 @@ extern "C" [[noreturn]] void entry() {
     if(syscall(
         SyscallType::FindPCIEDevice,
         (size_t)virtio_gpu_device_id | (size_t)virtio_gpu_vendor_id << 16,
+        0,
         &virtio_gpu_location
     ) == 0) {
         printf("Error: virtio-gpu device not present\n");
@@ -288,7 +292,7 @@ extern "C" [[noreturn]] void entry() {
         exit();
     }
 
-    auto virtio_gpu_configuration_address = syscall(SyscallType::MapPCIEConfiguration, virtio_gpu_location);
+    auto virtio_gpu_configuration_address = syscall(SyscallType::MapPCIEConfiguration, virtio_gpu_location, 0);
     if(virtio_gpu_configuration_address == 0) {
         printf("Error: Unable to map virtio-gpu configuration space\n");
 
@@ -304,7 +308,7 @@ extern "C" [[noreturn]] void entry() {
         exit();
     }
 
-    auto common_bar_address = syscall(SyscallType::MapPCIEBar, common_config_capability->bar | virtio_gpu_location << bar_index_bits);
+    auto common_bar_address = syscall(SyscallType::MapPCIEBar, common_config_capability->bar | virtio_gpu_location << bar_index_bits, 0);
     if(common_bar_address == 0) {
         printf("Error: Unable to map commmon config BAR for virtio-gpu\n");
 
@@ -334,7 +338,12 @@ extern "C" [[noreturn]] void entry() {
     common_configuration->queue_select = 0; // Select controlq queue
 
     size_t queue_descriptors_physical_address;
-    auto queue_descriptors = (volatile virtq_desc*)syscall(SyscallType::MapFreeConsecutiveMemory, sizeof(virtq_desc) * queue_descriptor_count, &queue_descriptors_physical_address);
+    auto queue_descriptors = (volatile virtq_desc*)syscall(
+        SyscallType::MapFreeConsecutiveMemory,
+        sizeof(virtq_desc) * queue_descriptor_count,
+        0,
+        &queue_descriptors_physical_address
+    );
     if(queue_descriptors == nullptr) {
         printf("Error: Unable to allocate memory for queue descriptor\n");
 
@@ -349,7 +358,7 @@ extern "C" [[noreturn]] void entry() {
     queue_descriptors[1].flags = 0b10; // Set device writable (device buffer)
 
     size_t buffers_physical_address;
-    auto buffers_address = syscall(SyscallType::MapFreeConsecutiveMemory, buffer_size * queue_descriptor_count, &buffers_physical_address);
+    auto buffers_address = syscall(SyscallType::MapFreeConsecutiveMemory, buffer_size * queue_descriptor_count, 0, &buffers_physical_address);
     if(buffers_address == 0) {
         printf("Error: Unable to allocate memory for queue buffers\n");
 
@@ -365,6 +374,7 @@ extern "C" [[noreturn]] void entry() {
     auto available_ring = (volatile virtq_avail*)syscall(
         SyscallType::MapFreeConsecutiveMemory,
         sizeof(virtq_avail) + sizeof(uint16_t) * queue_descriptor_count,
+        0,
         &available_ring_physical_address
     );
     if(available_ring == nullptr) {
@@ -379,6 +389,7 @@ extern "C" [[noreturn]] void entry() {
     auto used_ring = (volatile virtq_used*)syscall(
         SyscallType::MapFreeConsecutiveMemory,
         sizeof(virtq_used) + sizeof(virtq_used_elem) * queue_descriptor_count,
+        0,
         &used_ring_physical_address
     );
     if(used_ring == nullptr) {
@@ -402,7 +413,7 @@ extern "C" [[noreturn]] void entry() {
         exit();
     }
 
-    auto notify_bar_address = syscall(SyscallType::MapPCIEBar, notify_capability->bar | virtio_gpu_location << bar_index_bits);
+    auto notify_bar_address = syscall(SyscallType::MapPCIEBar, notify_capability->bar | virtio_gpu_location << bar_index_bits, 0);
     if(notify_bar_address == 0) {
         printf("Error: Unable to map notify BAR for virtio-gpu\n");
 
@@ -465,7 +476,7 @@ extern "C" [[noreturn]] void entry() {
     auto framebuffer_size = display_height * display_width * 4;
 
     size_t framebuffer_physical_address;
-    auto framebuffer_address = syscall(SyscallType::MapFreeConsecutiveMemory, framebuffer_size, &framebuffer_physical_address);
+    auto framebuffer_address = syscall(SyscallType::MapFreeConsecutiveMemory, framebuffer_size, 0, &framebuffer_physical_address);
     if(framebuffer_address == 0) {
         printf("Error: Unable to allocate memory for framebuffer\n");
 
@@ -519,6 +530,10 @@ extern "C" [[noreturn]] void entry() {
 
         exit();
     }
+
+    auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
+
+    printf("%zX\n", syscall(SyscallType::CreateProcess, (size_t)&secondary_executable, secondary_executable_size));
 
     size_t counter = 0;
 
@@ -697,3 +712,10 @@ extern "C" [[noreturn]] void entry() {
 
     exit();
 }
+
+asm(
+    ".section .rodata\n"
+    "secondary_executable:\n"
+    ".incbin \"build/init_secondary.elf\"\n"
+    "secondary_executable_end:"
+);

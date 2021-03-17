@@ -446,7 +446,8 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
     auto process = *current_process_iterator;
 
     auto syscall_index = stack_frame->rbx;
-    auto parameter = stack_frame->rdx;
+    auto parameter_1 = stack_frame->rdx;
+    auto parameter_2 = stack_frame->rsi;
 
     auto return_1 = &stack_frame->rbx;
     auto return_2 = &stack_frame->rdx;
@@ -467,13 +468,13 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         } break;
 
         case SyscallType::DebugPrint: {
-            putchar((char)parameter);
+            putchar((char)parameter_1);
         } break;
 
         case SyscallType::MapFreeMemory: {
             *return_1 = 0;
 
-            auto page_count = divide_round_up(parameter, page_size);
+            auto page_count = divide_round_up(parameter_1, page_size);
 
             size_t kernel_pages_start;
             if(!map_and_allocate_pages(page_count, global_bitmap, &kernel_pages_start)) {
@@ -511,7 +512,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         case SyscallType::MapFreeConsecutiveMemory: {
             *return_1 = 0;
 
-            auto page_count = divide_round_up(parameter, page_size);
+            auto page_count = divide_round_up(parameter_1, page_size);
 
             size_t physical_pages_start;
             if(!allocate_consecutive_physical_pages(
@@ -557,7 +558,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         } break;
 
         case SyscallType::UnmapMemory: {
-            auto logical_pages_start = parameter / page_size;
+            auto logical_pages_start = parameter_1 / page_size;
 
             for(auto iterator = begin(process->mappings); iterator != end(process->mappings); ++iterator) {
                 auto mapping = *iterator;
@@ -579,8 +580,8 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         } break;
 
         case SyscallType::FindPCIEDevice: {
-            auto desired_device_id = (uint16_t)parameter;
-            auto desired_vendor_id = (uint16_t)(parameter >> 16);
+            auto desired_device_id = (uint16_t)parameter_1;
+            auto desired_vendor_id = (uint16_t)(parameter_1 >> 16);
 
             MCFGTable *mcfg_table;
             {
@@ -658,11 +659,81 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             AcpiPutTable(&mcfg_table->preamble.Header);
         } break;
 
+        case SyscallType::CreateProcess: {
+            auto elf_user_memory_start = parameter_1;
+            auto elf_size = parameter_2;
+
+            auto elf_user_memory_end = parameter_1 + elf_size;
+
+            auto elf_user_pages_start = elf_user_memory_start / page_size;
+            auto elf_user_pages_end = divide_round_up(elf_user_memory_end, page_size);
+            auto elf_page_count = elf_user_pages_end - elf_user_pages_start;
+
+            auto elf_offset = elf_user_memory_start - elf_user_pages_start * page_size;
+
+            auto found = false;
+            for(auto iterator = begin(process->mappings); iterator != end(process->mappings); ++iterator) {
+                auto mapping = *iterator;
+
+                if(
+                    elf_user_pages_start >= mapping->logical_pages_start &&
+                    elf_user_pages_end <= mapping->logical_pages_start + mapping->page_count
+                ) {
+                    found = true;
+                    break;
+                }
+            }
+
+            if(!found) {
+                *return_1 = (size_t)CreateProcessResult::InvalidMemoryRange;
+            }
+
+            size_t elf_kernel_pages_start;
+            if(!map_pages_from_user(
+                elf_user_pages_start,
+                elf_page_count,
+                process->pml4_table_physical_address,
+                global_bitmap,
+                &elf_kernel_pages_start
+            )) {
+                *return_1 = (size_t)CreateProcessResult::OutOfMemory;
+            }
+
+            auto elf_binary = (uint8_t*)(elf_kernel_pages_start * page_size + elf_offset);
+
+            Process *new_process;
+            Processes::Iterator new_process_iterator;
+            switch(create_process_from_elf(
+                elf_binary,
+                global_bitmap,
+                &global_processes,
+                &new_process,
+                &new_process_iterator
+            )) {
+                case CreateProcessFromELFResult::Success: {
+                    *return_1 = (size_t)CreateProcessResult::Success;
+                    *return_2 = new_process->id;
+                } break;
+
+                case CreateProcessFromELFResult::OutOfMemory: {
+                    *return_1 = (size_t)CreateProcessResult::OutOfMemory;
+                } break;
+
+                case CreateProcessFromELFResult::InvalidELF: {
+                    *return_1 = (size_t)CreateProcessResult::InvalidELF;
+                } break;
+
+                default: halt();
+            }
+
+            unmap_pages(elf_kernel_pages_start, elf_page_count);
+        } break;
+
         case SyscallType::MapPCIEConfiguration: {
-            auto function = parameter & bits_to_mask(function_bits);
-            auto device = parameter >> function_bits & bits_to_mask(device_bits);
-            auto bus = parameter >> (function_bits + device_bits) & bits_to_mask(bus_bits);
-            auto target_segment = parameter >> (function_bits + device_bits + bus_bits);
+            auto function = parameter_1 & bits_to_mask(function_bits);
+            auto device = parameter_1 >> function_bits & bits_to_mask(device_bits);
+            auto bus = parameter_1 >> (function_bits + device_bits) & bits_to_mask(bus_bits);
+            auto target_segment = parameter_1 >> (function_bits + device_bits + bus_bits);
 
             MCFGTable *mcfg_table;
             {
@@ -708,11 +779,11 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         } break;
 
         case SyscallType::MapPCIEBar: {
-            auto bar_index = parameter & bits_to_mask(bar_index_bits);
-            auto function = parameter >> bar_index_bits & bits_to_mask(function_bits);
-            auto device = parameter >> (bar_index_bits + function_bits) & bits_to_mask(device_bits);
-            auto bus = parameter >> (bar_index_bits + function_bits + device_bits) & bits_to_mask(bus_bits);
-            auto target_segment = parameter >> (bar_index_bits + function_bits + device_bits + bus_bits);
+            auto bar_index = parameter_1 & bits_to_mask(bar_index_bits);
+            auto function = parameter_1 >> bar_index_bits & bits_to_mask(function_bits);
+            auto device = parameter_1 >> (bar_index_bits + function_bits) & bits_to_mask(device_bits);
+            auto bus = parameter_1 >> (bar_index_bits + function_bits + device_bits) & bits_to_mask(bus_bits);
+            auto target_segment = parameter_1 >> (bar_index_bits + function_bits + device_bits + bus_bits);
 
             MCFGTable *mcfg_table;
             {

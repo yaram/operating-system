@@ -29,6 +29,10 @@ else:
     print('Unknown configuration \'{}\''.format(configuration), file=sys.stderr)
     exit(1)
 
+c_compiler_path = shutil.which('clang')
+cpp_compiler_path = shutil.which('clang++')
+linker_path = shutil.which('ld.lld')
+
 parent_directory = os.path.dirname(os.path.realpath(__file__))
 
 source_directory = os.path.join(parent_directory, 'src')
@@ -37,34 +41,41 @@ thirdparty_directory = os.path.join(parent_directory, 'thirdparty')
 
 object_directory = os.path.join(build_directory, 'objects')
 
-def build_objects(objects, target, object_subdirectory, *extra_arguments):
-    object_subdirectory_full = os.path.join(object_directory, object_subdirectory)
+def build_objects(objects, target, name, *extra_arguments):
+    if debug_info:
+        extra_arguments = (*extra_arguments, '-g')
 
-    if not os.path.exists(object_subdirectory_full):
-        os.makedirs(object_subdirectory_full)
+    if optimize:
+        extra_arguments = (*extra_arguments, '-O2', '-DOPTIMIZED')
 
     for source_path, object_name in objects:
         is_cpp = source_path.endswith('.cpp')
 
         run_command(
-            shutil.which('clang++' if is_cpp else 'clang'),
+            cpp_compiler_path if is_cpp else c_compiler_path,
             '-target', target,
             '-march=x86-64',
             '-std=gnu++11' if is_cpp else '-std=gnu11',
             '-ffreestanding',
-            *(['-g'] if debug_info else []),
-            *(['-O2', '-DOPTIMIZED'] if optimize else []),
             *extra_arguments,
             '-c',
-            '-o', os.path.join(object_directory, object_subdirectory_full, object_name),
+            '-o', os.path.join(object_directory, name, object_name),
             source_path
         )
 
-def build_objects_64bit(objects, object_subdirectory, *extra_arguments):
-    build_objects(objects, 'x86_64-unknown-unknown-elf', object_subdirectory, *extra_arguments)
+def build_objects_64bit(objects, name, *extra_arguments):
+    build_objects(objects, 'x86_64-unknown-unknown-elf', name, *extra_arguments)
 
-def build_objects_32bit(objects, object_subdirectory, *extra_arguments):
-    build_objects(objects, 'i686-unknown-unknown-elf', object_subdirectory, *extra_arguments)
+def build_objects_32bit(objects, name, *extra_arguments):
+    build_objects(objects, 'i686-unknown-unknown-elf', name, *extra_arguments)
+
+def do_linking(objects, name, *extra_arguments):
+    run_command(
+        linker_path,
+        *extra_arguments,
+        '-o', os.path.join(build_directory, '{}.elf'.format(name)),
+        *[os.path.join(object_directory, name, object_name) for _, object_name in objects]
+    )
 
 acpica_directory = os.path.join(thirdparty_directory, 'acpica')
 printf_directory = os.path.join(thirdparty_directory, 'printf')
@@ -124,6 +135,25 @@ if not os.path.exists(user_openlibm_archive):
         *[os.path.join(object_directory, 'user_openlibm', object_name) for _, object_name in objects]
     )
 
+init_secondary_objects = [
+    (os.path.join(source_directory, 'init', 'secondary.cpp'), 'secondary.o'),
+    (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
+]
+
+build_objects_64bit(
+    init_secondary_objects,
+    'init_secondary',
+    '-I{}'.format(os.path.join(source_directory, 'shared')),
+    '-I{}'.format(os.path.join(printf_directory)),
+    '-fpie'
+)
+
+do_linking(
+    init_secondary_objects,
+    'init_secondary',
+    '--relocatable'
+)
+
 init_objects = [
     (os.path.join(source_directory, 'init', 'main.cpp'), 'main.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
@@ -141,13 +171,12 @@ build_objects_64bit(
     '-fpie'
 )
 
-run_command(
-    shutil.which('ld.lld'),
-    '-e', 'entry',
+
+do_linking(
+    init_objects,
+    'init',
     '--relocatable',
-    '-o', os.path.join(build_directory, 'init.elf'),
-    user_openlibm_archive,
-    *[os.path.join(object_directory, 'init', object_name) for _, object_name in init_objects]
+    user_openlibm_archive
 )
 
 objects_kernel64 = [
@@ -178,13 +207,12 @@ build_objects_64bit(
     '-mno-sse2'
 )
 
-run_command(
-    shutil.which('ld.lld'),
+do_linking(
+    objects_kernel64,
+    'kernel64',
     '-e', 'entry',
     '-T', os.path.join(source_directory, 'kernel64', 'linker.ld'),
-    '-o', os.path.join(build_directory, 'kernel64.elf'),
-    acpica_archive,
-    *[os.path.join(object_directory, 'kernel64', object_name) for _, object_name in objects_kernel64]
+    acpica_archive
 )
 
 run_command(
@@ -213,10 +241,9 @@ build_objects_32bit(
     '-mno-sse2'
 )
 
-run_command(
-    shutil.which('ld.lld'),
+do_linking(
+    objects_kernel32,
+    'kernel32',
     '-e', 'entry',
     '-T', os.path.join(source_directory, 'kernel32', 'linker.ld'),
-    '-o', os.path.join(build_directory, 'kernel32.elf'),
-    *[os.path.join(object_directory, 'kernel32', object_name) for _, object_name in objects_kernel32]
 )

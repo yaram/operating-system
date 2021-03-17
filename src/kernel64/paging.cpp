@@ -1263,6 +1263,27 @@ bool map_pages_from_user(
         return false;
     }
 
+    // Pre-allocate kernel pages so they won't be overwritten by subsequent map_table calls below
+    for(
+        size_t absolute_page_index = *kernel_logical_pages_start;
+        absolute_page_index < *kernel_logical_pages_start + page_count;
+        absolute_page_index += 1
+    ) {
+        auto page_index = absolute_page_index;
+        auto pd_index = page_index / page_table_length;
+        auto pdp_index = pd_index / page_table_length;
+        auto pml4_index = pdp_index / page_table_length;
+
+        page_index %= page_table_length;
+        pd_index %= page_table_length;
+        pdp_index %= page_table_length;
+        pml4_index %= page_table_length;
+
+        auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
+
+        page_table[page_index].present = true;
+    }
+
     auto user_pml4_table = (PageTableEntry*)map_memory(
         user_pml4_table_physical_address,
         sizeof(PageTableEntry[page_table_length]),
@@ -1312,7 +1333,6 @@ bool map_pages_from_user(
                 user_pml4_table,
                 user_pml4_index,
                 bitmap
-                
             ) ||
             !map_table(
                 &current_user_pdp_index,
@@ -1320,7 +1340,6 @@ bool map_pages_from_user(
                 user_pdp_table,
                 user_pdp_index,
                 bitmap
-                
             ) ||
             !map_table(
                 &current_user_pd_index,
@@ -1328,7 +1347,6 @@ bool map_pages_from_user(
                 user_pd_table,
                 user_pd_index,
                 bitmap
-                
             )
         ) {
             unmap_memory(user_pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1350,7 +1368,6 @@ bool map_pages_from_user(
 
         auto kernel_page_table = get_page_table_pointer(kernel_pml4_index, kernel_pdp_index, kernel_pd_index);
 
-        kernel_page_table[kernel_page_index].present = true;
         kernel_page_table[kernel_page_index].write_allowed = true;
         kernel_page_table[kernel_page_index].user_mode_allowed = false;
         kernel_page_table[kernel_page_index].page_address = user_page_table[user_page_index].page_address;
