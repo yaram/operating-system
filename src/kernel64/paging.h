@@ -146,9 +146,15 @@ void unmap_and_deallocate_memory(
 
 // non-kernel (process/user) page table functions
 
+enum UserPermissions {
+    Write = 1 << 0,
+    Execute = 1 << 1
+};
+
 bool map_pages(
     size_t physical_pages_start,
     size_t page_count,
+    UserPermissions permissions,
     size_t pml4_table_physical_address,
     Array<uint8_t> bitmap,
     size_t *logical_pages_start
@@ -157,6 +163,7 @@ bool map_pages(
 bool map_pages_from_kernel(
     size_t kernel_logical_pages_start,
     size_t page_count,
+    UserPermissions permissions,
     size_t user_pml4_table_physical_address,
     Array<uint8_t> bitmap,
     size_t *user_logical_pages_start

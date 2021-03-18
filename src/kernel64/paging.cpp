@@ -981,6 +981,7 @@ static bool map_and_maybe_allocate_table(
 bool map_pages(
     size_t physical_pages_start,
     size_t page_count,
+    UserPermissions permissions,
     size_t pml4_table_physical_address,
     Array<uint8_t> bitmap,
     size_t *logical_pages_start
@@ -1072,7 +1073,8 @@ bool map_pages(
         }
 
         page_table[page_index].present = true;
-        page_table[page_index].write_allowed = true;
+        page_table[page_index].write_allowed = permissions & UserPermissions::Write;
+        page_table[page_index].execute_disable = !(permissions & UserPermissions::Execute);
         page_table[page_index].user_mode_allowed = true;
         page_table[page_index].page_address = physical_pages_start + relative_page_index;
     }
@@ -1097,6 +1099,7 @@ bool map_pages(
 bool map_pages_from_kernel(
     size_t kernel_logical_pages_start,
     size_t page_count,
+    UserPermissions permissions,
     size_t user_pml4_table_physical_address,
     Array<uint8_t> bitmap,
     size_t *user_logical_pages_start
@@ -1199,7 +1202,8 @@ bool map_pages_from_kernel(
         auto kernel_page_table = get_page_table_pointer(kernel_pml4_index, kernel_pdp_index, kernel_pd_index);
 
         user_page_table[user_page_index].present = true;
-        user_page_table[user_page_index].write_allowed = true;
+        user_page_table[user_page_index].write_allowed = permissions & UserPermissions::Write;
+        user_page_table[user_page_index].execute_disable = !(permissions & UserPermissions::Execute);
         user_page_table[user_page_index].user_mode_allowed = true;
         user_page_table[user_page_index].page_address = kernel_page_table[kernel_page_index].page_address;
     }

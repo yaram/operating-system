@@ -485,6 +485,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             if(!map_pages_from_kernel(
                 kernel_pages_start,
                 page_count,
+                UserPermissions::Write,
                 process->pml4_table_physical_address,
                 global_bitmap,
                 &user_pages_start
@@ -532,6 +533,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             if(!map_pages(
                 physical_pages_start,
                 page_count,
+                UserPermissions::Write,
                 process->pml4_table_physical_address,
                 global_bitmap,
                 &user_pages_start
@@ -758,6 +760,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                             device * function_count +
                             function,
                         1,
+                        UserPermissions::Write,
                         process->pml4_table_physical_address,
                         global_bitmap,
                         &logical_pages_start
@@ -882,6 +885,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     if(!map_pages(
                         physical_pages_start,
                         page_count,
+                        UserPermissions::Write,
                         process->pml4_table_physical_address,
                         global_bitmap,
                         &logical_pages_start
@@ -1228,6 +1232,17 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
             : "D"((kernel_pages_end + relative_page_index) * page_size)
         );
     }
+
+    // Enable execution-disable page bit
+    asm volatile(
+        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
+        "rdmsr\n"
+        "or $(1 << 11), %%eax\n"
+        "wrmsr\n"
+        :
+        :
+        : "edx"
+    );
 
     Array<uint8_t> bitmap {
         (uint8_t*)(kernel_pages_end * page_size),
