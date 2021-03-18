@@ -1307,8 +1307,6 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
 
     AcpiPutTable(&madt_table->preamble.Header);
 
-    apic_physical_address = 0xFEE00000;
-
     apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap);
     if(apic_registers == nullptr) {
         printf("Error: Out of memory\n");
