@@ -533,7 +533,27 @@ extern "C" [[noreturn]] void entry() {
 
     auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
 
-    printf("%zX\n", syscall(SyscallType::CreateProcess, (size_t)&secondary_executable, secondary_executable_size));
+    switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&secondary_executable, secondary_executable_size)) {
+        case CreateProcessResult::Success: break;
+
+        case CreateProcessResult::OutOfMemory: {
+            printf("Error: Unable to create secondary process: Out of memory\n");
+
+            exit();
+        } break;
+
+        case CreateProcessResult::InvalidMemoryRange: {
+            printf("Error: Unable to create secondary process: Invalid memory range for ELF binary\n");
+
+            exit();
+        } break;
+
+        case CreateProcessResult::InvalidELF: {
+            printf("Error: Unable to create secondary process: Invalid ELF binary\n");
+
+            exit();
+        } break;
+    }
 
     size_t counter = 0;
 
