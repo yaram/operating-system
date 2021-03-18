@@ -1,11 +1,3 @@
-## Complete
-
-- process memory deallocation
-- relocatable-type ELF files for everything (do linking at runtime)
-- use custom polymorphic array type for runtime array bounds checking
-- process-loading syscall, user-space program provides program to load in in-memory buffer
-- memory page execution/read/write protection for user pages
-
 ## In progress
 
 - better error handling (cascade out-of-memory errors up call stack, maybe no useless "thing here" error messages)
