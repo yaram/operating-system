@@ -724,8 +724,6 @@ CreateProcessFromELFResult create_process_from_elf(
                     } break;
 
                     default: {
-                        printf("%zX\n", relocation->type);
-
                         destroy_process(process_iterator, bitmap);
                         unmap_and_deallocate_bucket_array(&section_allocations, bitmap);
 
