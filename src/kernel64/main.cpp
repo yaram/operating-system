@@ -688,6 +688,8 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
             if(!found) {
                 *return_1 = (size_t)CreateProcessResult::InvalidMemoryRange;
+
+                break;
             }
 
             size_t elf_kernel_pages_start;
