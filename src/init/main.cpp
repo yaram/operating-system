@@ -281,15 +281,23 @@ extern "C" [[noreturn]] void entry() {
     const uint16_t virtio_gpu_device_id = 0x1050;
 
     size_t virtio_gpu_location;
-    if(syscall(
-        SyscallType::FindPCIEDevice,
-        (size_t)virtio_gpu_device_id | (size_t)virtio_gpu_vendor_id << 16,
-        0,
-        &virtio_gpu_location
-    ) == 0) {
-        printf("Error: virtio-gpu device not present\n");
+    {
+        FindPCIEDeviceParameters parameters {};
+        parameters.require_vendor_id = true;
+        parameters.vendor_id = virtio_gpu_vendor_id;
+        parameters.require_device_id = true;
+        parameters.device_id = virtio_gpu_device_id;
 
-        exit();
+        if(syscall(
+            SyscallType::FindPCIEDevice,
+            (size_t)&parameters,
+            0,
+            &virtio_gpu_location
+        ) != (size_t)FindPCIEDeviceResult::Success) {
+            printf("Error: virtio-gpu device not present\n");
+
+            exit();
+        }
     }
 
     auto virtio_gpu_configuration_address = syscall(SyscallType::MapPCIEConfiguration, virtio_gpu_location, 0);
