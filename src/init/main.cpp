@@ -253,7 +253,7 @@ static volatile virtio_gpu_ctrl_hdr *send_command(
 extern uint8_t secondary_executable[];
 extern uint8_t secondary_executable_end[];
 
-extern "C" [[noreturn]] void entry(void *data, size_t data_size) {
+extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_size) {
     const uint16_t virtio_gpu_vendor_id = 0x1Af4;
     const uint16_t virtio_gpu_device_id = 0x1050;
 

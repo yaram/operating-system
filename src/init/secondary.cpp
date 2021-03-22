@@ -31,7 +31,7 @@ void _putchar(char character) {
     syscall(SyscallType::DebugPrint, character, 0);
 }
 
-extern "C" [[noreturn]] void entry(void *data, size_t data_size) {
+extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_size) {
     printf("Secondary process started!\n");
 
     if(data_size != sizeof(size_t)) {

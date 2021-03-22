@@ -805,9 +805,10 @@ CreateProcessFromELFResult create_process_from_elf(
     process->frame.interrupt_frame.stack_pointer = stack_top;
     process->frame.interrupt_frame.stack_segment = 0x1B;
 
-    // Set entry function parameters (data & data-size)
-    process->frame.rdi = data_user_pages_start * page_size;
-    process->frame.rsi = data_size;
+    // Set entry function parameters (process ID, data & data-size)
+    process->frame.rdi = process->id;
+    process->frame.rsi = data_user_pages_start * page_size;
+    process->frame.rdx = data_size;
 
     *result_processs = process;
     *result_process_iterator = process_iterator;
