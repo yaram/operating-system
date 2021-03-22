@@ -177,6 +177,16 @@ bool map_pages_from_user(
     size_t *kernel_logical_pages_start
 );
 
+bool map_pages_between_user(
+    size_t from_logical_pages_start,
+    size_t page_count,
+    UserPermissions permissions,
+    size_t from_pml4_table_physical_address,
+    size_t to_pml4_table_physical_address,
+    Array<uint8_t> bitmap,
+    size_t *to_logical_pages_start
+);
+
 bool unmap_pages(
     size_t logical_pages_start,
     size_t page_count,

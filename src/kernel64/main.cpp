@@ -442,7 +442,7 @@ enum struct MapProcessMemoryResult {
     InvalidMemoryRange
 };
 
-static MapProcessMemoryResult map_process_memory(Process *process, size_t user_memory_start, size_t size, void **kernel_memory_start) {
+static MapProcessMemoryResult map_process_memory_into_kernel(Process *process, size_t user_memory_start, size_t size, void **kernel_memory_start) {
     auto user_memory_end = user_memory_start + size;
 
     auto user_pages_start = user_memory_start / page_size;
@@ -542,7 +542,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                 break;
             }
 
-            if(!register_process_mapping(process, user_pages_start, page_count, true, global_bitmap)) {
+            if(!register_process_mapping(process, user_pages_start, page_count, false, true, global_bitmap)) {
                 unmap_and_deallocate_pages(kernel_pages_start, page_count, global_bitmap);
 
                 unmap_pages(user_pages_start, page_count, process->pml4_table_physical_address, false, global_bitmap);
@@ -590,7 +590,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                 break;
             }
 
-            if(!register_process_mapping(process, user_pages_start, page_count, true, global_bitmap)) {
+            if(!register_process_mapping(process, user_pages_start, page_count, false, true, global_bitmap)) {
                 unmap_and_deallocate_pages(kernel_pages_start, page_count, global_bitmap);
 
                 unmap_pages(user_pages_start, page_count, process->pml4_table_physical_address, false, global_bitmap);
@@ -604,6 +604,105 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
             *return_1 = user_pages_start * page_size;
             *return_2 = physical_pages_start * page_size;
+        } break;
+
+        case SyscallType::CreateSharedMemory: {
+            *return_1 = 0;
+
+            auto size = parameter_1;
+            auto page_count = divide_round_up(size, page_size);
+
+            size_t kernel_pages_start;
+            if(!map_and_allocate_pages(page_count, global_bitmap, &kernel_pages_start)) {
+                break;
+            }
+
+            size_t user_pages_start;
+            if(!map_pages_from_kernel(
+                kernel_pages_start,
+                page_count,
+                UserPermissions::Write,
+                process->pml4_table_physical_address,
+                global_bitmap,
+                &user_pages_start
+            )) {
+                unmap_and_deallocate_pages(kernel_pages_start, page_count, global_bitmap);
+
+                break;
+            }
+
+            if(!register_process_mapping(process, user_pages_start, page_count, true, true, global_bitmap)) {
+                unmap_and_deallocate_pages(kernel_pages_start, page_count, global_bitmap);
+
+                unmap_pages(user_pages_start, page_count, process->pml4_table_physical_address, false, global_bitmap);
+
+                break;
+            }
+
+            clear_pages(kernel_pages_start, page_count);
+
+            unmap_pages(kernel_pages_start, page_count);
+
+            *return_1 = user_pages_start * page_size;
+        } break;
+
+        case SyscallType::MapSharedMemory: {
+            const MapSharedMemoryParameters *parameters;
+            switch(map_process_memory_into_kernel(process, parameter_1, sizeof(MapSharedMemoryParameters), (void**)&parameters)) {
+                case MapProcessMemoryResult::Success: {
+                    auto target_logical_pages_start = parameters->address / page_size;
+                    auto target_logical_pages_end = divide_round_up(parameters->address + parameters->size, page_size);
+
+                    auto page_count = target_logical_pages_end - target_logical_pages_start;
+
+                    *return_1 = (size_t)MapSharedMemoryResult::InvalidProcessID;
+                    for(auto target_process : global_processes) {
+                        if(target_process->id == parameters->process_id) {
+                            *return_1 = (size_t)MapSharedMemoryResult::InvalidProcessID;
+                            for(auto mapping : target_process->mappings) {
+                                if(
+                                    mapping->logical_pages_start == target_logical_pages_start &&
+                                    mapping->page_count == page_count &&
+                                    mapping->is_shared
+                                ) {
+                                    auto page_count = mapping->page_count;
+
+                                    size_t logical_pages_start;
+                                    if(!map_pages_between_user(
+                                        target_logical_pages_start,
+                                        page_count,
+                                        UserPermissions::Write,
+                                        target_process->pml4_table_physical_address,
+                                        process->pml4_table_physical_address,
+                                        global_bitmap,
+                                        &logical_pages_start
+                                    )) {
+                                        *return_1 = (size_t)MapSharedMemoryResult::OutOfMemory;
+                                        break;
+                                    }
+
+                                    *return_1 = (size_t)MapSharedMemoryResult::Success;
+                                    *return_2 = logical_pages_start * page_size;
+
+                                    break;
+                                }
+                            }
+
+                            break;
+                        }
+                    }
+
+                    unmap_memory((void*)parameters, sizeof(MapSharedMemoryParameters));
+                } break;
+
+                case MapProcessMemoryResult::OutOfMemory: {
+                    *return_1 = (size_t)MapSharedMemoryResult::OutOfMemory;
+                } break;
+
+                case MapProcessMemoryResult::InvalidMemoryRange: {
+                    *return_1 = (size_t)MapSharedMemoryResult::InvalidMemoryRange;
+                } break;
+            }
         } break;
 
         case SyscallType::UnmapMemory: {
@@ -633,146 +732,122 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             auto elf_size = parameter_2;
 
             uint8_t *elf_binary;
-            {
-                bool success;
-                switch(map_process_memory(process,elf_user_memory_start, elf_size, (void**)&elf_binary)) {
-                    case MapProcessMemoryResult::Success: {
-                        success = true;
-                    } break;
+            switch(map_process_memory_into_kernel(process,elf_user_memory_start, elf_size, (void**)&elf_binary)) {
+                case MapProcessMemoryResult::Success: {
+                    Process *new_process;
+                    Processes::Iterator new_process_iterator;
+                    switch(create_process_from_elf(
+                        elf_binary,
+                        global_bitmap,
+                        &global_processes,
+                        &new_process,
+                        &new_process_iterator
+                    )) {
+                        case CreateProcessFromELFResult::Success: {
+                            *return_1 = (size_t)CreateProcessResult::Success;
+                            *return_2 = new_process->id;
+                        } break;
 
-                    case MapProcessMemoryResult::OutOfMemory: {
-                        *return_1 = (size_t)CreateProcessResult::OutOfMemory;
+                        case CreateProcessFromELFResult::OutOfMemory: {
+                            *return_1 = (size_t)CreateProcessResult::OutOfMemory;
+                        } break;
 
-                        success = false;
-                    } break;
+                        case CreateProcessFromELFResult::InvalidELF: {
+                            *return_1 = (size_t)CreateProcessResult::InvalidELF;
+                        } break;
 
-                    case MapProcessMemoryResult::InvalidMemoryRange: {
-                        *return_1 = (size_t)CreateProcessResult::InvalidMemoryRange;
+                        default: halt();
+                    }
 
-                        success = false;
-                    } break;
-                }
-
-                if(!success) {
-                    break;
-                }
-            }
-
-            Process *new_process;
-            Processes::Iterator new_process_iterator;
-            switch(create_process_from_elf(
-                elf_binary,
-                global_bitmap,
-                &global_processes,
-                &new_process,
-                &new_process_iterator
-            )) {
-                case CreateProcessFromELFResult::Success: {
-                    *return_1 = (size_t)CreateProcessResult::Success;
-                    *return_2 = new_process->id;
+                    unmap_memory(elf_binary, elf_size);
                 } break;
 
-                case CreateProcessFromELFResult::OutOfMemory: {
+                case MapProcessMemoryResult::OutOfMemory: {
                     *return_1 = (size_t)CreateProcessResult::OutOfMemory;
                 } break;
 
-                case CreateProcessFromELFResult::InvalidELF: {
-                    *return_1 = (size_t)CreateProcessResult::InvalidELF;
+                case MapProcessMemoryResult::InvalidMemoryRange: {
+                    *return_1 = (size_t)CreateProcessResult::InvalidMemoryRange;
                 } break;
-
-                default: halt();
             }
-
-            unmap_memory(elf_binary, elf_size);
         } break;
 
         case SyscallType::FindPCIEDevice: {
             const FindPCIEDeviceParameters *parameters;
-            {
-                bool success;
-                switch(map_process_memory(process, parameter_1, sizeof(FindPCIEDeviceParameters), (void**)&parameters)) {
-                    case MapProcessMemoryResult::Success: {
-                        success = true;
-                    } break;
+            switch(map_process_memory_into_kernel(process, parameter_1, sizeof(FindPCIEDeviceParameters), (void**)&parameters)) {
+                case MapProcessMemoryResult::Success: {
+                    MCFGTable *mcfg_table;
+                    {
+                        auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
+                        if(status != AE_OK) {
+                            *return_1 = (size_t)FindPCIEDeviceResult::NotFound;
 
-                    case MapProcessMemoryResult::OutOfMemory: {
-                        *return_1 = (size_t)FindPCIEDeviceResult::OutOfMemory;
-
-                        success = false;
-                    } break;
-
-                    case MapProcessMemoryResult::InvalidMemoryRange: {
-                        *return_1 = (size_t)FindPCIEDeviceResult::InvalidMemoryRange;
-
-                        success = false;
-                    } break;
-                }
-
-                if(!success) {
-                    break;
-                }
-            }
-
-            MCFGTable *mcfg_table;
-            {
-                auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
-                if(status != AE_OK) {
-                    *return_1 = (size_t)FindPCIEDeviceResult::NotFound;
-
-                    break;
-                }
-            }
-
-            *return_1 = (size_t)FindPCIEDeviceResult::NotFound;
-
-            auto done = false;
-            for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
-                auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
-                auto segment = (size_t)mcfg_table->allocations[i].PciSegment;
-                auto start_bus_number = (size_t)mcfg_table->allocations[i].StartBusNumber;
-                auto end_bus_number = (size_t)mcfg_table->allocations[i].EndBusNumber;
-                auto bus_count = end_bus_number - start_bus_number + 1;
-
-                for(size_t bus = 0; bus < bus_count; bus += 1) {
-                    auto bus_memory_size = device_count * function_count * configuration_area_size;
-
-                    auto bus_memory = map_memory(
-                        physical_memory_start + bus * device_count * function_count * configuration_area_size,
-                        bus_memory_size,
-                        global_bitmap
-                    );
-                    if(bus_memory == nullptr) {
-                        done = true;
-                        break;
+                            break;
+                        }
                     }
 
-                    for(size_t device = 0; device < device_count; device += 1) {
-                        for(size_t function = 0; function < function_count; function += 1) {
-                            auto device_base_index = 
-                                device * function_count * configuration_area_size +
-                                function * configuration_area_size;
+                    *return_1 = (size_t)FindPCIEDeviceResult::NotFound;
 
-                            auto header = (volatile PCIHeader*)((size_t)bus_memory + device_base_index);
+                    auto done = false;
+                    for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
+                        auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
+                        auto segment = (size_t)mcfg_table->allocations[i].PciSegment;
+                        auto start_bus_number = (size_t)mcfg_table->allocations[i].StartBusNumber;
+                        auto end_bus_number = (size_t)mcfg_table->allocations[i].EndBusNumber;
+                        auto bus_count = end_bus_number - start_bus_number + 1;
 
-                            if(header->vendor_id == 0xFFFF) {
-                                continue;
+                        for(size_t bus = 0; bus < bus_count; bus += 1) {
+                            auto bus_memory_size = device_count * function_count * configuration_area_size;
+
+                            auto bus_memory = map_memory(
+                                physical_memory_start + bus * device_count * function_count * configuration_area_size,
+                                bus_memory_size,
+                                global_bitmap
+                            );
+                            if(bus_memory == nullptr) {
+                                done = true;
+                                break;
                             }
 
-                            if(!(
-                                (parameters->require_vendor_id && header->vendor_id != parameters->vendor_id) ||
-                                (parameters->require_device_id && header->device_id != parameters->device_id) ||
-                                (parameters->require_class_code && header->class_code != parameters->class_code) ||
-                                (parameters->require_subclass && header->subclass != parameters->subclass) ||
-                                (parameters->require_interface && header->interface != parameters->interface)
-                            )) {
-                                *return_1 = (size_t)FindPCIEDeviceResult::Success;
-                                *return_2 =
-                                    function |
-                                    device << function_bits |
-                                    bus << (function_bits + device_bits) |
-                                    segment << (function_bits + device_bits + bus_bits);
+                            for(size_t device = 0; device < device_count; device += 1) {
+                                for(size_t function = 0; function < function_count; function += 1) {
+                                    auto device_base_index = 
+                                        device * function_count * configuration_area_size +
+                                        function * configuration_area_size;
 
-                                done = true;
+                                    auto header = (volatile PCIHeader*)((size_t)bus_memory + device_base_index);
+
+                                    if(header->vendor_id == 0xFFFF) {
+                                        continue;
+                                    }
+
+                                    if(!(
+                                        (parameters->require_vendor_id && header->vendor_id != parameters->vendor_id) ||
+                                        (parameters->require_device_id && header->device_id != parameters->device_id) ||
+                                        (parameters->require_class_code && header->class_code != parameters->class_code) ||
+                                        (parameters->require_subclass && header->subclass != parameters->subclass) ||
+                                        (parameters->require_interface && header->interface != parameters->interface)
+                                    )) {
+                                        *return_1 = (size_t)FindPCIEDeviceResult::Success;
+                                        *return_2 =
+                                            function |
+                                            device << function_bits |
+                                            bus << (function_bits + device_bits) |
+                                            segment << (function_bits + device_bits + bus_bits);
+
+                                        done = true;
+                                        break;
+                                    }
+                                }
+
+                                if(done) {
+                                    break;
+                                }
+                            }
+
+                            unmap_memory((void*)bus_memory, bus_memory_size);
+
+                            if(done) {
                                 break;
                             }
                         }
@@ -782,19 +857,19 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         }
                     }
 
-                    unmap_memory((void*)bus_memory, bus_memory_size);
+                    AcpiPutTable(&mcfg_table->preamble.Header);
 
-                    if(done) {
-                        break;
-                    }
-                }
+                    unmap_memory((void*)parameters, sizeof(FindPCIEDeviceParameters));       
+                } break;
 
-                if(done) {
-                    break;
-                }
+                case MapProcessMemoryResult::OutOfMemory: {
+                    *return_1 = (size_t)FindPCIEDeviceResult::OutOfMemory;
+                } break;
+
+                case MapProcessMemoryResult::InvalidMemoryRange: {
+                    *return_1 = (size_t)FindPCIEDeviceResult::InvalidMemoryRange;
+                } break;
             }
-
-            AcpiPutTable(&mcfg_table->preamble.Header);
         } break;
 
         case SyscallType::MapPCIEConfiguration: {
@@ -834,7 +909,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         break;
                     }
 
-                    if(!register_process_mapping(process, logical_pages_start, 1, false, global_bitmap)) {
+                    if(!register_process_mapping(process, logical_pages_start, 1, false, false, global_bitmap)) {
                         break;
                     }
 
@@ -959,7 +1034,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                         break;
                     }
 
-                    if(!register_process_mapping(process, logical_pages_start, page_count, false, global_bitmap)) {
+                    if(!register_process_mapping(process, logical_pages_start, page_count, false, false, global_bitmap)) {
                         break;
                     }
 

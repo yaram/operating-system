@@ -242,7 +242,7 @@ static bool map_and_allocate_pages_in_process_and_kernel(
         return false;
     }
 
-    if(!register_process_mapping(process, *user_pages_start, page_count, true, bitmap)) {
+    if(!register_process_mapping(process, *user_pages_start, page_count, false, true, bitmap)) {
         unmap_and_deallocate_pages(*kernel_pages_start, page_count, bitmap);
 
         return false;
@@ -905,6 +905,7 @@ bool register_process_mapping(
     Process *process,
     size_t logical_pages_start,
     size_t page_count,
+    bool is_shared,
     bool is_owned,
     Array<uint8_t> bitmap
 ) {
@@ -920,6 +921,7 @@ bool register_process_mapping(
     *mapping = {
         logical_pages_start,
         page_count,
+        is_shared,
         is_owned
     };
 

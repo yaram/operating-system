@@ -2,6 +2,19 @@
 
 #include <stddef.h>
 
+struct MapSharedMemoryParameters {
+    size_t process_id;
+    size_t address;
+    size_t size;
+};
+
+enum struct MapSharedMemoryResult : size_t {
+    Success,
+    OutOfMemory,
+    InvalidProcessID,
+    InvalidMemoryRange
+};
+
 enum struct CreateProcessResult : size_t {
     Success,
     OutOfMemory,
@@ -40,6 +53,8 @@ enum struct SyscallType : size_t {
     DebugPrint,
     MapFreeMemory,
     MapFreeConsecutiveMemory,
+    CreateSharedMemory,
+    MapSharedMemory,
     UnmapMemory,
     CreateProcess,
     FindPCIEDevice,

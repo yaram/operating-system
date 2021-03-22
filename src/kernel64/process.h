@@ -41,6 +41,7 @@ struct ProcessPageMapping {
     size_t logical_pages_start;
     size_t page_count;
 
+    bool is_shared;
     bool is_owned;
 };
 
@@ -78,6 +79,7 @@ bool register_process_mapping(
     Process *process,
     size_t logical_pages_start,
     size_t page_count,
+    bool is_shared,
     bool is_owned,
     Array<uint8_t> bitmap
 );

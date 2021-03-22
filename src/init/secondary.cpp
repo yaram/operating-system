@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "printf.h"
-#include "syscalls.h"
+#include "syscall.h"
 
 extern "C" void *memset(void *destination, int value, size_t count) {
     auto temp_destination = destination;
@@ -27,31 +27,8 @@ extern "C" void *memcpy(void *destination, const void *source, size_t count) {
     return destination;
 }
 
-inline size_t syscall(SyscallType syscall_type, size_t parameter, size_t *return_2) {
-    size_t return_1;
-    asm volatile(
-        "syscall"
-        : "=b"(return_1), "=d"(*return_2)
-        : "b"(syscall_type), "d"(parameter)
-        : "rax", "rcx", "r11"
-    );
-
-    return return_1;
-}
-
-inline size_t syscall(SyscallType syscall_type, size_t parameter) {
-    size_t return_2;
-    return syscall(syscall_type, parameter, &return_2);
-}
-
-[[noreturn]] inline void exit() {
-    syscall(SyscallType::Exit, 0);
-
-    while(true);
-}
-
 void _putchar(char character) {
-    syscall(SyscallType::DebugPrint, character);
+    syscall(SyscallType::DebugPrint, character, 0);
 }
 
 extern "C" [[noreturn]] void entry() {
