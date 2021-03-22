@@ -254,6 +254,7 @@ __attribute__((aligned(page_size)))
 PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 
 extern uint8_t embedded_init_binary[];
+extern uint8_t embedded_init_binary_end[];
 
 Array<uint8_t> global_bitmap;
 
@@ -734,46 +735,91 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         } break;
 
         case SyscallType::CreateProcess: {
-            auto elf_user_memory_start = parameter_1;
-            auto elf_size = parameter_2;
-
-            uint8_t *elf_binary;
-            switch(map_process_memory_into_kernel(process,elf_user_memory_start, elf_size, (void**)&elf_binary)) {
+            const CreateProcessParameters *parameters;
+            switch(map_process_memory_into_kernel(process, parameter_1, sizeof(CreateProcessParameters), (void**)&parameters)) {
                 case MapProcessMemoryResult::Success: {
-                    Process *new_process;
-                    Processes::Iterator new_process_iterator;
-                    switch(create_process_from_elf(
-                        elf_binary,
-                        global_bitmap,
-                        &global_processes,
-                        &new_process,
-                        &new_process_iterator
-                    )) {
-                        case CreateProcessFromELFResult::Success: {
-                            *return_1 = (size_t)CreateProcessResult::Success;
-                            *return_2 = new_process->id;
+                    uint8_t *elf_binary;
+                    switch(map_process_memory_into_kernel(process, (size_t)parameters->elf_binary, parameters->elf_binary_size, (void**)&elf_binary)) {
+                        case MapProcessMemoryResult::Success: {
+                            void *data;
+                            if(parameters->data == nullptr || parameters->data_size == 0) {
+                                data = nullptr;
+                            } else {
+                                auto success = true;
+                                switch(map_process_memory_into_kernel(process, (size_t)parameters->data, parameters->data_size, &data)) {
+                                    case MapProcessMemoryResult::Success: break;
+
+                                    case MapProcessMemoryResult::OutOfMemory: {
+                                        *return_1 = (size_t)CreateProcessResult::OutOfMemory;
+
+                                        success = true;
+                                    } break;
+
+                                    case MapProcessMemoryResult::InvalidMemoryRange: {
+                                        *return_1 = (size_t)CreateProcessResult::InvalidMemoryRange;
+
+                                        success = true;
+                                    } break;
+                                }
+
+                                if(!success) {
+                                    break;
+                                }
+                            }
+
+                            Process *new_process;
+                            Processes::Iterator new_process_iterator;
+                            switch(create_process_from_elf(
+                                elf_binary,
+                                parameters->elf_binary_size,
+                                data,
+                                parameters->data_size,
+                                global_bitmap,
+                                &global_processes,
+                                &new_process,
+                                &new_process_iterator
+                            )) {
+                                case CreateProcessFromELFResult::Success: {
+                                    *return_1 = (size_t)CreateProcessResult::Success;
+                                    *return_2 = new_process->id;
+                                } break;
+
+                                case CreateProcessFromELFResult::OutOfMemory: {
+                                    *return_1 = (size_t)CreateProcessResult::OutOfMemory;
+                                } break;
+
+                                case CreateProcessFromELFResult::InvalidELF: {
+                                    *return_1 = (size_t)CreateProcessResult::InvalidELF;
+                                } break;
+
+                                default: halt();
+                            }
+
+                            if(parameters->data == nullptr && parameters->data_size == 0) {
+                                unmap_memory(data, parameters->data_size);
+                            }
+
+                            unmap_memory(elf_binary, parameters->elf_binary_size);
                         } break;
 
-                        case CreateProcessFromELFResult::OutOfMemory: {
+                        case MapProcessMemoryResult::OutOfMemory: {
                             *return_1 = (size_t)CreateProcessResult::OutOfMemory;
                         } break;
 
-                        case CreateProcessFromELFResult::InvalidELF: {
-                            *return_1 = (size_t)CreateProcessResult::InvalidELF;
+                        case MapProcessMemoryResult::InvalidMemoryRange: {
+                            *return_1 = (size_t)CreateProcessResult::InvalidMemoryRange;
                         } break;
-
-                        default: halt();
                     }
 
-                    unmap_memory(elf_binary, elf_size);
+                    unmap_memory((void*)parameters, sizeof(CreateProcessParameters));
                 } break;
 
                 case MapProcessMemoryResult::OutOfMemory: {
-                    *return_1 = (size_t)CreateProcessResult::OutOfMemory;
+                    *return_1 = (size_t)MapSharedMemoryResult::OutOfMemory;
                 } break;
 
                 case MapProcessMemoryResult::InvalidMemoryRange: {
-                    *return_1 = (size_t)CreateProcessResult::InvalidMemoryRange;
+                    *return_1 = (size_t)MapSharedMemoryResult::InvalidMemoryRange;
                 } break;
             }
         } break;
@@ -1523,8 +1569,19 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
 
     printf("Loading init process...\n");
 
+    auto embedded_init_binary_size = (size_t)embedded_init_binary_end - (size_t)embedded_init_binary;
+
     Process *init_process;
-    switch(create_process_from_elf(embedded_init_binary, bitmap, &global_processes, &init_process, &current_process_iterator)) {
+    switch(create_process_from_elf(
+        embedded_init_binary,
+        embedded_init_binary_size,
+        nullptr,
+        0,
+        bitmap,
+        &global_processes,
+        &init_process,
+        &current_process_iterator
+    )) {
         case CreateProcessFromELFResult::Success: break;
 
         case CreateProcessFromELFResult::OutOfMemory: {

@@ -1,8 +1,6 @@
 .extern stack_top
 .extern syscall_entrance
 
-.extern currently_in_process
-
 .globl syscall_thunk
 syscall_thunk:
     mov %rsp, %rax

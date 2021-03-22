@@ -15,6 +15,14 @@ enum struct MapSharedMemoryResult : size_t {
     InvalidMemoryRange
 };
 
+struct CreateProcessParameters {
+    void *elf_binary;
+    size_t elf_binary_size;
+
+    void *data;
+    size_t data_size;
+};
+
 enum struct CreateProcessResult : size_t {
     Success,
     OutOfMemory,

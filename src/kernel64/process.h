@@ -69,6 +69,9 @@ enum struct CreateProcessFromELFResult {
 
 CreateProcessFromELFResult create_process_from_elf(
     uint8_t *elf_binary,
+    size_t elf_binary_size,
+    void *data,
+    size_t data_size,
     Array<uint8_t> bitmap,
     Processes *processes,
     Process **result_processs,

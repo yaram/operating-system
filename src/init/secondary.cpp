@@ -31,11 +31,19 @@ void _putchar(char character) {
     syscall(SyscallType::DebugPrint, character, 0);
 }
 
-extern "C" [[noreturn]] void entry() {
+extern "C" [[noreturn]] void entry(void *data, size_t data_size) {
     printf("Secondary process started!\n");
 
+    if(data_size != sizeof(size_t)) {
+        printf("Error: Invalid data size for secondary process. Expected %zu, got %zu\n", sizeof(size_t), data_size);
+
+        exit();
+    }
+
+    auto number_to_print = *(size_t*)data;
+
     for(size_t i = 0; i < 10; i += 1) {
-        printf("Test\n");
+        printf("Test %zu\n", number_to_print);
 
         for(size_t j = 0; j < 10000; j += 1) {
             asm volatile("");

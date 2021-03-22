@@ -253,7 +253,7 @@ static volatile virtio_gpu_ctrl_hdr *send_command(
 extern uint8_t secondary_executable[];
 extern uint8_t secondary_executable_end[];
 
-extern "C" [[noreturn]] void entry() {
+extern "C" [[noreturn]] void entry(void *data, size_t data_size) {
     const uint16_t virtio_gpu_vendor_id = 0x1Af4;
     const uint16_t virtio_gpu_device_id = 0x1050;
 
@@ -516,28 +516,39 @@ extern "C" [[noreturn]] void entry() {
         exit();
     }
 
-    auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
+    {
+        size_t number_to_print = 42;
 
-    switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&secondary_executable, secondary_executable_size)) {
-        case CreateProcessResult::Success: break;
+        auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
 
-        case CreateProcessResult::OutOfMemory: {
-            printf("Error: Unable to create secondary process: Out of memory\n");
+        CreateProcessParameters parameters {
+            &secondary_executable,
+            secondary_executable_size,
+            &number_to_print,
+            sizeof(size_t)
+        };
 
-            exit();
-        } break;
+        switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0)) {
+            case CreateProcessResult::Success: break;
 
-        case CreateProcessResult::InvalidMemoryRange: {
-            printf("Error: Unable to create secondary process: Invalid memory range for ELF binary\n");
+            case CreateProcessResult::OutOfMemory: {
+                printf("Error: Unable to create secondary process: Out of memory\n");
 
-            exit();
-        } break;
+                exit();
+            } break;
 
-        case CreateProcessResult::InvalidELF: {
-            printf("Error: Unable to create secondary process: Invalid ELF binary\n");
+            case CreateProcessResult::InvalidMemoryRange: {
+                printf("Error: Unable to create secondary process: Invalid memory range for ELF binary or data\n");
 
-            exit();
-        } break;
+                exit();
+            } break;
+
+            case CreateProcessResult::InvalidELF: {
+                printf("Error: Unable to create secondary process: Invalid ELF binary\n");
+
+                exit();
+            } break;
+        }
     }
 
     size_t counter = 0;

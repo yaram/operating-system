@@ -281,6 +281,9 @@ static const SectionAllocation *get_section_allocation(
 
 CreateProcessFromELFResult create_process_from_elf(
     uint8_t *elf_binary,
+    size_t elf_binary_size,
+    void *data,
+    size_t data_size,
     Array<uint8_t> bitmap,
     Processes *processes,
     Process **result_processs,
@@ -763,17 +766,48 @@ CreateProcessFromELFResult create_process_from_elf(
 
     auto stack_top = (void*)(stack_user_pages_start * page_size + stack_size);
 
+    auto data_page_count = divide_round_up(data_size, page_size);
+
+    size_t data_user_pages_start;
+    size_t data_kernel_pages_start;
+    if(data_size == 0 || data == nullptr) {
+        data_user_pages_start = 0;
+    } else {
+        if(!map_and_allocate_pages_in_process_and_kernel(
+            data_page_count,
+            UserPermissions::Write,
+            process,
+            bitmap,
+            &data_user_pages_start,
+            &data_kernel_pages_start
+        )) {
+            destroy_process(process_iterator, bitmap);
+            unmap_and_deallocate_bucket_array(&section_allocations, bitmap);
+
+            return CreateProcessFromELFResult::OutOfMemory;
+        }
+
+        memcpy((void*)(data_kernel_pages_start * page_size), data, data_size);
+
+        unmap_pages(data_kernel_pages_start, data_page_count);
+    }
+
     auto entry_section_allocation = get_section_allocation(entry_symbol->section_index, section_headers, &section_allocations);
 
     auto entry_point = (void*)(entry_section_allocation->user_pages_start * page_size + entry_symbol->value);
 
     unmap_and_deallocate_bucket_array(&section_allocations, bitmap);
 
+    // Set process entry conditions
     process->frame.interrupt_frame.instruction_pointer = entry_point;
     process->frame.interrupt_frame.code_segment = 0x23;
     process->frame.interrupt_frame.cpu_flags = 1 << 9;
     process->frame.interrupt_frame.stack_pointer = stack_top;
     process->frame.interrupt_frame.stack_segment = 0x1B;
+
+    // Set entry function parameters (data & data-size)
+    process->frame.rdi = data_user_pages_start * page_size;
+    process->frame.rsi = data_size;
 
     *result_processs = process;
     *result_process_iterator = process_iterator;
