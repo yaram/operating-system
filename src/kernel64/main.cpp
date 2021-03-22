@@ -681,6 +681,12 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                                         break;
                                     }
 
+                                    if(!register_process_mapping(process, logical_pages_start, page_count, true, false, global_bitmap)) {
+                                        *return_1 = (size_t)MapSharedMemoryResult::OutOfMemory;
+
+                                        break;
+                                    }
+
                                     *return_1 = (size_t)MapSharedMemoryResult::Success;
                                     *return_2 = logical_pages_start * page_size;
 
