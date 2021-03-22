@@ -659,15 +659,13 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     *return_1 = (size_t)MapSharedMemoryResult::InvalidProcessID;
                     for(auto target_process : global_processes) {
                         if(target_process->id == parameters->process_id) {
-                            *return_1 = (size_t)MapSharedMemoryResult::InvalidProcessID;
+                            *return_1 = (size_t)MapSharedMemoryResult::InvalidMemoryRange;
                             for(auto mapping : target_process->mappings) {
                                 if(
                                     mapping->logical_pages_start == target_logical_pages_start &&
                                     mapping->page_count == page_count &&
                                     mapping->is_shared
                                 ) {
-                                    auto page_count = mapping->page_count;
-
                                     size_t logical_pages_start;
                                     if(!map_pages_between_user(
                                         target_logical_pages_start,

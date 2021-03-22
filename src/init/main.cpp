@@ -3,7 +3,7 @@
 #include "printf.h"
 #include "syscall.h"
 #include "pcie.h"
-#include "HandmadeMath.h"
+#include "secondary.h"
 
 #define bits_to_mask(bits) ((1 << (bits)) - 1)
 
@@ -458,12 +458,12 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         exit();
     }
 
-    auto framebuffer_size = display_height * display_width * 4;
+    auto display_framebuffer_size = display_height * display_width * 4;
 
     size_t framebuffer_physical_address;
-    auto framebuffer_address = syscall(SyscallType::MapFreeConsecutiveMemory, framebuffer_size, 0, &framebuffer_physical_address);
-    if(framebuffer_address == 0) {
-        printf("Error: Unable to allocate memory for framebuffer\n");
+    auto display_framebuffer_address = syscall(SyscallType::MapFreeConsecutiveMemory, display_framebuffer_size, 0, &framebuffer_physical_address);
+    if(display_framebuffer_address == 0) {
+        printf("Error: Unable to allocate memory for display framebuffer\n");
 
         exit();
     }
@@ -474,7 +474,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     attach_backing_command->resource_id = 1;
     attach_backing_command->nr_entries = 1;
     attach_backing_command->entries[0].addr = framebuffer_physical_address;
-    attach_backing_command->entries[0].length = framebuffer_size;
+    attach_backing_command->entries[0].length = display_framebuffer_size;
 
     auto attach_backing_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
         sizeof(virtio_gpu_resource_attach_backing) + sizeof(virtio_gpu_mem_entry),
@@ -516,16 +516,45 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         exit();
     }
 
+    auto swap_indicator_address = syscall(SyscallType::CreateSharedMemory, 1, 0);
+    if(swap_indicator_address == 0) {
+        printf("Error: Unable to allocate shared memory for swap indicator\n");
+
+        exit();
+    }
+
+    auto swap_indicator = (volatile bool*)swap_indicator_address;
+
+    const size_t secondary_framebuffer_width = 300;
+    const size_t secondary_framebuffer_height = 300;
+    const size_t secondary_framebuffer_size = secondary_framebuffer_width * secondary_framebuffer_height * 4;
+
+    auto secondary_framebuffers_address = syscall(SyscallType::CreateSharedMemory, secondary_framebuffer_size * 2, 0);
+    if(secondary_framebuffers_address == 0) {
+        printf("Error: Unable to allocate shared memory for secondary process framebuffers\n");
+
+        exit();
+    }
+
+    auto secondary_framebuffer_x = 100;
+    auto secondary_framebuffer_y = 200;
+
     {
-        size_t number_to_print = 42;
+        SecondaryProcessParameters process_parameters {
+            process_id,
+            secondary_framebuffers_address,
+            secondary_framebuffer_width,
+            secondary_framebuffer_height,
+            swap_indicator_address
+        };
 
         auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
 
         CreateProcessParameters parameters {
             &secondary_executable,
             secondary_executable_size,
-            &number_to_print,
-            sizeof(size_t)
+            &process_parameters,
+            sizeof(SecondaryProcessParameters)
         };
 
         switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0)) {
@@ -551,130 +580,23 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         }
     }
 
-    size_t counter = 0;
-
     while(true) {
-        auto time = (float)counter / 100;
+        memset((void*)display_framebuffer_address, 0, display_framebuffer_size);
 
-        const size_t triangle_count = 1;
-        hmm_vec3 triangles[triangle_count][3] {
-            {
-                { 100.0f + HMM_CosF(time * HMM_PI32 * 2) * 10, 120.0f - HMM_SinF(time * HMM_PI32 * 2) * 10, 0.0f },
-                { 130.0f, 200.0f, 0.0f },
-                { 300.0f, 150.0f, 0.0f }
-            }
-        };
-
-        auto framebuffer = (uint32_t*)framebuffer_address;
-
-        memset(framebuffer, 0, framebuffer_size);
-
-        for(size_t i = 0; i < triangle_count; i += 1) {
-            auto first = triangles[i][0];
-            auto second = triangles[i][1];
-            auto third = triangles[i][2];
-
-            if(first.Y > second.Y) {
-                auto temp = first;
-                first = second;
-                second = temp;
-            }
-
-            if(first.Y > third.Y) {
-                auto temp = first;
-                first = third;
-                third = temp;
-            }
-
-            if(second.Y > third.Y) {
-                auto temp = second;
-                second = third;
-                third = temp;
-            }
-
-            auto long_mid_x = HMM_Lerp(first.X, ((float)second.Y - first.Y) / (third.Y - first.Y), third.X);
-            auto short_mid_x = second.X;
-
-            auto first_y_pixel = HMM_MIN((size_t)HMM_MAX(first.Y, 0), display_height);
-            auto second_y_pixel = HMM_MIN((size_t)HMM_MAX(second.Y, 0), display_height);
-            auto third_y_pixel = HMM_MIN((size_t)HMM_MAX(third.Y, 0), display_height);
-
-            if(long_mid_x < short_mid_x) {
-                for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
-                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
-
-                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
-
-                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), display_width);
-
-                    auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
-
-                    auto short_x = HMM_Lerp(first.X, short_progress, second.X);
-
-                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), display_width);
-
-                    for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
-                        framebuffer[y * display_width + x] = 0xFFFFFF;
-                    }
-                }
-
-                for(size_t y = second_y_pixel; y < third_y_pixel; y += 1) {
-                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
-
-                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
-
-                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), display_width);
-
-                    auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
-
-                    auto short_x = HMM_Lerp(second.X, short_progress, third.X);
-
-                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), display_width);
-
-                    for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
-                        framebuffer[y * display_width + x] = 0xFFFFFF;
-                    }
-                }
+        for(size_t y = 0; y < secondary_framebuffer_height; y += 1) {
+            size_t current_secondary_framebuffer_address;
+            if(*swap_indicator) {
+                current_secondary_framebuffer_address = secondary_framebuffers_address + secondary_framebuffer_size;
             } else {
-                for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
-                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
-
-                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
-
-                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), display_width);
-
-                    auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
-
-                    auto short_x = HMM_Lerp(first.X, short_progress, second.X);
-
-                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), display_width);
-
-                    for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
-                        framebuffer[y * display_width + x] = 0xFFFFFF;
-                    }
-                }
-
-                for(size_t y = second_y_pixel; y < third_y_pixel; y += 1) {
-                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
-
-                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
-
-                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), display_width);
-
-                    auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
-
-                    auto short_x = HMM_Lerp(second.X, short_progress, third.X);
-
-                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), display_width);
-
-                    for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
-                        framebuffer[y * display_width + x] = 0xFFFFFF;
-                    }
-                }
+                current_secondary_framebuffer_address = secondary_framebuffers_address;
             }
-        }
 
-        counter += 1;
+            memcpy(
+                (void*)(display_framebuffer_address + ((y + secondary_framebuffer_y) * display_width + secondary_framebuffer_x) * 4),
+                (void*)(current_secondary_framebuffer_address + y * secondary_framebuffer_width * 4),
+                secondary_framebuffer_width * 4
+            );
+        }
 
         auto transfer_command = (volatile virtio_gpu_transfer_to_host_2d*)buffers_address;
         transfer_command->type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D;

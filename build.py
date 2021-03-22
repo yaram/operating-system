@@ -280,15 +280,19 @@ init_secondary_objects = [
 build_objects_64bit(
     init_secondary_objects,
     'init_secondary',
+    '-I{}'.format(os.path.join(source_directory, 'init')),
     '-I{}'.format(os.path.join(source_directory, 'shared')),
     '-I{}'.format(os.path.join(printf_directory)),
+    '-I{}'.format(os.path.join(openlibm_directory, 'include')),
+    '-I{}'.format(os.path.join(thirdparty_directory)),
     '-fpie'
 )
 
 do_linking(
     init_secondary_objects,
     'init_secondary',
-    '--relocatable'
+    '--relocatable',
+    user_openlibm_archive
 )
 
 init_objects = [
@@ -302,8 +306,6 @@ build_objects_64bit(
     '-I{}'.format(os.path.join(source_directory, 'init')),
     '-I{}'.format(os.path.join(source_directory, 'shared')),
     '-I{}'.format(os.path.join(printf_directory)),
-    '-I{}'.format(os.path.join(openlibm_directory, 'include')),
-    '-I{}'.format(os.path.join(thirdparty_directory)),
     '-D__BSD_VISIBLE=1',
     '-fpie'
 )
@@ -312,8 +314,7 @@ build_objects_64bit(
 do_linking(
     init_objects,
     'init',
-    '--relocatable',
-    user_openlibm_archive
+    '--relocatable'
 )
 
 objects_kernel64 = [

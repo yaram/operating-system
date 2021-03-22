@@ -1159,7 +1159,6 @@ bool map_pages_from_kernel(
                 bitmap,
                 &bitmap_index,
                 &bitmap_sub_bit_index
-                
             ) ||
             !map_and_maybe_allocate_table(
                 &current_user_pdp_index,
@@ -1169,7 +1168,6 @@ bool map_pages_from_kernel(
                 bitmap,
                 &bitmap_index,
                 &bitmap_sub_bit_index
-                
             ) ||
             !map_and_maybe_allocate_table(
                 &current_user_pd_index,
@@ -1179,7 +1177,6 @@ bool map_pages_from_kernel(
                 bitmap,
                 &bitmap_index,
                 &bitmap_sub_bit_index
-                
             )
         ) {
             unmap_memory(user_pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1489,26 +1486,32 @@ bool map_pages_between_user(
                 from_pd_index,
                 bitmap
             ) ||
-            !map_table(
+            !map_and_maybe_allocate_table(
                 &current_to_pml4_index,
                 &to_pdp_table,
                 to_pml4_table,
                 to_pml4_index,
-                bitmap
+                bitmap,
+                &bitmap_index,
+                &bitmap_sub_bit_index
             ) ||
-            !map_table(
+            !map_and_maybe_allocate_table(
                 &current_to_pdp_index,
                 &to_pd_table,
                 to_pdp_table,
                 to_pdp_index,
-                bitmap
+                bitmap,
+                &bitmap_index,
+                &bitmap_sub_bit_index
             ) ||
-            !map_table(
+            !map_and_maybe_allocate_table(
                 &current_to_pd_index,
                 &to_page_table,
                 to_pd_table,
                 to_pd_index,
-                bitmap
+                bitmap,
+                &bitmap_index,
+                &bitmap_sub_bit_index
             )
         ) {
             unmap_memory(from_pml4_table, sizeof(PageTableEntry[page_table_length]));
@@ -1542,7 +1545,7 @@ bool map_pages_between_user(
             return false;
         }
 
-        to_page_table[to_page_index].write_allowed = true;
+        to_page_table[to_page_index].present = true;
         to_page_table[to_page_index].write_allowed = permissions & UserPermissions::Write;
         to_page_table[to_page_index].execute_disable = !(permissions & UserPermissions::Execute);
         to_page_table[to_page_index].user_mode_allowed = true;
