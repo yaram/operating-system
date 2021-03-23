@@ -219,7 +219,7 @@ struct __attribute__((packed)) IDTDescriptor {
     uint64_t base;
 };
 
-volatile uint32_t *apic_registers;
+volatile uint32_t *global_apic_registers;
 
 extern "C" [[noreturn]] void  preempt_timer_thunk();
 
@@ -278,10 +278,10 @@ Processes global_processes {};
     auto stack_frame_copy = process->frame;
 
     // Set timer value
-    apic_registers[0x380 / 4] = preempt_time;
+    global_apic_registers[0x380 / 4] = preempt_time;
 
     // Send the End of Interrupt signal
-    apic_registers[0x0B0 / 4] = 0;
+    global_apic_registers[0x0B0 / 4] = 0;
 
     asm volatile(
         "mov %0, %%cr3"
@@ -1151,6 +1151,18 @@ static bool find_free_physical_pages_in_bootstrap(
     return false;
 }
 
+inline uint32_t read_io_apic_register(volatile uint32_t *registers, size_t index) {
+    registers[0] = (uint32_t)(index & 0xFF);
+    return registers[4];
+}
+
+inline void write_io_apic_register(volatile uint32_t *registers, size_t index, uint32_t value) {
+    registers[0] = index & 0xFF;
+    registers[4] = value;
+}
+
+volatile uint32_t* global_io_apic_registers;
+
 extern void (*init_array_start[])();
 extern void (*init_array_end[])();
 
@@ -1482,37 +1494,55 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
     auto apic_physical_address = (size_t)madt_table->preamble.Address;
 
     size_t current_madt_index = 0;
+    size_t io_apic_physical_address;
+    auto io_apic_found = false;
     while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
-        auto header = *(ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
+        auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
 
-        if(header.Type == ACPI_MADT_TYPE_LOCAL_APIC_OVERRIDE) {
-            auto subtable = *(ACPI_MADT_LOCAL_APIC_OVERRIDE*)((size_t)madt_table->entries + current_madt_index + sizeof(header));
+        switch(header->Type) {
+            case ACPI_MADT_TYPE_LOCAL_APIC_OVERRIDE: {
+                auto subtable = (ACPI_MADT_LOCAL_APIC_OVERRIDE*)header;
 
-            apic_physical_address = (size_t)subtable.Address;
+                apic_physical_address = (size_t)subtable->Address;
+            } break;
 
-            break;
+            case ACPI_MADT_TYPE_IO_APIC: {
+                if(!io_apic_found) {
+                    auto subtable = (ACPI_MADT_IO_APIC*)header;
+
+                    io_apic_found = true;
+
+                    io_apic_physical_address = (size_t)subtable->Address;
+                }
+            } break;
         }
 
-        current_madt_index += (size_t)header.Length;
+        current_madt_index += (size_t)header->Length;
+    }
+
+    if(!io_apic_found) {
+        printf("Error: No IO APIC found\n");
+
+        halt();
     }
 
     AcpiPutTable(&madt_table->preamble.Header);
 
-    apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap);
-    if(apic_registers == nullptr) {
+    global_apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap);
+    if(global_apic_registers == nullptr) {
         printf("Error: Out of memory\n");
 
         halt();
     }
 
     // Set APIC to known state
-    apic_registers[0x2F0 / 4] |= 1 << 16;
-    apic_registers[0x320 / 4] |= 1 << 16;
-    apic_registers[0x330 / 4] |= 1 << 16;
-    apic_registers[0x340 / 4] |= 1 << 16;
-    apic_registers[0x350 / 4] |= 1 << 16;
-    apic_registers[0x360 / 4] |= 1 << 16;
-    apic_registers[0x370 / 4] |= 1 << 16;
+    global_apic_registers[0x2F0 / 4] |= 1 << 16;
+    global_apic_registers[0x320 / 4] |= 1 << 16;
+    global_apic_registers[0x330 / 4] |= 1 << 16;
+    global_apic_registers[0x340 / 4] |= 1 << 16;
+    global_apic_registers[0x350 / 4] |= 1 << 16;
+    global_apic_registers[0x360 / 4] |= 1 << 16;
+    global_apic_registers[0x370 / 4] |= 1 << 16;
 
     // Globally enable APICs
     asm volatile(
@@ -1526,13 +1556,13 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
     );
 
     // Enable local APIC / set spurious interrupt vector to 0x2F
-    apic_registers[0xF0 / 4] = 0x2F | 0x100;
+    global_apic_registers[0xF0 / 4] = 0x2F | 0x100;
 
     // Enable timer / set timer interrupt vector vector
-    apic_registers[0x320 / 4] = 0x20;
+    global_apic_registers[0x320 / 4] = 0x20;
 
     // Set timer divider to 16
-    apic_registers[0x3E0 / 4] = 3;
+    global_apic_registers[0x3E0 / 4] = 3;
 
     // Set up syscall/sysret instructions
 
@@ -1564,6 +1594,13 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
         : "a"((uint32_t)0), "d"((uint32_t)0x10 << 16 | (uint32_t)0x08), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
         // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
     );
+
+    global_io_apic_registers = (volatile uint32_t*)map_memory(io_apic_physical_address, 32, bitmap);
+    if(global_io_apic_registers == nullptr) {
+        printf("Error: Out of memory\n");
+
+        halt();
+    }
 
     printf("Loading init process...\n");
 
@@ -1604,7 +1641,7 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
     auto stack_frame_copy = init_process->frame;
 
     // Set timer value
-    apic_registers[0x380 / 4] = preempt_time;
+    global_apic_registers[0x380 / 4] = preempt_time;
 
     asm volatile(
         "mov %0, %%cr3"
