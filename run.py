@@ -19,6 +19,7 @@ run_command(
     '-m', '4G',
     '-vga', 'virtio',
     '-device', 'virtio-keyboard',
+    '-device', 'virtio-mouse',
     '-kernel', os.path.join(build_directory, 'kernel32.elf'),
     *sys.argv[1:]
 )

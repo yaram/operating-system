@@ -5,6 +5,7 @@
 #include "syscall.h"
 #include "HandmadeMath.h"
 #include "virtio.h"
+#include "bucket_array.h"
 
 extern "C" void *memset(void *destination, int value, size_t count) {
     auto temp_destination = destination;
@@ -32,6 +33,39 @@ extern "C" void *memcpy(void *destination, const void *source, size_t count) {
 
 void _putchar(char character) {
     syscall(SyscallType::DebugPrint, character, 0);
+}
+
+template <typename T, size_t N>
+static bool find_or_allocate_unoccupied_bucket_slot(
+    BucketArray<T, N> *bucket_array,
+    BucketArrayIterator<T, N> *result_iterator
+) {
+    auto found_iterator = find_unoccupied_bucket_slot(bucket_array);
+
+    if(found_iterator.current_bucket == nullptr) {
+        auto new_bucket = (Bucket<T, N>*)syscall(SyscallType::MapFreeMemory, sizeof(Bucket<T, N>), 0);
+        if(new_bucket == nullptr) {
+            return false;
+        }
+
+        {
+            auto current_bucket = &bucket_array->first_bucket;
+            while(current_bucket->next != nullptr) {
+                current_bucket = current_bucket->next;
+            }
+
+            current_bucket->next = new_bucket;
+        }
+
+        *result_iterator = {
+            new_bucket,
+            0
+        };
+        return true;
+    } else {
+        *result_iterator = found_iterator;
+        return true;
+    }
 }
 
 extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_size) {
@@ -113,9 +147,28 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         }
     }
 
-    size_t virtio_input_location;
-    {
+    struct VirtIOInputDevice {
+        volatile virtq_avail *available_ring;
+
+        volatile virtq_used *used_ring;
+
+        size_t buffers_address;
+
+        uint16_t previous_used_index;
+    };
+
+    using VirtIOInputDevices = BucketArray<VirtIOInputDevice, 4>;
+
+    VirtIOInputDevices virtio_input_devices {};
+
+    const size_t virtio_input_queue_descriptor_count = 32;
+    const size_t virtio_input_buffer_size = 16;
+
+    size_t virtio_input_index = 0;
+    while(true) {
+        size_t pcie_location;
         FindPCIEDeviceParameters parameters {};
+        parameters.index = virtio_input_index;
         parameters.require_vendor_id = true;
         parameters.vendor_id = 0x1AF4;
         parameters.require_device_id = true;
@@ -125,98 +178,111 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             SyscallType::FindPCIEDevice,
             (size_t)&parameters,
             0,
-            &virtio_input_location
+            &pcie_location
         ) != (size_t)FindPCIEDeviceResult::Success) {
-            printf("Error: virtio-input device not present\n");
+            break;
+        }
+
+        VirtIOInputDevices::Iterator device_iterator;
+        if(!find_or_allocate_unoccupied_bucket_slot(&virtio_input_devices, &device_iterator)) {
+            printf("Error: Out of memory\n");
 
             exit();
         }
-    }
 
-    size_t configuration_address;
-    volatile virtio_pci_common_cfg* common_configuration;
-    if(!init_virtio_device(virtio_input_location, &configuration_address, &common_configuration)) {
-        printf("Error: Unable to initialize virtio-input device\n");
+        device_iterator.current_bucket->occupied[device_iterator.current_sub_index] = true;
 
-        exit();
-    }
+        auto device = *device_iterator;
+        memset(device, 0, sizeof(VirtIOInputDevice));
 
-    common_configuration->queue_select = 0; // Select eventq queue
+        size_t configuration_address;
+        volatile virtio_pci_common_cfg* common_configuration;
+        if(!init_virtio_device(pcie_location, &configuration_address, &common_configuration)) {
+            printf("Error: Unable to initialize virtio-input device\n");
 
-    const size_t queue_descriptor_count = 32;
+            exit();
+        }
 
-    size_t queue_descriptors_physical_address;
-    auto queue_descriptors = (volatile virtq_desc*)syscall(
-        SyscallType::MapFreeConsecutiveMemory,
-        sizeof(virtq_desc) * queue_descriptor_count,
-        0,
-        &queue_descriptors_physical_address
-    );
-    if(queue_descriptors == nullptr) {
-        printf("Error: Unable to allocate memory for queue descriptor\n");
+        common_configuration->queue_select = 0; // Select eventq queue
 
-        exit();
-    }
+        size_t queue_descriptors_physical_address;
+        auto queue_descriptors = (volatile virtq_desc*)syscall(
+            SyscallType::MapFreeConsecutiveMemory,
+            sizeof(virtq_desc) * virtio_input_queue_descriptor_count,
+            0,
+            &queue_descriptors_physical_address
+        );
+        if(queue_descriptors == nullptr) {
+            printf("Error: Unable to allocate memory for queue descriptor\n");
 
-    common_configuration->queue_size = queue_descriptor_count; // Set eventq queue size
+            exit();
+        }
 
-    const size_t buffer_size = 16;
+        common_configuration->queue_size = virtio_input_queue_descriptor_count; // Set eventq queue size
 
-    size_t buffers_physical_address;
-    auto buffers_address = syscall(SyscallType::MapFreeConsecutiveMemory, buffer_size * queue_descriptor_count, 0, &buffers_physical_address);
-    if(buffers_address == 0) {
-        printf("Error: Unable to allocate memory for queue buffers\n");
+        size_t buffers_physical_address;
+        auto buffers_address = syscall(SyscallType::MapFreeConsecutiveMemory, virtio_input_buffer_size * virtio_input_queue_descriptor_count, 0, &buffers_physical_address);
+        if(buffers_address == 0) {
+            printf("Error: Unable to allocate memory for queue buffers\n");
 
-        exit();
-    }
+            exit();
+        }
 
-    for(size_t i = 0; i < queue_descriptor_count; i += 1) {
-        queue_descriptors[i].flags |= 1 << 1; // Set VIRTQ_DESC_F_WRITE flag
+        for(size_t i = 0; i < virtio_input_queue_descriptor_count; i += 1) {
+            queue_descriptors[i].flags |= 1 << 1; // Set VIRTQ_DESC_F_WRITE flag
 
-        queue_descriptors[i].addr = buffers_physical_address + buffer_size * i;
-        queue_descriptors[i].len = buffer_size;
-    }
+            queue_descriptors[i].addr = buffers_physical_address + virtio_input_buffer_size * i;
+            queue_descriptors[i].len = virtio_input_buffer_size;
+        }
 
-    size_t available_ring_physical_address;
-    auto available_ring = (volatile virtq_avail*)syscall(
-        SyscallType::MapFreeConsecutiveMemory,
-        sizeof(virtq_avail) + sizeof(uint16_t) * queue_descriptor_count,
-        0,
-        &available_ring_physical_address
-    );
-    if(available_ring == nullptr) {
-        printf("Error: Unable to allocate memory for available ring\n");
+        size_t available_ring_physical_address;
+        auto available_ring = (volatile virtq_avail*)syscall(
+            SyscallType::MapFreeConsecutiveMemory,
+            sizeof(virtq_avail) + sizeof(uint16_t) * virtio_input_queue_descriptor_count,
+            0,
+            &available_ring_physical_address
+        );
+        if(available_ring == nullptr) {
+            printf("Error: Unable to allocate memory for available ring\n");
 
-        exit();
-    }
+            exit();
+        }
 
-    size_t used_ring_physical_address;
-    auto used_ring = (volatile virtq_used*)syscall(
-        SyscallType::MapFreeConsecutiveMemory,
-        sizeof(virtq_used) + sizeof(virtq_used_elem) * queue_descriptor_count,
-        0,
-        &used_ring_physical_address
-    );
-    if(used_ring == nullptr) {
-        printf("Error: Unable to allocate memory for used ring\n");
+        size_t used_ring_physical_address;
+        auto used_ring = (volatile virtq_used*)syscall(
+            SyscallType::MapFreeConsecutiveMemory,
+            sizeof(virtq_used) + sizeof(virtq_used_elem) * virtio_input_queue_descriptor_count,
+            0,
+            &used_ring_physical_address
+        );
+        if(used_ring == nullptr) {
+            printf("Error: Unable to allocate memory for used ring\n");
 
-        exit();
-    }
+            exit();
+        }
 
-    common_configuration->queue_desc = queue_descriptors_physical_address;
-    common_configuration->queue_driver = available_ring_physical_address;
-    common_configuration->queue_device = used_ring_physical_address;
+        common_configuration->queue_desc = queue_descriptors_physical_address;
+        common_configuration->queue_driver = available_ring_physical_address;
+        common_configuration->queue_device = used_ring_physical_address;
 
-    common_configuration->queue_enable = 1;
+        common_configuration->queue_enable = 1;
 
-    common_configuration->device_status |= 1 << 2; // Set DRIVER_OK flag
+        common_configuration->device_status |= 1 << 2; // Set DRIVER_OK flag
 
-    auto previous_used_index = used_ring->idx;
+        auto previous_used_index = used_ring->idx;
 
-    for(size_t i = 0; i < queue_descriptor_count; i += 1) {
-        available_ring->ring[available_ring->idx % queue_descriptor_count] = i;
+        for(size_t i = 0; i < virtio_input_queue_descriptor_count; i += 1) {
+            available_ring->ring[available_ring->idx % virtio_input_queue_descriptor_count] = i;
 
-        available_ring->idx += 1;
+            available_ring->idx += 1;
+        }
+
+        device->available_ring = available_ring;
+        device->used_ring = used_ring;
+        device->buffers_address = buffers_address;
+        device->previous_used_index = previous_used_index;
+
+        virtio_input_index += 1;
     }
 
     size_t counter = 0;
@@ -225,6 +291,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     auto moving_down = false;
     auto moving_left = false;
     auto moving_right = false;
+
+    auto mouse_x = 0;
+    auto mouse_y = 0;
 
     hmm_vec2 position {};
 
@@ -236,42 +305,61 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             framebuffer = (uint32_t*)(framebuffers_address + framebuffer_size);
         }
 
-        auto used_index = used_ring->idx;
+        auto mouse_dx = 0;
+        auto mouse_dy = 0;
 
-        if(used_index != previous_used_index) {
-            for(uint16_t index = previous_used_index; index != used_index; index += 1) {
-                auto descriptor_index = (size_t)used_ring->ring[index % queue_descriptor_count].id;
+        for(auto device : virtio_input_devices) {
+            auto used_index = device->used_ring->idx;
 
-                auto event = (volatile virtio_input_event*)(buffers_address + buffer_size * descriptor_index);
+            if(used_index != device->previous_used_index) {
+                for(uint16_t index = device->previous_used_index; index != used_index; index += 1) {
+                    auto descriptor_index = (size_t)device->used_ring->ring[index % virtio_input_queue_descriptor_count].id;
 
-                switch(event->type) {
-                    case 1: { // EV_KEY
-                        switch(event->code) {
-                            case 17: { // KEY_W
-                                moving_up = (bool)event->value;
-                            } break;
+                    auto event = (volatile virtio_input_event*)(device->buffers_address + virtio_input_buffer_size * descriptor_index);
 
-                            case 31: { // KEY_S
-                                moving_down = (bool)event->value;
-                            } break;
+                    switch(event->type) {
+                        case 1: { // EV_KEY
+                            switch(event->code) {
+                                case 17: { // KEY_W
+                                    moving_up = (bool)event->value;
+                                } break;
 
-                            case 30: { // KEY_A
-                                moving_left = (bool)event->value;
-                            } break;
+                                case 31: { // KEY_S
+                                    moving_down = (bool)event->value;
+                                } break;
 
-                            case 32: { // KEY_D
-                                moving_right = (bool)event->value;
-                            } break;
-                        }
-                    } break;
+                                case 30: { // KEY_A
+                                    moving_left = (bool)event->value;
+                                } break;
+
+                                case 32: { // KEY_D
+                                    moving_right = (bool)event->value;
+                                } break;
+                            }
+                        } break;
+
+                        case 2: { // EV_REL
+                            switch(event->code) {
+                                case 0: { // REL_X
+                                    mouse_x += (int32_t)event->value;
+                                    mouse_dx += (int32_t)event->value;
+                                } break;
+
+                                case 1: { // REL_Y
+                                    mouse_y += (int32_t)event->value;
+                                    mouse_dy += (int32_t)event->value;
+                                } break;
+                            }
+                        } break;
+                    }
+
+                    device->available_ring->ring[device->available_ring->idx % virtio_input_queue_descriptor_count] = descriptor_index;
+
+                    device->available_ring->idx += 1;
                 }
 
-                available_ring->ring[available_ring->idx % queue_descriptor_count] = descriptor_index;
-
-                available_ring->idx += 1;
+                device->previous_used_index = device->used_ring->idx;
             }
-
-            previous_used_index = used_ring->idx;
         }
 
         auto time = (float)counter / 100;
@@ -293,6 +381,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         if(moving_right) {
             position.X += speed;
         }
+
+        position.X += mouse_dx;
+        position.Y += mouse_dy;
 
         const size_t triangle_count = 1;
         hmm_vec3 triangles[triangle_count][3] {
