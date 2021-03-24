@@ -31,6 +31,8 @@ enum struct CreateProcessResult : size_t {
 };
 
 struct FindPCIEDeviceParameters {
+    size_t index;
+
     uint16_t vendor_id;
     uint16_t device_id;
 

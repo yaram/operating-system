@@ -838,6 +838,8 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
                     *return_1 = (size_t)FindPCIEDeviceResult::NotFound;
 
+                    size_t current_index = 0;
+
                     auto done = false;
                     for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
                         auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
@@ -878,15 +880,19 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                                         (parameters->require_subclass && header->subclass != parameters->subclass) ||
                                         (parameters->require_interface && header->interface != parameters->interface)
                                     )) {
-                                        *return_1 = (size_t)FindPCIEDeviceResult::Success;
-                                        *return_2 =
-                                            function |
-                                            device << function_bits |
-                                            bus << (function_bits + device_bits) |
-                                            segment << (function_bits + device_bits + bus_bits);
+                                        if(current_index == parameters->index) {
+                                            *return_1 = (size_t)FindPCIEDeviceResult::Success;
+                                            *return_2 =
+                                                function |
+                                                device << function_bits |
+                                                bus << (function_bits + device_bits) |
+                                                segment << (function_bits + device_bits + bus_bits);
 
-                                        done = true;
-                                        break;
+                                            done = true;
+                                            break;
+                                        } else {
+                                            current_index += 1;
+                                        }
                                     }
                                 }
 
