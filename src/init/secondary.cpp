@@ -122,6 +122,36 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         }
     }
 
+    volatile CompositorRing *compositor_ring;
+    {
+        MapSharedMemoryParameters syscall_parameters {
+            parameters->compositor_process_id,
+            parameters->compositor_ring_shared_memory,
+            sizeof(CompositorRing)
+        };
+        switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, (size_t*)&compositor_ring)) {
+            case MapSharedMemoryResult::Success: break;
+
+            case MapSharedMemoryResult::OutOfMemory: {
+                printf("Error: Unable to map compositor ring shared memory: Out of memory\n");
+
+                exit();
+            } break;
+
+            case MapSharedMemoryResult::InvalidProcessID: {
+                printf("Error: Unable to map compositor ring shared memory: Compositor process does not exist\n");
+
+                exit();
+            } break;
+
+            case MapSharedMemoryResult::InvalidMemoryRange: {
+                printf("Error: Unable to map compositor ring shared memory: Invalid memory range\n");
+
+                exit();
+            } break;
+        }
+    }
+
     intptr_t window_width = 300;
     intptr_t window_height = 300;
 
@@ -129,6 +159,15 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
     struct Window {
         size_t id;
+
+        bool moving_up;
+        bool moving_down;
+        bool moving_left;
+        bool moving_right;
+
+        hmm_vec2 position;
+
+        hmm_vec3 color;
 
         size_t framebuffers_address;
         bool *swap_indicator;
@@ -139,7 +178,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     Windows windows {};
 
     auto window_count = 5;
-
     for(auto i = 0; i < window_count; i += 1) {
         compositor_mailbox->command_type = CompositorCommandType::CreateWindow;
 
@@ -239,241 +277,119 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             }
         }
 
+        auto shade = i / (float)(window_count - 1);
+
         window->id = compositor_mailbox->create_window.id;
+        window->color = HMM_Vec3(1, shade, shade);
         window->framebuffers_address = framebuffers_address;
         window->swap_indicator = swap_indicator;
     }
 
-    struct VirtIOInputDevice {
-        volatile virtq_avail *available_ring;
-
-        volatile virtq_used *used_ring;
-
-        size_t buffers_address;
-
-        uint16_t previous_used_index;
-    };
-
-    using VirtIOInputDevices = BucketArray<VirtIOInputDevice, 4>;
-
-    VirtIOInputDevices virtio_input_devices {};
-
-    const size_t virtio_input_queue_descriptor_count = 32;
-    const size_t virtio_input_buffer_size = 16;
-
-    size_t virtio_input_index = 0;
-    while(true) {
-        size_t pcie_location;
-        FindPCIEDeviceParameters parameters {};
-        parameters.index = virtio_input_index;
-        parameters.require_vendor_id = true;
-        parameters.vendor_id = 0x1AF4;
-        parameters.require_device_id = true;
-        parameters.device_id = 0x1052;
-
-        if(syscall(
-            SyscallType::FindPCIEDevice,
-            (size_t)&parameters,
-            0,
-            &pcie_location
-        ) != (size_t)FindPCIEDeviceResult::Success) {
-            break;
-        }
-
-        auto device = allocate_from_bucket_array(&virtio_input_devices);
-        if(device == nullptr) {
-            printf("Error: Out of memory\n");
-
-            exit();
-        }
-
-        size_t configuration_address;
-        volatile virtio_pci_common_cfg* common_configuration;
-        if(!init_virtio_device(pcie_location, &configuration_address, &common_configuration)) {
-            printf("Error: Unable to initialize virtio-input device\n");
-
-            exit();
-        }
-
-        common_configuration->queue_select = 0; // Select eventq queue
-
-        size_t queue_descriptors_physical_address;
-        auto queue_descriptors = (volatile virtq_desc*)syscall(
-            SyscallType::MapFreeConsecutiveMemory,
-            sizeof(virtq_desc) * virtio_input_queue_descriptor_count,
-            0,
-            &queue_descriptors_physical_address
-        );
-        if(queue_descriptors == nullptr) {
-            printf("Error: Unable to allocate memory for queue descriptor\n");
-
-            exit();
-        }
-
-        common_configuration->queue_size = virtio_input_queue_descriptor_count; // Set eventq queue size
-
-        size_t buffers_physical_address;
-        auto buffers_address = syscall(SyscallType::MapFreeConsecutiveMemory, virtio_input_buffer_size * virtio_input_queue_descriptor_count, 0, &buffers_physical_address);
-        if(buffers_address == 0) {
-            printf("Error: Unable to allocate memory for queue buffers\n");
-
-            exit();
-        }
-
-        for(size_t i = 0; i < virtio_input_queue_descriptor_count; i += 1) {
-            queue_descriptors[i].flags |= 1 << 1; // Set VIRTQ_DESC_F_WRITE flag
-
-            queue_descriptors[i].addr = buffers_physical_address + virtio_input_buffer_size * i;
-            queue_descriptors[i].len = virtio_input_buffer_size;
-        }
-
-        size_t available_ring_physical_address;
-        auto available_ring = (volatile virtq_avail*)syscall(
-            SyscallType::MapFreeConsecutiveMemory,
-            sizeof(virtq_avail) + sizeof(uint16_t) * virtio_input_queue_descriptor_count,
-            0,
-            &available_ring_physical_address
-        );
-        if(available_ring == nullptr) {
-            printf("Error: Unable to allocate memory for available ring\n");
-
-            exit();
-        }
-
-        size_t used_ring_physical_address;
-        auto used_ring = (volatile virtq_used*)syscall(
-            SyscallType::MapFreeConsecutiveMemory,
-            sizeof(virtq_used) + sizeof(virtq_used_elem) * virtio_input_queue_descriptor_count,
-            0,
-            &used_ring_physical_address
-        );
-        if(used_ring == nullptr) {
-            printf("Error: Unable to allocate memory for used ring\n");
-
-            exit();
-        }
-
-        common_configuration->queue_desc = queue_descriptors_physical_address;
-        common_configuration->queue_driver = available_ring_physical_address;
-        common_configuration->queue_device = used_ring_physical_address;
-
-        common_configuration->queue_enable = 1;
-
-        common_configuration->device_status |= 1 << 2; // Set DRIVER_OK flag
-
-        auto previous_used_index = used_ring->idx;
-
-        for(size_t i = 0; i < virtio_input_queue_descriptor_count; i += 1) {
-            available_ring->ring[available_ring->idx % virtio_input_queue_descriptor_count] = i;
-
-            available_ring->idx += 1;
-        }
-
-        device->available_ring = available_ring;
-        device->used_ring = used_ring;
-        device->buffers_address = buffers_address;
-        device->previous_used_index = previous_used_index;
-
-        virtio_input_index += 1;
-    }
-
     size_t counter = 0;
 
-    auto moving_up = false;
-    auto moving_down = false;
-    auto moving_left = false;
-    auto moving_right = false;
-
-    auto mouse_x = 0;
-    auto mouse_y = 0;
-
-    hmm_vec2 position {};
-
     while(true) {
-        size_t window_index = 0;
+        auto mouse_dx = 0;
+        auto mouse_dy = 0;
+
+        while(true) {
+            auto next_read_head = (compositor_ring->read_head + 1) % compositor_ring_length;
+
+            if(next_read_head == compositor_ring->write_head) {
+                break;
+            }
+
+            auto entry = &compositor_ring->entries[next_read_head];
+
+            Window *window;
+            for(auto the_window : windows) {
+                if(entry->window_id == the_window->id) {
+                    window = the_window;
+                }
+            }
+
+            switch(entry->type) {
+                case CompositorEventType::KeyDown: {
+                    switch(entry->key_down.scancode) {
+                        case 17: { // KEY_W
+                            window->moving_up = true;
+                        } break;
+
+                        case 31: { // KEY_S
+                            window->moving_down = true;
+                        } break;
+
+                        case 30: { // KEY_A
+                            window->moving_left = true;
+                        } break;
+
+                        case 32: { // KEY_D
+                            window->moving_right = true;
+                        } break;
+                    }
+                } break;
+
+                case CompositorEventType::KeyUp: {
+                    switch(entry->key_down.scancode) {
+                        case 17: { // KEY_W
+                            window->moving_up = false;
+                        } break;
+
+                        case 31: { // KEY_S
+                            window->moving_down = false;
+                        } break;
+
+                        case 30: { // KEY_A
+                            window->moving_left = false;
+                        } break;
+
+                        case 32: { // KEY_D
+                            window->moving_right = false;
+                        } break;
+                    }
+                } break;
+
+                case CompositorEventType::MouseMove: {
+                    window->position.X += entry->mouse_move.dx;
+                    window->position.Y += entry->mouse_move.dy;
+                } break;
+
+                case CompositorEventType::FocusLost: {
+                    window->moving_up = false;
+                    window->moving_down = false;
+                    window->moving_left = false;
+                    window->moving_right = false;
+                } break;
+            }
+
+            compositor_ring->read_head = next_read_head;
+        }
+
         for(auto window : windows) {
             // Aquire the current offscreen swapbuffer to prevent flickering (double buffering)
             auto framebuffer = (uint32_t*)(window->framebuffers_address + (size_t)!*window->swap_indicator * framebuffer_size);
-
-            auto mouse_dx = 0;
-            auto mouse_dy = 0;
-
-            for(auto device : virtio_input_devices) {
-                auto used_index = device->used_ring->idx;
-
-                if(used_index != device->previous_used_index) {
-                    for(uint16_t index = device->previous_used_index; index != used_index; index += 1) {
-                        auto descriptor_index = (size_t)device->used_ring->ring[index % virtio_input_queue_descriptor_count].id;
-
-                        auto event = (volatile virtio_input_event*)(device->buffers_address + virtio_input_buffer_size * descriptor_index);
-
-                        switch(event->type) {
-                            case 1: { // EV_KEY
-                                switch(event->code) {
-                                    case 17: { // KEY_W
-                                        moving_up = (bool)event->value;
-                                    } break;
-
-                                    case 31: { // KEY_S
-                                        moving_down = (bool)event->value;
-                                    } break;
-
-                                    case 30: { // KEY_A
-                                        moving_left = (bool)event->value;
-                                    } break;
-
-                                    case 32: { // KEY_D
-                                        moving_right = (bool)event->value;
-                                    } break;
-                                }
-                            } break;
-
-                            case 2: { // EV_REL
-                                switch(event->code) {
-                                    case 0: { // REL_X
-                                        mouse_x += (int32_t)event->value;
-                                        mouse_dx += (int32_t)event->value;
-                                    } break;
-
-                                    case 1: { // REL_Y
-                                        mouse_y += (int32_t)event->value;
-                                        mouse_dy += (int32_t)event->value;
-                                    } break;
-                                }
-                            } break;
-                        }
-
-                        device->available_ring->ring[device->available_ring->idx % virtio_input_queue_descriptor_count] = descriptor_index;
-
-                        device->available_ring->idx += 1;
-                    }
-
-                    device->previous_used_index = device->used_ring->idx;
-                }
-            }
 
             auto time = (float)counter / 100;
 
             auto speed = 1.0f;
 
-            if(moving_up) {
-                position.Y -= speed;
+            if(window->moving_up) {
+                window->position.Y -= speed;
             }
 
-            if(moving_down) {
-                position.Y += speed;
+            if(window->moving_down) {
+                window->position.Y += speed;
             }
 
-            if(moving_left) {
-                position.X -= speed;
+            if(window->moving_left) {
+                window->position.X -= speed;
             }
 
-            if(moving_right) {
-                position.X += speed;
+            if(window->moving_right) {
+                window->position.X += speed;
             }
 
-            position.X += mouse_dx;
-            position.Y += mouse_dy;
+            window->position.X += mouse_dx;
+            window->position.Y += mouse_dy;
 
             const size_t triangle_count = 1;
             hmm_vec3 triangles[triangle_count][3] {
@@ -485,18 +401,18 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             };
 
             for(size_t i = 0; i < triangle_count; i += 1) {
-                triangles[i][0].XY += position;
-                triangles[i][1].XY += position;
-                triangles[i][2].XY += position;
+                triangles[i][0].XY += window->position;
+                triangles[i][1].XY += window->position;
+                triangles[i][2].XY += window->position;
             }
 
             memset(framebuffer, 0x80, framebuffer_size);
 
-            auto shade = window_index / (float)(window_count - 1);
+            auto red = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->color.R, 0), 1));
+            auto green = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->color.G, 0), 1));
+            auto blue = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->color.B, 0), 1));
 
-            auto shade_int = (uint8_t)(0xFF * shade);
-
-            auto color = 0xFF | shade_int << 8 | shade_int << 16;
+            auto color = (uint32_t)red | (uint32_t)green << 8 | (uint32_t)blue << 16;
 
             for(size_t i = 0; i < triangle_count; i += 1) {
                 auto first = triangles[i][0];
@@ -604,8 +520,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             }
 
             *window->swap_indicator = !*window->swap_indicator;
-
-            window_index += 1;
         }
 
         counter += 1;

@@ -37,3 +37,49 @@ struct CompositorMailbox {
         } destroy_window;
     };
 };
+
+enum struct CompositorEventType {
+    KeyDown,
+    KeyUp,
+    MouseMove,
+    FocusGained,
+    FocusLost
+};
+
+struct CompositorEvent {
+    CompositorEventType type;
+
+    size_t window_id;
+
+    union {
+        struct {
+            uint16_t scancode;
+        } key_down;
+
+        struct {
+            uint16_t scancode;
+        } key_up;
+
+        struct {
+            intptr_t x;
+            intptr_t y;
+
+            intptr_t dx;
+            intptr_t dy;
+        } mouse_move;
+
+        struct {
+            intptr_t mouse_x;
+            intptr_t mouse_y;
+        } focus_gained;
+    };
+};
+
+const size_t compositor_ring_length = 16;
+
+struct CompositorRing {
+    size_t read_head;
+    size_t write_head;
+
+    CompositorEvent entries[compositor_ring_length];
+};

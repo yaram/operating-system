@@ -109,6 +109,139 @@ extern uint8_t secondary_executable[];
 extern uint8_t secondary_executable_end[];
 
 extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_size) {
+    struct VirtIOInputDevice {
+        volatile virtq_avail *available_ring;
+
+        volatile virtq_used *used_ring;
+
+        size_t buffers_address;
+
+        uint16_t previous_used_index;
+    };
+
+    using VirtIOInputDevices = BucketArray<VirtIOInputDevice, 4>;
+
+    VirtIOInputDevices virtio_input_devices {};
+
+    const size_t virtio_input_queue_descriptor_count = 32;
+    const size_t virtio_input_buffer_size = 16;
+
+    size_t virtio_input_index = 0;
+    while(true) {
+        size_t pcie_location;
+        FindPCIEDeviceParameters parameters {};
+        parameters.index = virtio_input_index;
+        parameters.require_vendor_id = true;
+        parameters.vendor_id = 0x1AF4;
+        parameters.require_device_id = true;
+        parameters.device_id = 0x1052;
+
+        if(syscall(
+            SyscallType::FindPCIEDevice,
+            (size_t)&parameters,
+            0,
+            &pcie_location
+        ) != (size_t)FindPCIEDeviceResult::Success) {
+            break;
+        }
+
+        auto device = allocate_from_bucket_array(&virtio_input_devices);
+        if(device == nullptr) {
+            printf("Error: Out of memory\n");
+
+            exit();
+        }
+
+        size_t configuration_address;
+        volatile virtio_pci_common_cfg* common_configuration;
+        if(!init_virtio_device(pcie_location, &configuration_address, &common_configuration)) {
+            printf("Error: Unable to initialize virtio-input device\n");
+
+            exit();
+        }
+
+        common_configuration->queue_select = 0; // Select eventq queue
+
+        size_t queue_descriptors_physical_address;
+        auto queue_descriptors = (volatile virtq_desc*)syscall(
+            SyscallType::MapFreeConsecutiveMemory,
+            sizeof(virtq_desc) * virtio_input_queue_descriptor_count,
+            0,
+            &queue_descriptors_physical_address
+        );
+        if(queue_descriptors == nullptr) {
+            printf("Error: Unable to allocate memory for queue descriptor\n");
+
+            exit();
+        }
+
+        common_configuration->queue_size = virtio_input_queue_descriptor_count; // Set eventq queue size
+
+        size_t buffers_physical_address;
+        auto buffers_address = syscall(SyscallType::MapFreeConsecutiveMemory, virtio_input_buffer_size * virtio_input_queue_descriptor_count, 0, &buffers_physical_address);
+        if(buffers_address == 0) {
+            printf("Error: Unable to allocate memory for queue buffers\n");
+
+            exit();
+        }
+
+        for(size_t i = 0; i < virtio_input_queue_descriptor_count; i += 1) {
+            queue_descriptors[i].flags |= 1 << 1; // Set VIRTQ_DESC_F_WRITE flag
+
+            queue_descriptors[i].addr = buffers_physical_address + virtio_input_buffer_size * i;
+            queue_descriptors[i].len = virtio_input_buffer_size;
+        }
+
+        size_t available_ring_physical_address;
+        auto available_ring = (volatile virtq_avail*)syscall(
+            SyscallType::MapFreeConsecutiveMemory,
+            sizeof(virtq_avail) + sizeof(uint16_t) * virtio_input_queue_descriptor_count,
+            0,
+            &available_ring_physical_address
+        );
+        if(available_ring == nullptr) {
+            printf("Error: Unable to allocate memory for available ring\n");
+
+            exit();
+        }
+
+        size_t used_ring_physical_address;
+        auto used_ring = (volatile virtq_used*)syscall(
+            SyscallType::MapFreeConsecutiveMemory,
+            sizeof(virtq_used) + sizeof(virtq_used_elem) * virtio_input_queue_descriptor_count,
+            0,
+            &used_ring_physical_address
+        );
+        if(used_ring == nullptr) {
+            printf("Error: Unable to allocate memory for used ring\n");
+
+            exit();
+        }
+
+        common_configuration->queue_desc = queue_descriptors_physical_address;
+        common_configuration->queue_driver = available_ring_physical_address;
+        common_configuration->queue_device = used_ring_physical_address;
+
+        common_configuration->queue_enable = 1;
+
+        common_configuration->device_status |= 1 << 2; // Set DRIVER_OK flag
+
+        auto previous_used_index = used_ring->idx;
+
+        for(size_t i = 0; i < virtio_input_queue_descriptor_count; i += 1) {
+            available_ring->ring[available_ring->idx % virtio_input_queue_descriptor_count] = i;
+
+            available_ring->idx += 1;
+        }
+
+        device->available_ring = available_ring;
+        device->used_ring = used_ring;
+        device->buffers_address = buffers_address;
+        device->previous_used_index = previous_used_index;
+
+        virtio_input_index += 1;
+    }
+
     size_t virtio_gpu_location;
     {
         FindPCIEDeviceParameters parameters {};
@@ -359,9 +492,19 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
     auto secondary_process_mailbox = (volatile CompositorMailbox*)secondary_process_mailbox_address;
 
+    auto secondary_process_ring_address = syscall(SyscallType::CreateSharedMemory, sizeof(CompositorRing), 0);
+    if(secondary_process_ring_address == 0) {
+        printf("Error: Unable to allocate shared memory for compositor ring\n");
+
+        exit();
+    }
+
+    auto secondary_process_ring = (volatile CompositorRing*)secondary_process_ring_address;
+
     SecondaryProcessParameters secondary_process_parameters {
         process_id,
-        secondary_process_mailbox_address
+        secondary_process_mailbox_address,
+        secondary_process_ring_address
     };
 
     auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
@@ -398,7 +541,90 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         }
     }
 
+    Window *focused_window = nullptr;
+
+    intptr_t mouse_x = 0;
+    intptr_t mouse_y = 0;
+
     while(true) {
+        for(auto device : virtio_input_devices) {
+            auto used_index = device->used_ring->idx;
+
+            if(used_index != device->previous_used_index) {
+                for(uint16_t index = device->previous_used_index; index != used_index; index += 1) {
+                    auto descriptor_index = (size_t)device->used_ring->ring[index % virtio_input_queue_descriptor_count].id;
+
+                    auto event = (volatile virtio_input_event*)(device->buffers_address + virtio_input_buffer_size * descriptor_index);
+
+                    switch(event->type) {
+                        case 1: { // EV_KEY
+                            if(focused_window != nullptr) {
+                                auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+
+                                entry->window_id = focused_window->id;
+
+                                if((bool)event->value) {
+                                    entry->type = CompositorEventType::KeyDown;
+                                    entry->key_down.scancode = event->code;
+
+                                    if(event->code == 1) { // KEY_ESC
+                                        focused_window = nullptr;
+                                    }
+                                } else {
+                                    entry->type = CompositorEventType::KeyUp;
+                                    entry->key_down.scancode = event->code;
+                                }
+
+                                secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                            }
+                        } break;
+
+                        case 2: { // EV_REL
+                            intptr_t dx = 0;
+                            intptr_t dy = 0;
+
+                            switch(event->code) {
+                                case 0: { // REL_X
+                                    dx = (int32_t)event->value;
+                                } break;
+
+                                case 1: { // REL_Y
+                                    dy = (int32_t)event->value;
+                                } break;
+                            }
+
+                            mouse_x += dx;
+                            mouse_y += dy;
+
+                            mouse_x = min(max(mouse_x, 0), (intptr_t)display_width);
+                            mouse_y = min(max(mouse_y, 0), (intptr_t)display_height);
+
+                            if(focused_window != nullptr && secondary_process_ring->read_head != secondary_process_ring->write_head) {
+                                auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+
+                                entry->window_id = focused_window->id;
+
+                                entry->type = CompositorEventType::MouseMove;
+
+                                entry->mouse_move.x = mouse_x - focused_window->x;
+                                entry->mouse_move.dx = dx;
+                                entry->mouse_move.y = mouse_y - focused_window->y;
+                                entry->mouse_move.dy = dy;
+
+                                secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                            }
+                        } break;
+                    }
+
+                    device->available_ring->ring[device->available_ring->idx % virtio_input_queue_descriptor_count] = descriptor_index;
+
+                    device->available_ring->idx += 1;
+                }
+
+                device->previous_used_index = device->used_ring->idx;
+            }
+        }
+
         if(secondary_process_mailbox->command_present){
             switch(secondary_process_mailbox->command_type) {
                 case CompositorCommandType::CreateWindow: {
@@ -459,6 +685,35 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                     command->swap_indicator_shared_memory = swap_indicator_address;
 
                     secondary_process_mailbox->command_present = false;
+
+                    auto previous_focused_window = focused_window;
+
+                    focused_window = window;
+
+                    if(previous_focused_window != nullptr) {
+                        if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
+                            auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+
+                            entry->window_id = previous_focused_window->id;
+
+                            entry->type = CompositorEventType::FocusLost;
+
+                            secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                        }
+                    }
+
+                    if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
+                        auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+
+                        entry->window_id = focused_window->id;
+
+                        entry->type = CompositorEventType::FocusGained;
+
+                        entry->focus_gained.mouse_x = mouse_x - focused_window->x;
+                        entry->focus_gained.mouse_y = mouse_y - focused_window->y;
+
+                        secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                    }
                 } break;
 
                 case CompositorCommandType::DestroyWindow: {
@@ -525,6 +780,15 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                     (void*)(current_framebuffer_address + ((visible_top_relative + y) * window->width + visible_left_relative) * 4),
                     visible_width * 4
                 );
+            }
+        }
+
+        intptr_t cursor_size = 16;
+        for(auto y = mouse_y; y < mouse_y + cursor_size; y += 1) {
+            for(auto x = mouse_x; x < mouse_x + cursor_size; x += 1) {
+                if(x >= 0 && x < (intptr_t)display_width && y >= 0 && y < (intptr_t)display_height) {
+                    ((uint32_t*)display_framebuffer_address)[(size_t)y * display_width + x] = 0xFFFFFF;
+                }
             }
         }
 
