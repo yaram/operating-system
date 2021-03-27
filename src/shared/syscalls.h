@@ -67,6 +67,7 @@ enum struct SyscallType : size_t {
     MapSharedMemory,
     UnmapMemory,
     CreateProcess,
+    DoesProcessExist,
     FindPCIEDevice,
     MapPCIEConfiguration,
     MapPCIEBar

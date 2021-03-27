@@ -53,6 +53,11 @@ static bool operator !=(const BucketArrayIterator<T, N> &a, const BucketArrayIte
 }
 
 template <typename T, size_t N>
+inline void remove_item_from_bucket_array(BucketArrayIterator<T, N> iterator) {
+    iterator.current_bucket->occupied[iterator.current_sub_index] = false;
+}
+
+template <typename T, size_t N>
 struct ConstBucketArrayIterator {
     const Bucket<T, N> *current_bucket;
 

@@ -5,8 +5,13 @@
 #include "pcie.h"
 #include "secondary.h"
 #include "virtio.h"
+#include "bucket_array.h"
+#include "compositor.h"
 
 #define bits_to_mask(bits) ((1 << (bits)) - 1)
+
+#define min(a, b) ((a) > (b) ? (b) : (a))
+#define max(a, b) ((a) < (b) ? (b) : (a))
 
 extern "C" void *memset(void *destination, int value, size_t count) {
     auto temp_destination = destination;
@@ -59,6 +64,45 @@ static volatile virtio_gpu_ctrl_hdr *send_command(
     while(used_ring->idx == previous_used_index);
 
     return (volatile virtio_gpu_ctrl_hdr*)(buffers_address + buffer_size);
+}
+
+template <typename T, size_t N>
+static T *allocate_from_bucket_array(
+    BucketArray<T, N> *bucket_array,
+    BucketArrayIterator<T, N> *result_iterator = nullptr
+) {
+    auto iterator = find_unoccupied_bucket_slot(bucket_array);
+
+    if(iterator.current_bucket == nullptr) {
+        auto new_bucket = (Bucket<T, N>*)syscall(SyscallType::MapFreeMemory, sizeof(Bucket<T, N>), 0);
+        if(new_bucket == nullptr) {
+            return nullptr;
+        }
+
+        {
+            auto current_bucket = &bucket_array->first_bucket;
+            while(current_bucket->next != nullptr) {
+                current_bucket = current_bucket->next;
+            }
+
+            current_bucket->next = new_bucket;
+        }
+
+        iterator = {
+            new_bucket,
+            0
+        };
+    } else {
+        memset(*iterator, 0, sizeof(T));
+    }
+
+    iterator.current_bucket->occupied[iterator.current_sub_index] = true;
+
+    if(result_iterator != nullptr) {
+        *result_iterator = iterator;
+    }
+
+    return *iterator;
 }
 
 extern uint8_t secondary_executable[];
@@ -285,48 +329,53 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         exit();
     }
 
-    auto swap_indicator_address = syscall(SyscallType::CreateSharedMemory, 1, 0);
-    if(swap_indicator_address == 0) {
-        printf("Error: Unable to allocate shared memory for swap indicator\n");
+    struct Window {
+        size_t owner_process_id;
+
+        size_t id;
+
+        intptr_t x;
+        intptr_t y;
+
+        intptr_t width;
+        intptr_t height;
+
+        volatile uint32_t *framebuffers;
+        volatile bool *swap_indicator;
+    };
+
+    using Windows = BucketArray<Window, 4>;
+
+    Windows windows {};
+
+    size_t next_window_id = 0;
+
+    auto secondary_process_mailbox_address = syscall(SyscallType::CreateSharedMemory, sizeof(CompositorMailbox), 0);
+    if(secondary_process_mailbox_address == 0) {
+        printf("Error: Unable to allocate shared memory for compositor mailbox\n");
 
         exit();
     }
 
-    auto swap_indicator = (volatile bool*)swap_indicator_address;
+    auto secondary_process_mailbox = (volatile CompositorMailbox*)secondary_process_mailbox_address;
 
-    const size_t secondary_framebuffer_width = 300;
-    const size_t secondary_framebuffer_height = 300;
-    const size_t secondary_framebuffer_size = secondary_framebuffer_width * secondary_framebuffer_height * 4;
+    SecondaryProcessParameters secondary_process_parameters {
+        process_id,
+        secondary_process_mailbox_address
+    };
 
-    auto secondary_framebuffers_address = syscall(SyscallType::CreateSharedMemory, secondary_framebuffer_size * 2, 0);
-    if(secondary_framebuffers_address == 0) {
-        printf("Error: Unable to allocate shared memory for secondary process framebuffers\n");
+    auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
 
-        exit();
-    }
-
-    auto secondary_framebuffer_x = 100;
-    auto secondary_framebuffer_y = 200;
-
+    size_t secondary_process_id;
     {
-        SecondaryProcessParameters process_parameters {
-            process_id,
-            secondary_framebuffers_address,
-            secondary_framebuffer_width,
-            secondary_framebuffer_height,
-            swap_indicator_address
-        };
-
-        auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
-
         CreateProcessParameters parameters {
             &secondary_executable,
             secondary_executable_size,
-            &process_parameters,
+            &secondary_process_parameters,
             sizeof(SecondaryProcessParameters)
         };
 
-        switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0)) {
+        switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0, &secondary_process_id)) {
             case CreateProcessResult::Success: break;
 
             case CreateProcessResult::OutOfMemory: {
@@ -350,21 +399,133 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     }
 
     while(true) {
+        if(secondary_process_mailbox->command_present){
+            switch(secondary_process_mailbox->command_type) {
+                case CompositorCommandType::CreateWindow: {
+                    auto command = &secondary_process_mailbox->create_window;
+
+                    if(command->width <= 0 || command->height <= 0) {
+                        command->result = CreateWindowResult::InvalidSize;
+
+                        secondary_process_mailbox->command_present = false;
+
+                        break;
+                    }
+
+                    auto swap_indicator_address = syscall(SyscallType::CreateSharedMemory, sizeof(bool), 0);
+                    if(swap_indicator_address == 0) {
+                        command->result = CreateWindowResult::OutOfMemory;
+
+                        secondary_process_mailbox->command_present = false;
+
+                        break;
+                    }
+
+                    auto framebuffers_address = syscall(SyscallType::CreateSharedMemory, command->width * command->height * 4 * 2, 0);
+                    if(framebuffers_address == 0) {
+                        command->result = CreateWindowResult::OutOfMemory;
+
+                        secondary_process_mailbox->command_present = false;
+
+                        break;
+                    }
+
+                    auto window = allocate_from_bucket_array(&windows);
+                    if(window == nullptr) {
+                        command->result = CreateWindowResult::OutOfMemory;
+
+                        secondary_process_mailbox->command_present = false;
+
+                        break;
+                    }
+
+                    window->owner_process_id = secondary_process_id;
+
+                    window->id = next_window_id;
+                    next_window_id += 1;
+
+                    window->x = command->x;
+                    window->y = command->y;
+                    window->width = command->width;
+                    window->height = command->height;
+
+                    window->framebuffers = (volatile uint32_t*)framebuffers_address;
+                    window->swap_indicator = (volatile bool*)swap_indicator_address;
+
+                    command->result = CreateWindowResult::Success;
+
+                    command->id = window->id;
+                    command->framebuffers_shared_memory = framebuffers_address;
+                    command->swap_indicator_shared_memory = swap_indicator_address;
+
+                    secondary_process_mailbox->command_present = false;
+                } break;
+
+                case CompositorCommandType::DestroyWindow: {
+                    auto command = &secondary_process_mailbox->destroy_window;
+
+                    for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
+                        auto window = *window_iterator;
+
+                        if(window->id == command->id) {
+                            remove_item_from_bucket_array(window_iterator);
+                            break;
+                        }
+                    }
+                } break;
+
+                default: {
+                    printf("Error: Unknown compositor command type %u\n", secondary_process_mailbox->command_type);
+                } break;
+            }
+        }
+
         memset((void*)display_framebuffer_address, 0, display_framebuffer_size);
 
-        for(size_t y = 0; y < secondary_framebuffer_height; y += 1) {
-            size_t current_secondary_framebuffer_address;
-            if(*swap_indicator) {
-                current_secondary_framebuffer_address = secondary_framebuffers_address + secondary_framebuffer_size;
-            } else {
-                current_secondary_framebuffer_address = secondary_framebuffers_address;
+        for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
+            auto window = *window_iterator;
+
+            if(!(bool)syscall(SyscallType::DoesProcessExist, window->owner_process_id, 0)) {
+                remove_item_from_bucket_array(window_iterator);
+
+                continue;
             }
 
-            memcpy(
-                (void*)(display_framebuffer_address + ((y + secondary_framebuffer_y) * display_width + secondary_framebuffer_x) * 4),
-                (void*)(current_secondary_framebuffer_address + y * secondary_framebuffer_width * 4),
-                secondary_framebuffer_width * 4
-            );
+            auto framebuffer_size = window->width * window->height * sizeof(uint32_t);
+
+            auto window_top = window->y;
+            auto window_bottom = window->y + window->height;
+
+            auto window_left = window->x;
+            auto window_right = window->x + window->width;
+
+            auto visible_top = (size_t)max(window_top, 0);
+            auto visible_bottom = (size_t)min(window_bottom, (intptr_t)display_height);
+
+            auto visible_left = (size_t)max(window_left, 0);
+            auto visible_right = (size_t)min(window_right, (intptr_t)display_width);
+
+            auto visible_height = visible_bottom - visible_top;
+            auto visible_width = visible_right - visible_left;
+
+            auto visible_top_relative = visible_top - window_top;
+
+            auto visible_left_relative = visible_left - window_left;
+
+            if(visible_width == 0) { // Window is not on the screen (offscreen on the x axis)
+                continue;
+            }
+
+            for(size_t y = 0; y < visible_height; y += 1) {
+                // Aquire the current swapbuffer again for this line to prevent flickering (double buffering)
+                auto current_framebuffer_address = (size_t)window->framebuffers + (size_t)*window->swap_indicator * framebuffer_size;
+
+                memcpy(
+                    (void*)(display_framebuffer_address + ((visible_top + y) * display_width + visible_left) * 4),
+                    (void*)(current_framebuffer_address + ((visible_top_relative + y) * window->width + visible_left_relative) * 4),
+                    visible_width * 4
+                );
+            }
         }
 
         auto transfer_command = (volatile virtio_gpu_transfer_to_host_2d*)buffers_address;

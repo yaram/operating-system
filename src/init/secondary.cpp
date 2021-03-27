@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <stddef.h>
+#include "compositor.h"
 #include "secondary.h"
 #include "printf.h"
 #include "syscall.h"
@@ -36,16 +37,16 @@ void _putchar(char character) {
 }
 
 template <typename T, size_t N>
-static bool find_or_allocate_unoccupied_bucket_slot(
+static T *allocate_from_bucket_array(
     BucketArray<T, N> *bucket_array,
-    BucketArrayIterator<T, N> *result_iterator
+    BucketArrayIterator<T, N> *result_iterator = nullptr
 ) {
-    auto found_iterator = find_unoccupied_bucket_slot(bucket_array);
+    auto iterator = find_unoccupied_bucket_slot(bucket_array);
 
-    if(found_iterator.current_bucket == nullptr) {
+    if(iterator.current_bucket == nullptr) {
         auto new_bucket = (Bucket<T, N>*)syscall(SyscallType::MapFreeMemory, sizeof(Bucket<T, N>), 0);
         if(new_bucket == nullptr) {
-            return false;
+            return nullptr;
         }
 
         {
@@ -57,15 +58,21 @@ static bool find_or_allocate_unoccupied_bucket_slot(
             current_bucket->next = new_bucket;
         }
 
-        *result_iterator = {
+        iterator = {
             new_bucket,
             0
         };
-        return true;
     } else {
-        *result_iterator = found_iterator;
-        return true;
+        memset(*iterator, 0, sizeof(T));
     }
+
+    iterator.current_bucket->occupied[iterator.current_sub_index] = true;
+
+    if(result_iterator != nullptr) {
+        *result_iterator = iterator;
+    }
+
+    return *iterator;
 }
 
 extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_size) {
@@ -85,66 +92,156 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
     auto parameters = (SecondaryProcessParameters*)data;
 
-    auto framebuffer_size = parameters->framebuffer_width * parameters->framebuffer_height * 4;
-
-    size_t framebuffers_address;
+    volatile CompositorMailbox *compositor_mailbox;
     {
         MapSharedMemoryParameters syscall_parameters {
             parameters->compositor_process_id,
-            parameters->framebuffers_shared_memory_address,
-            framebuffer_size * 2
+            parameters->compositor_mailbox_shared_memory,
+            sizeof(CompositorMailbox)
         };
-        switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, &framebuffers_address)) {
+        switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, (size_t*)&compositor_mailbox)) {
             case MapSharedMemoryResult::Success: break;
 
             case MapSharedMemoryResult::OutOfMemory: {
-                printf("Error: Unable to map framebuffers shared memory: Out of memory\n");
+                printf("Error: Unable to map compositor mailbox shared memory: Out of memory\n");
 
                 exit();
             } break;
 
             case MapSharedMemoryResult::InvalidProcessID: {
-                printf("Error: Unable to map framebuffers shared memory: Compositor process does not exist\n");
+                printf("Error: Unable to map compositor mailbox shared memory: Compositor process does not exist\n");
 
                 exit();
             } break;
 
             case MapSharedMemoryResult::InvalidMemoryRange: {
-                printf("Error: Unable to map framebuffers shared memory: Invalid memory range\n");
+                printf("Error: Unable to map compositor mailbox shared memory: Invalid memory range\n");
 
                 exit();
             } break;
         }
     }
 
-    bool *swap_indicator;
-    {
-        MapSharedMemoryParameters syscall_parameters {
-            parameters->compositor_process_id,
-            parameters->swap_indicator_shared_memory_address,
-            1
-        };
-        switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, (size_t*)&swap_indicator)) {
-            case MapSharedMemoryResult::Success: break;
+    intptr_t window_width = 300;
+    intptr_t window_height = 300;
 
-            case MapSharedMemoryResult::OutOfMemory: {
-                printf("Error: Unable to swap indicator shared memory: Out of memory\n");
+    auto framebuffer_size = (size_t)(window_width * window_height * 4);
+
+    struct Window {
+        size_t id;
+
+        size_t framebuffers_address;
+        bool *swap_indicator;
+    };
+
+    using Windows = BucketArray<Window, 4>;
+
+    Windows windows {};
+
+    auto window_count = 5;
+
+    for(auto i = 0; i < window_count; i += 1) {
+        compositor_mailbox->command_type = CompositorCommandType::CreateWindow;
+
+        auto command = &compositor_mailbox->create_window;
+
+        command->x = i * 100;
+        command->y = i * 50;
+        command->width = window_width;
+        command->height = window_height;
+
+        compositor_mailbox->command_present = true;
+
+        while(compositor_mailbox->command_present) {
+            syscall(SyscallType::RelinquishTime, 0, 0);
+        }
+
+        switch(command->result) {
+            case CreateWindowResult::Success: break;
+
+            case CreateWindowResult::InvalidSize: {
+                printf("Error: Unable to create window: Invalid size\n");
 
                 exit();
             } break;
 
-            case MapSharedMemoryResult::InvalidProcessID: {
-                printf("Error: Unable to swap indicator shared memory: Compositor process does not exist\n");
-
-                exit();
-            } break;
-
-            case MapSharedMemoryResult::InvalidMemoryRange: {
-                printf("Error: Unable to swap indicator shared memory: Invalid memory range\n");
+            case CreateWindowResult::OutOfMemory: {
+                printf("Error: Unable to create window: Out of memory\n");
 
                 exit();
             } break;
         }
+
+        auto window = allocate_from_bucket_array(&windows);
+        if(window == nullptr) {
+            printf("Error: Unable to allocate window: Out of memory\n");
+
+            exit();
+        }
+
+        size_t framebuffers_address;
+        {
+            MapSharedMemoryParameters syscall_parameters {
+                parameters->compositor_process_id,
+                command->framebuffers_shared_memory,
+                framebuffer_size * 2
+            };
+            switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, &framebuffers_address)) {
+                case MapSharedMemoryResult::Success: break;
+
+                case MapSharedMemoryResult::OutOfMemory: {
+                    printf("Error: Unable to map framebuffers shared memory: Out of memory\n");
+
+                    exit();
+                } break;
+
+                case MapSharedMemoryResult::InvalidProcessID: {
+                    printf("Error: Unable to map framebuffers shared memory: Compositor process does not exist\n");
+
+                    exit();
+                } break;
+
+                case MapSharedMemoryResult::InvalidMemoryRange: {
+                    printf("Error: Unable to map framebuffers shared memory: Invalid memory range\n");
+
+                    exit();
+                } break;
+            }
+        }
+
+        bool *swap_indicator;
+        {
+            MapSharedMemoryParameters syscall_parameters {
+                parameters->compositor_process_id,
+                command->swap_indicator_shared_memory,
+                1
+            };
+            switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, (size_t*)&swap_indicator)) {
+                case MapSharedMemoryResult::Success: break;
+
+                case MapSharedMemoryResult::OutOfMemory: {
+                    printf("Error: Unable to swap indicator shared memory: Out of memory\n");
+
+                    exit();
+                } break;
+
+                case MapSharedMemoryResult::InvalidProcessID: {
+                    printf("Error: Unable to swap indicator shared memory: Compositor process does not exist\n");
+
+                    exit();
+                } break;
+
+                case MapSharedMemoryResult::InvalidMemoryRange: {
+                    printf("Error: Unable to swap indicator shared memory: Invalid memory range\n");
+
+                    exit();
+                } break;
+            }
+        }
+
+        window->id = compositor_mailbox->create_window.id;
+        window->framebuffers_address = framebuffers_address;
+        window->swap_indicator = swap_indicator;
     }
 
     struct VirtIOInputDevice {
@@ -183,17 +280,12 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             break;
         }
 
-        VirtIOInputDevices::Iterator device_iterator;
-        if(!find_or_allocate_unoccupied_bucket_slot(&virtio_input_devices, &device_iterator)) {
+        auto device = allocate_from_bucket_array(&virtio_input_devices);
+        if(device == nullptr) {
             printf("Error: Out of memory\n");
 
             exit();
         }
-
-        device_iterator.current_bucket->occupied[device_iterator.current_sub_index] = true;
-
-        auto device = *device_iterator;
-        memset(device, 0, sizeof(VirtIOInputDevice));
 
         size_t configuration_address;
         volatile virtio_pci_common_cfg* common_configuration;
@@ -298,217 +390,227 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     hmm_vec2 position {};
 
     while(true) {
-        uint32_t *framebuffer;
-        if(*swap_indicator) {
-            framebuffer = (uint32_t*)framebuffers_address;
-        } else {
-            framebuffer = (uint32_t*)(framebuffers_address + framebuffer_size);
-        }
+        size_t window_index = 0;
+        for(auto window : windows) {
+            // Aquire the current offscreen swapbuffer to prevent flickering (double buffering)
+            auto framebuffer = (uint32_t*)(window->framebuffers_address + (size_t)!*window->swap_indicator * framebuffer_size);
 
-        auto mouse_dx = 0;
-        auto mouse_dy = 0;
+            auto mouse_dx = 0;
+            auto mouse_dy = 0;
 
-        for(auto device : virtio_input_devices) {
-            auto used_index = device->used_ring->idx;
+            for(auto device : virtio_input_devices) {
+                auto used_index = device->used_ring->idx;
 
-            if(used_index != device->previous_used_index) {
-                for(uint16_t index = device->previous_used_index; index != used_index; index += 1) {
-                    auto descriptor_index = (size_t)device->used_ring->ring[index % virtio_input_queue_descriptor_count].id;
+                if(used_index != device->previous_used_index) {
+                    for(uint16_t index = device->previous_used_index; index != used_index; index += 1) {
+                        auto descriptor_index = (size_t)device->used_ring->ring[index % virtio_input_queue_descriptor_count].id;
 
-                    auto event = (volatile virtio_input_event*)(device->buffers_address + virtio_input_buffer_size * descriptor_index);
+                        auto event = (volatile virtio_input_event*)(device->buffers_address + virtio_input_buffer_size * descriptor_index);
 
-                    switch(event->type) {
-                        case 1: { // EV_KEY
-                            switch(event->code) {
-                                case 17: { // KEY_W
-                                    moving_up = (bool)event->value;
-                                } break;
+                        switch(event->type) {
+                            case 1: { // EV_KEY
+                                switch(event->code) {
+                                    case 17: { // KEY_W
+                                        moving_up = (bool)event->value;
+                                    } break;
 
-                                case 31: { // KEY_S
-                                    moving_down = (bool)event->value;
-                                } break;
+                                    case 31: { // KEY_S
+                                        moving_down = (bool)event->value;
+                                    } break;
 
-                                case 30: { // KEY_A
-                                    moving_left = (bool)event->value;
-                                } break;
+                                    case 30: { // KEY_A
+                                        moving_left = (bool)event->value;
+                                    } break;
 
-                                case 32: { // KEY_D
-                                    moving_right = (bool)event->value;
-                                } break;
-                            }
-                        } break;
+                                    case 32: { // KEY_D
+                                        moving_right = (bool)event->value;
+                                    } break;
+                                }
+                            } break;
 
-                        case 2: { // EV_REL
-                            switch(event->code) {
-                                case 0: { // REL_X
-                                    mouse_x += (int32_t)event->value;
-                                    mouse_dx += (int32_t)event->value;
-                                } break;
+                            case 2: { // EV_REL
+                                switch(event->code) {
+                                    case 0: { // REL_X
+                                        mouse_x += (int32_t)event->value;
+                                        mouse_dx += (int32_t)event->value;
+                                    } break;
 
-                                case 1: { // REL_Y
-                                    mouse_y += (int32_t)event->value;
-                                    mouse_dy += (int32_t)event->value;
-                                } break;
-                            }
-                        } break;
+                                    case 1: { // REL_Y
+                                        mouse_y += (int32_t)event->value;
+                                        mouse_dy += (int32_t)event->value;
+                                    } break;
+                                }
+                            } break;
+                        }
+
+                        device->available_ring->ring[device->available_ring->idx % virtio_input_queue_descriptor_count] = descriptor_index;
+
+                        device->available_ring->idx += 1;
                     }
 
-                    device->available_ring->ring[device->available_ring->idx % virtio_input_queue_descriptor_count] = descriptor_index;
+                    device->previous_used_index = device->used_ring->idx;
+                }
+            }
 
-                    device->available_ring->idx += 1;
+            auto time = (float)counter / 100;
+
+            auto speed = 1.0f;
+
+            if(moving_up) {
+                position.Y -= speed;
+            }
+
+            if(moving_down) {
+                position.Y += speed;
+            }
+
+            if(moving_left) {
+                position.X -= speed;
+            }
+
+            if(moving_right) {
+                position.X += speed;
+            }
+
+            position.X += mouse_dx;
+            position.Y += mouse_dy;
+
+            const size_t triangle_count = 1;
+            hmm_vec3 triangles[triangle_count][3] {
+                {
+                    { 20.0f + HMM_CosF(time * HMM_PI32 * 2) * 10, 20.0f + HMM_SinF(time * HMM_PI32 * 2) * 10, 0.0f },
+                    { 30.0f, 100.0f, 0.0f },
+                    { 200.0f, 50.0f, 0.0f }
+                }
+            };
+
+            for(size_t i = 0; i < triangle_count; i += 1) {
+                triangles[i][0].XY += position;
+                triangles[i][1].XY += position;
+                triangles[i][2].XY += position;
+            }
+
+            memset(framebuffer, 0x80, framebuffer_size);
+
+            auto shade = window_index / (float)(window_count - 1);
+
+            auto shade_int = (uint8_t)(0xFF * shade);
+
+            auto color = 0xFF | shade_int << 8 | shade_int << 16;
+
+            for(size_t i = 0; i < triangle_count; i += 1) {
+                auto first = triangles[i][0];
+                auto second = triangles[i][1];
+                auto third = triangles[i][2];
+
+                if(first.Y > second.Y) {
+                    auto temp = first;
+                    first = second;
+                    second = temp;
                 }
 
-                device->previous_used_index = device->used_ring->idx;
-            }
-        }
+                if(first.Y > third.Y) {
+                    auto temp = first;
+                    first = third;
+                    third = temp;
+                }
 
-        auto time = (float)counter / 100;
+                if(second.Y > third.Y) {
+                    auto temp = second;
+                    second = third;
+                    third = temp;
+                }
 
-        auto speed = 1.0f;
+                auto long_mid_x = HMM_Lerp(first.X, ((float)second.Y - first.Y) / (third.Y - first.Y), third.X);
+                auto short_mid_x = second.X;
 
-        if(moving_up) {
-            position.Y -= speed;
-        }
+                auto first_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(first.Y, 0), window_height);
+                auto second_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(second.Y, 0), window_height);
+                auto third_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(third.Y, 0), window_height);
 
-        if(moving_down) {
-            position.Y += speed;
-        }
+                if(long_mid_x < short_mid_x) {
+                    for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
+                        auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
 
-        if(moving_left) {
-            position.X -= speed;
-        }
+                        auto long_x = HMM_Lerp(first.X, long_progress, third.X);
 
-        if(moving_right) {
-            position.X += speed;
-        }
+                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window_width);
 
-        position.X += mouse_dx;
-        position.Y += mouse_dy;
+                        auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
 
-        const size_t triangle_count = 1;
-        hmm_vec3 triangles[triangle_count][3] {
-            {
-                { 20.0f + HMM_CosF(time * HMM_PI32 * 2) * 10, 20.0f + HMM_SinF(time * HMM_PI32 * 2) * 10, 0.0f },
-                { 30.0f, 100.0f, 0.0f },
-                { 200.0f, 50.0f, 0.0f }
-            }
-        };
+                        auto short_x = HMM_Lerp(first.X, short_progress, second.X);
 
-        for(size_t i = 0; i < triangle_count; i += 1) {
-            triangles[i][0].XY += position;
-            triangles[i][1].XY += position;
-            triangles[i][2].XY += position;
-        }
+                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window_width);
 
-        memset(framebuffer, 0x80, framebuffer_size);
+                        for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
+                            framebuffer[y * window_width + x] = color;
+                        }
+                    }
 
-        for(size_t i = 0; i < triangle_count; i += 1) {
-            auto first = triangles[i][0];
-            auto second = triangles[i][1];
-            auto third = triangles[i][2];
+                    for(size_t y = second_y_pixel; y < third_y_pixel; y += 1) {
+                        auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
 
-            if(first.Y > second.Y) {
-                auto temp = first;
-                first = second;
-                second = temp;
-            }
+                        auto long_x = HMM_Lerp(first.X, long_progress, third.X);
 
-            if(first.Y > third.Y) {
-                auto temp = first;
-                first = third;
-                third = temp;
-            }
+                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window_width);
 
-            if(second.Y > third.Y) {
-                auto temp = second;
-                second = third;
-                third = temp;
-            }
+                        auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
 
-            auto long_mid_x = HMM_Lerp(first.X, ((float)second.Y - first.Y) / (third.Y - first.Y), third.X);
-            auto short_mid_x = second.X;
+                        auto short_x = HMM_Lerp(second.X, short_progress, third.X);
 
-            auto first_y_pixel = HMM_MIN((size_t)HMM_MAX(first.Y, 0), parameters->framebuffer_height);
-            auto second_y_pixel = HMM_MIN((size_t)HMM_MAX(second.Y, 0), parameters->framebuffer_height);
-            auto third_y_pixel = HMM_MIN((size_t)HMM_MAX(third.Y, 0), parameters->framebuffer_height);
+                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window_width);
 
-            if(long_mid_x < short_mid_x) {
-                for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
-                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
+                        for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
+                            framebuffer[y * window_width + x] = color;
+                        }
+                    }
+                } else {
+                    for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
+                        auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
 
-                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
+                        auto long_x = HMM_Lerp(first.X, long_progress, third.X);
 
-                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), parameters->framebuffer_width);
+                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window_width);
 
-                    auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
+                        auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
 
-                    auto short_x = HMM_Lerp(first.X, short_progress, second.X);
+                        auto short_x = HMM_Lerp(first.X, short_progress, second.X);
 
-                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), parameters->framebuffer_width);
+                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window_width);
 
-                    for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
-                        framebuffer[y * parameters->framebuffer_width + x] = 0xFFFFFF;
+                        for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
+                            framebuffer[y * window_width + x] = color;
+                        }
+                    }
+
+                    for(size_t y = second_y_pixel; y < third_y_pixel; y += 1) {
+                        auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
+
+                        auto long_x = HMM_Lerp(first.X, long_progress, third.X);
+
+                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window_width);
+
+                        auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
+
+                        auto short_x = HMM_Lerp(second.X, short_progress, third.X);
+
+                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window_width);
+
+                        for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
+                            framebuffer[y * window_width + x] = color;
+                        }
                     }
                 }
-
-                for(size_t y = second_y_pixel; y < third_y_pixel; y += 1) {
-                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
-
-                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
-
-                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), parameters->framebuffer_width);
-
-                    auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
-
-                    auto short_x = HMM_Lerp(second.X, short_progress, third.X);
-
-                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), parameters->framebuffer_width);
-
-                    for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
-                        framebuffer[y * parameters->framebuffer_width + x] = 0xFFFFFF;
-                    }
-                }
-            } else {
-                for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
-                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
-
-                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
-
-                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), parameters->framebuffer_width);
-
-                    auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
-
-                    auto short_x = HMM_Lerp(first.X, short_progress, second.X);
-
-                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), parameters->framebuffer_width);
-
-                    for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
-                        framebuffer[y * parameters->framebuffer_width + x] = 0xFFFFFF;
-                    }
-                }
-
-                for(size_t y = second_y_pixel; y < third_y_pixel; y += 1) {
-                    auto long_progress = ((float)y - first.Y) / (third.Y - first.Y);
-
-                    auto long_x = HMM_Lerp(first.X, long_progress, third.X);
-
-                    auto long_x_pixel = HMM_MIN((size_t)HMM_MAX(long_x, 0), parameters->framebuffer_width);
-
-                    auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
-
-                    auto short_x = HMM_Lerp(second.X, short_progress, third.X);
-
-                    auto short_x_pixel = HMM_MIN((size_t)HMM_MAX(short_x, 0), parameters->framebuffer_width);
-
-                    for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
-                        framebuffer[y * parameters->framebuffer_width + x] = 0xFFFFFF;
-                    }
-                }
             }
+
+            *window->swap_indicator = !*window->swap_indicator;
+
+            window_index += 1;
         }
 
         counter += 1;
 
-        *swap_indicator = !*swap_indicator;
     }
+
+    exit();
 }

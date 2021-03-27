@@ -822,6 +822,19 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             }
         } break;
 
+        case SyscallType::DoesProcessExist: {
+            auto process_id = parameter_1;
+
+            *return_1 = 0;
+
+            for(auto process : global_processes) {
+                if(process->id == process_id) {
+                    *return_1 = 1;
+                    break;
+                }
+            }
+        } break;
+
         case SyscallType::FindPCIEDevice: {
             const FindPCIEDeviceParameters *parameters;
             switch(map_process_memory_into_kernel(process, parameter_1, sizeof(FindPCIEDeviceParameters), (void**)&parameters)) {
