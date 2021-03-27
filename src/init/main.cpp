@@ -568,6 +568,18 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                     entry->key_down.scancode = event->code;
 
                                     if(event->code == 1) { // KEY_ESC
+                                        if(focused_window != nullptr) {
+                                            if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
+                                                auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+
+                                                entry->window_id = focused_window->id;
+
+                                                entry->type = CompositorEventType::FocusLost;
+
+                                                secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                            }
+                                        }
+
                                         focused_window = nullptr;
                                     }
                                 } else {
@@ -686,21 +698,19 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                     secondary_process_mailbox->command_present = false;
 
-                    auto previous_focused_window = focused_window;
-
-                    focused_window = window;
-
-                    if(previous_focused_window != nullptr) {
+                    if(focused_window != nullptr) {
                         if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
                             auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
 
-                            entry->window_id = previous_focused_window->id;
+                            entry->window_id = focused_window->id;
 
                             entry->type = CompositorEventType::FocusLost;
 
                             secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
                         }
                     }
+
+                    focused_window = window;
 
                     if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
                         auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
