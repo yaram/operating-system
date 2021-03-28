@@ -635,6 +635,8 @@ CreateProcessFromELFResult create_process_from_elf(
                 auto slot_user_address = slot_section_user_address + slot_relative_address;
 
                 switch(relocation->type) {
+                    case 0: break; // R_X86_64_NONE
+
                     case 1: { // R_X86_64_64
                         *(uint64_t*)slot_kernel_address = symbol_user_address + relocation->addend;
                     } break;
@@ -820,37 +822,6 @@ inline void deallocate_page(size_t page_index, Array<uint8_t> bitmap) {
     auto sub_byte_index = page_index % 8;
 
     bitmap[byte_index] &= ~(1 << sub_byte_index);
-}
-
-static bool map_table(
-    size_t *current_parent_index,
-    PageTableEntry **current_table,
-    PageTableEntry *parent_table,
-    size_t parent_index,
-    Array<uint8_t> bitmap
-) {
-    if(*current_table == nullptr || parent_index != *current_parent_index) {
-        if(*current_table != nullptr) {
-            unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
-
-            *current_table = nullptr;
-        }
-
-        size_t logical_page_index;
-        if(!map_pages(
-            parent_table[parent_index].page_address,
-            1,
-            bitmap,
-            &logical_page_index
-        )) {
-            return false;
-        }
-
-        *current_table = (PageTableEntry*)(logical_page_index * page_size);
-        *current_parent_index = parent_index;
-    }
-
-    return true;
 }
 
 bool destroy_process(Processes::Iterator iterator, Array<uint8_t> bitmap) {

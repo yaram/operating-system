@@ -495,7 +495,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
     auto syscall_index = stack_frame->rbx;
     auto parameter_1 = stack_frame->rdx;
-    auto parameter_2 = stack_frame->rsi;
+    // auto parameter_2 = stack_frame->rsi;
 
     auto return_1 = &stack_frame->rbx;
     auto return_2 = &stack_frame->rdx;
@@ -960,7 +960,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
                 auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
                 auto segment = (size_t)mcfg_table->allocations[i].PciSegment;
-                auto start_bus_number = (size_t)mcfg_table->allocations[i].StartBusNumber;
 
                 if(segment == target_segment) {
                     size_t logical_pages_start;
@@ -1011,7 +1010,6 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             for(size_t i = 0; i < (mcfg_table->preamble.Header.Length - sizeof(ACPI_TABLE_MCFG)) / sizeof(ACPI_MCFG_ALLOCATION); i += 1) {
                 auto physical_memory_start = (size_t)mcfg_table->allocations[i].Address;
                 auto segment = (size_t)mcfg_table->allocations[i].PciSegment;
-                auto start_bus_number = (size_t)mcfg_table->allocations[i].StartBusNumber;
 
                 if(segment == target_segment) {
                     auto configuration_memory = map_memory(

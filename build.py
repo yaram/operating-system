@@ -57,6 +57,7 @@ def build_objects(objects, target, name, *extra_arguments):
             '-march=x86-64',
             '-std=gnu++11' if is_cpp else '-std=gnu11',
             '-ffreestanding',
+            '-Wall',
             *extra_arguments,
             '-c',
             '-o', os.path.join(object_directory, name, object_name),
@@ -297,6 +298,7 @@ do_linking(
 
 init_objects = [
     (os.path.join(source_directory, 'init', 'main.cpp'), 'main.o'),
+    (os.path.join(source_directory, 'init', 'virtio.cpp'), 'virtio.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
 ]
 

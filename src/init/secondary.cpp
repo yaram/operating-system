@@ -5,7 +5,6 @@
 #include "printf.h"
 #include "syscall.h"
 #include "HandmadeMath.h"
-#include "virtio.h"
 #include "bucket_array.h"
 
 extern "C" void *memset(void *destination, int value, size_t count) {
@@ -353,6 +352,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                     window->position.Y += entry->mouse_move.dy;
                 } break;
 
+                case CompositorEventType::FocusGained: {
+
+                } break;
+
                 case CompositorEventType::FocusLost: {
                     window->moving_up = false;
                     window->moving_down = false;
@@ -394,9 +397,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             const size_t triangle_count = 1;
             hmm_vec3 triangles[triangle_count][3] {
                 {
-                    { 20.0f + HMM_CosF(time * HMM_PI32 * 2) * 10, 20.0f + HMM_SinF(time * HMM_PI32 * 2) * 10, 0.0f },
-                    { 30.0f, 100.0f, 0.0f },
-                    { 200.0f, 50.0f, 0.0f }
+                    HMM_Vec3(20.0f + HMM_CosF(time * HMM_PI32 * 2) * 10, 20.0f + HMM_SinF(time * HMM_PI32 * 2) * 10, 0.0f),
+                    HMM_Vec3(30.0f, 100.0f, 0.0f),
+                    HMM_Vec3(200.0f, 50.0f, 0.0f)
                 }
             };
 

@@ -1303,9 +1303,6 @@ bool map_pages_from_user(
     size_t current_user_pd_index;
     PageTableEntry *user_page_table = nullptr;
 
-    size_t bitmap_index = 0;
-    size_t bitmap_sub_bit_index = 0;
-
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
         auto kernel_page_index = *kernel_logical_pages_start + relative_page_index;
         auto kernel_pd_index = kernel_page_index / page_table_length;
