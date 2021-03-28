@@ -580,9 +580,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                         mouse_x >= window->x && mouse_y >= window->y &&
                                         mouse_x < window->x + window->width && mouse_y < window->y + window->height
                                     ) {
-                                        if(highest_intersecting_window != nullptr) {
-                                            printf("%zu, %zu\n", window->z_index, highest_intersecting_window->z_index);
-                                        }
                                         if(highest_intersecting_window == nullptr || window->z_index > highest_intersecting_window->z_index) {
                                             highest_intersecting_window = window;
                                         }
