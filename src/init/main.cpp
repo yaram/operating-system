@@ -473,6 +473,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         intptr_t width;
         intptr_t height;
 
+        size_t z_index;
+
         volatile uint32_t *framebuffers;
         volatile bool *swap_indicator;
     };
@@ -558,6 +560,60 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                     switch(event->type) {
                         case 1: { // EV_KEY
+                            if(
+                                (bool)event->value &&
+                                ( // Mouse button ranges
+                                    (event->code >= 0x110 && event->code <= 0x117) ||
+                                    (event->code >= 0x140 && event->code <= 0x14F)
+                                )
+                            ) {
+                                auto any_windows = false;
+                                size_t highest_window_z_index;
+                                Window *highest_intersecting_window = nullptr;
+                                for(auto window : windows) {
+                                    if(!any_windows || window->z_index > highest_window_z_index) {
+                                        highest_window_z_index = window->z_index;
+                                        any_windows = true;
+                                    }
+
+                                    if(
+                                        mouse_x >= window->x && mouse_y >= window->y &&
+                                        mouse_x < window->x + window->width && mouse_y < window->y + window->height
+                                    ) {
+                                        if(highest_intersecting_window != nullptr) {
+                                            printf("%zu, %zu\n", window->z_index, highest_intersecting_window->z_index);
+                                        }
+                                        if(highest_intersecting_window == nullptr || window->z_index > highest_intersecting_window->z_index) {
+                                            highest_intersecting_window = window;
+                                        }
+                                    }
+                                }
+
+                                if(!any_windows || highest_intersecting_window != focused_window) {
+                                    if(focused_window != nullptr) {
+                                        if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
+                                            auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+
+                                            entry->window_id = focused_window->id;
+
+                                            entry->type = CompositorEventType::FocusLost;
+
+                                            secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                        }
+                                    }
+
+                                    focused_window = highest_intersecting_window;
+                                }
+
+                                if(
+                                    any_windows &&
+                                    highest_intersecting_window != nullptr &&
+                                    highest_intersecting_window->z_index != highest_window_z_index
+                                ) {
+                                    highest_intersecting_window->z_index = highest_window_z_index + 1;
+                                }
+                            }
+
                             if(focused_window != nullptr) {
                                 auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
 
@@ -566,22 +622,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                 if((bool)event->value) {
                                     entry->type = CompositorEventType::KeyDown;
                                     entry->key_down.scancode = event->code;
-
-                                    if(event->code == 1) { // KEY_ESC
-                                        if(focused_window != nullptr) {
-                                            if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
-                                                auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
-
-                                                entry->window_id = focused_window->id;
-
-                                                entry->type = CompositorEventType::FocusLost;
-
-                                                secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
-                                            }
-                                        }
-
-                                        focused_window = nullptr;
-                                    }
                                 } else {
                                     entry->type = CompositorEventType::KeyUp;
                                     entry->key_down.scancode = event->code;
@@ -677,6 +717,15 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         break;
                     }
 
+                    auto any_windows = false;
+                    size_t highest_window_z_index;
+                    for(auto window : windows) {
+                        if(!any_windows || window->z_index > highest_window_z_index) {
+                            highest_window_z_index = window->z_index;
+                            any_windows = true;
+                        }
+                    }
+
                     window->owner_process_id = secondary_process_id;
 
                     window->id = next_window_id;
@@ -686,6 +735,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                     window->y = command->y;
                     window->width = command->width;
                     window->height = command->height;
+
+                    if(any_windows) {
+                        window->z_index = highest_window_z_index + 1;
+                    }
 
                     window->framebuffers = (volatile uint32_t*)framebuffers_address;
                     window->swap_indicator = (volatile bool*)swap_indicator_address;
@@ -747,35 +800,51 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
         memset((void*)display_framebuffer_address, 0, display_framebuffer_size);
 
-        for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
-            auto window = *window_iterator;
+        if(!(bool)syscall(SyscallType::DoesProcessExist, secondary_process_id, 0)) {
+            for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
+                auto window = *window_iterator;
 
-            if(!(bool)syscall(SyscallType::DoesProcessExist, window->owner_process_id, 0)) {
-                remove_item_from_bucket_array(window_iterator);
+                if(window->owner_process_id == secondary_process_id) {
+                    remove_item_from_bucket_array(window_iterator);
+                }
+            }
+        }
 
-                continue;
+        auto next_min_z_index = 0;
+        while(true) {
+            Window *next_window = nullptr;
+            for(auto window : windows) {
+                if(window->z_index >= next_min_z_index && (next_window == nullptr || window->z_index < next_window->z_index)) {
+                    next_window = window;
+                }
             }
 
-            auto framebuffer_size = window->width * window->height * sizeof(uint32_t);
+            if(next_window == nullptr) {
+                break;
+            }
 
-            auto window_top = window->y;
-            auto window_bottom = window->y + window->height;
+            next_min_z_index = next_window->z_index + 1;
 
-            auto window_left = window->x;
-            auto window_right = window->x + window->width;
+            auto framebuffer_size = next_window->width * next_window->height * sizeof(uint32_t);
 
-            auto visible_top = (size_t)max(window_top, 0);
-            auto visible_bottom = (size_t)min(window_bottom, (intptr_t)display_height);
+            auto next_window_top = next_window->y;
+            auto next_window_bottom = next_window->y + next_window->height;
 
-            auto visible_left = (size_t)max(window_left, 0);
-            auto visible_right = (size_t)min(window_right, (intptr_t)display_width);
+            auto next_window_left = next_window->x;
+            auto next_window_right = next_window->x + next_window->width;
+
+            auto visible_top = (size_t)max(next_window_top, 0);
+            auto visible_bottom = (size_t)min(next_window_bottom, (intptr_t)display_height);
+
+            auto visible_left = (size_t)max(next_window_left, 0);
+            auto visible_right = (size_t)min(next_window_right, (intptr_t)display_width);
 
             auto visible_height = visible_bottom - visible_top;
             auto visible_width = visible_right - visible_left;
 
-            auto visible_top_relative = visible_top - window_top;
+            auto visible_top_relative = visible_top - next_window_top;
 
-            auto visible_left_relative = visible_left - window_left;
+            auto visible_left_relative = visible_left - next_window_left;
 
             if(visible_width == 0) { // Window is not on the screen (offscreen on the x axis)
                 continue;
@@ -783,11 +852,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
             for(size_t y = 0; y < visible_height; y += 1) {
                 // Aquire the current swapbuffer again for this line to prevent flickering (double buffering)
-                auto current_framebuffer_address = (size_t)window->framebuffers + (size_t)*window->swap_indicator * framebuffer_size;
+                auto current_framebuffer_address = (size_t)next_window->framebuffers + (size_t)*next_window->swap_indicator * framebuffer_size;
 
                 memcpy(
                     (void*)(display_framebuffer_address + ((visible_top + y) * display_width + visible_left) * 4),
-                    (void*)(current_framebuffer_address + ((visible_top_relative + y) * window->width + visible_left_relative) * 4),
+                    (void*)(current_framebuffer_address + ((visible_top_relative + y) * next_window->width + visible_left_relative) * 4),
                     visible_width * 4
                 );
             }

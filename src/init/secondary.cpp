@@ -167,6 +167,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         hmm_vec2 position;
 
         hmm_vec3 color;
+        float background_shade;
 
         size_t framebuffers_address;
         bool *swap_indicator;
@@ -278,8 +279,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
         auto shade = i / (float)(window_count - 1);
 
+        auto background_shade = HMM_Lerp(.3f, shade, .7f);
+
         window->id = compositor_mailbox->create_window.id;
         window->color = HMM_Vec3(1, shade, shade);
+        window->background_shade = background_shade;
         window->framebuffers_address = framebuffers_address;
         window->swap_indicator = swap_indicator;
     }
@@ -409,7 +413,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 triangles[i][2].XY += window->position;
             }
 
-            memset(framebuffer, 0x80, framebuffer_size);
+            auto background_shade = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->background_shade, 0), 1));
+
+            memset(framebuffer, background_shade, framebuffer_size);
 
             auto red = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->color.R, 0), 1));
             auto green = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->color.G, 0), 1));
