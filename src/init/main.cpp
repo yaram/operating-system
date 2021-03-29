@@ -462,8 +462,19 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         exit();
     }
 
+    struct ClientProcess {
+        size_t process_id;
+
+        volatile CompositorMailbox* mailbox;
+        volatile CompositorRing* ring;
+    };
+
+    using ClientProcesses = BucketArray<ClientProcess, 4>;
+
+    ClientProcesses client_processes {};
+
     struct Window {
-        size_t owner_process_id;
+        ClientProcess *client_process;
 
         size_t id;
 
@@ -485,34 +496,23 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
     size_t next_window_id = 0;
 
-    auto secondary_process_mailbox_address = syscall(SyscallType::CreateSharedMemory, sizeof(CompositorMailbox), 0);
-    if(secondary_process_mailbox_address == 0) {
-        printf("Error: Unable to allocate shared memory for compositor mailbox\n");
+    auto connection_mailbox_address = syscall(SyscallType::CreateSharedMemory, sizeof(CompositorConnectionMailbox), 0);
+    if(connection_mailbox_address == 0) {
+        printf("Error: Unable to allocate shared memory for compositor connection mailbox\n");
 
         exit();
     }
 
-    auto secondary_process_mailbox = (volatile CompositorMailbox*)secondary_process_mailbox_address;
-
-    auto secondary_process_ring_address = syscall(SyscallType::CreateSharedMemory, sizeof(CompositorRing), 0);
-    if(secondary_process_ring_address == 0) {
-        printf("Error: Unable to allocate shared memory for compositor ring\n");
-
-        exit();
-    }
-
-    auto secondary_process_ring = (volatile CompositorRing*)secondary_process_ring_address;
+    auto connection_mailbox = (volatile CompositorConnectionMailbox*)connection_mailbox_address;
 
     SecondaryProcessParameters secondary_process_parameters {
         process_id,
-        secondary_process_mailbox_address,
-        secondary_process_ring_address
+        connection_mailbox_address
     };
 
     auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
 
-    size_t secondary_process_id;
-    {
+    for(size_t i = 0; i < 2; i += 1) {
         CreateProcessParameters parameters {
             &secondary_executable,
             secondary_executable_size,
@@ -520,7 +520,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             sizeof(SecondaryProcessParameters)
         };
 
-        switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0, &secondary_process_id)) {
+        switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0)) {
             case CreateProcessResult::Success: break;
 
             case CreateProcessResult::OutOfMemory: {
@@ -554,6 +554,214 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     auto previous_cursor_y = cursor_y;
 
     while(true) {
+        if(connection_mailbox->locked && connection_mailbox->connection_requested) {
+            do { // Purely so break can be used for early-out
+                if(!(bool)syscall(SyscallType::DoesProcessExist, connection_mailbox->process_id, 0)) {
+                    connection_mailbox->result = CompositorConnectionResult::InvalidProcessID;
+
+                    break;
+                }
+
+                auto mailbox_address = syscall(SyscallType::CreateSharedMemory, sizeof(CompositorMailbox), 0);
+                if(mailbox_address == 0) {
+                    connection_mailbox->result = CompositorConnectionResult::OutOfMemory;
+
+                    break;
+                }
+
+                auto mailbox = (volatile CompositorMailbox*)mailbox_address;
+
+                auto ring_address = syscall(SyscallType::CreateSharedMemory, sizeof(CompositorRing), 0);
+                if(ring_address == 0) {
+                    syscall(SyscallType::UnmapMemory, mailbox_address, 0);
+
+                    connection_mailbox->result = CompositorConnectionResult::OutOfMemory;
+
+                    break;
+                }
+
+                auto ring = (volatile CompositorRing*)ring_address;
+
+                auto client_process = allocate_from_bucket_array(&client_processes);
+                if(client_process == nullptr) {
+                    syscall(SyscallType::UnmapMemory, mailbox_address, 0);
+                    syscall(SyscallType::UnmapMemory, ring_address, 0);
+
+                    connection_mailbox->result = CompositorConnectionResult::OutOfMemory;
+
+                    break;
+                }
+
+                client_process->process_id = connection_mailbox->process_id;
+                client_process->mailbox = mailbox;
+                client_process->ring = ring;
+
+                connection_mailbox->mailbox_shared_memory = mailbox_address;
+                connection_mailbox->ring_shared_memory = ring_address;
+
+                connection_mailbox->result = CompositorConnectionResult::Success;
+            } while(false);
+
+            connection_mailbox->connection_requested = false;
+        }
+
+        for(auto client_process_iterator = begin(client_processes); client_process_iterator != end(client_processes); ++client_process_iterator) {
+            auto client_process = *client_process_iterator;
+
+            if(!(bool)syscall(SyscallType::DoesProcessExist, client_process->process_id, 0)) {
+                for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
+                    auto window = *window_iterator;
+
+                    if(window->client_process == client_process) {
+                        if(window == focused_window) {
+                            focused_window = nullptr;
+                        }
+
+                        remove_item_from_bucket_array(window_iterator);
+                    }
+                }
+
+                syscall(SyscallType::UnmapMemory, (size_t)client_process->mailbox, 0);
+                syscall(SyscallType::UnmapMemory, (size_t)client_process->ring, 0);
+
+                remove_item_from_bucket_array(client_process_iterator);
+
+                continue;
+            }
+
+            auto mailbox = client_process->mailbox;
+            auto ring = client_process->ring;
+
+            if(mailbox->command_present){
+                switch(mailbox->command_type) {
+                    case CompositorCommandType::CreateWindow: {
+                        auto command = &mailbox->create_window;
+
+                        if(command->width <= 0 || command->height <= 0) {
+                            command->result = CreateWindowResult::InvalidSize;
+
+                            mailbox->command_present = false;
+
+                            break;
+                        }
+
+                        auto swap_indicator_address = syscall(SyscallType::CreateSharedMemory, sizeof(bool), 0);
+                        if(swap_indicator_address == 0) {
+                            command->result = CreateWindowResult::OutOfMemory;
+
+                            mailbox->command_present = false;
+
+                            break;
+                        }
+
+                        auto framebuffers_address = syscall(SyscallType::CreateSharedMemory, command->width * command->height * 4 * 2, 0);
+                        if(framebuffers_address == 0) {
+                            syscall(SyscallType::UnmapMemory, swap_indicator_address, 0);
+
+                            command->result = CreateWindowResult::OutOfMemory;
+
+                            mailbox->command_present = false;
+
+                            break;
+                        }
+
+                        auto window = allocate_from_bucket_array(&windows);
+                        if(window == nullptr) {
+                            syscall(SyscallType::UnmapMemory, swap_indicator_address, 0);
+                            syscall(SyscallType::UnmapMemory, framebuffers_address, 0);
+
+                            command->result = CreateWindowResult::OutOfMemory;
+
+                            mailbox->command_present = false;
+
+                            break;
+                        }
+
+                        auto any_windows = false;
+                        size_t highest_window_z_index;
+                        for(auto window : windows) {
+                            if(!any_windows || window->z_index > highest_window_z_index) {
+                                highest_window_z_index = window->z_index;
+                                any_windows = true;
+                            }
+                        }
+
+                        window->client_process = client_process;
+
+                        window->id = next_window_id;
+                        next_window_id += 1;
+
+                        window->x = command->x;
+                        window->y = command->y;
+                        window->width = command->width;
+                        window->height = command->height;
+
+                        if(any_windows) {
+                            window->z_index = highest_window_z_index + 1;
+                        }
+
+                        window->framebuffers = (volatile uint32_t*)framebuffers_address;
+                        window->swap_indicator = (volatile bool*)swap_indicator_address;
+
+                        command->result = CreateWindowResult::Success;
+
+                        command->id = window->id;
+                        command->framebuffers_shared_memory = framebuffers_address;
+                        command->swap_indicator_shared_memory = swap_indicator_address;
+
+                        mailbox->command_present = false;
+
+                        if(focused_window != nullptr) {
+                            if(ring->read_head != ring->write_head) {
+                                auto entry = &ring->entries[ring->write_head];
+
+                                entry->window_id = focused_window->id;
+
+                                entry->type = CompositorEventType::FocusLost;
+
+                                ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                            }
+                        }
+
+                        focused_window = window;
+                        dragging_focused_window = false;
+
+                        if(ring->read_head != ring->write_head) {
+                            auto entry = &ring->entries[ring->write_head];
+
+                            entry->window_id = focused_window->id;
+
+                            entry->type = CompositorEventType::FocusGained;
+
+                            entry->focus_gained.mouse_x = cursor_x - focused_window->x;
+                            entry->focus_gained.mouse_y = cursor_y - focused_window->y - window_title_height;
+
+                            ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                        }
+                    } break;
+
+                    case CompositorCommandType::DestroyWindow: {
+                        auto command = &mailbox->destroy_window;
+
+                        for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
+                            auto window = *window_iterator;
+
+                            if(window->id == command->id) {
+                                remove_item_from_bucket_array(window_iterator);
+                                break;
+                            }
+                        }
+
+                        mailbox->command_present = false;
+                    } break;
+
+                    default: {
+                        printf("Error: Unknown compositor command type %u\n", mailbox->command_type);
+                    } break;
+                }
+            }
+        }
+
         for(auto device : virtio_input_devices) {
             auto used_index = device->used_ring->idx;
 
@@ -590,14 +798,16 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                 if(!any_windows || highest_intersecting_window != focused_window) {
                                     if(focused_window != nullptr) {
-                                        if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
-                                            auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+                                        auto ring = focused_window->client_process->ring;
+
+                                        if(ring->read_head != ring->write_head) {
+                                            auto entry = &ring->entries[ring->write_head];
 
                                             entry->window_id = focused_window->id;
 
                                             entry->type = CompositorEventType::FocusLost;
 
-                                            secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                            ring->write_head = (ring->write_head + 1) % compositor_ring_length;
                                         }
                                     }
 
@@ -615,24 +825,26 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                             }
 
                             if(focused_window != nullptr) {
+                                auto ring = focused_window->client_process->ring;
+
                                 if(is_mouse_button && cursor_y < focused_window->y + window_title_height) {
                                     if(event->code == 0x110) {
                                         if(cursor_x > focused_window->x + focused_window->width - window_title_height) {
-                                            if(key_state && secondary_process_ring->read_head != secondary_process_ring->write_head) {
-                                                auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+                                            if(key_state && ring->read_head != ring->write_head) {
+                                                auto entry = &ring->entries[ring->write_head];
 
                                                 entry->window_id = focused_window->id;
 
                                                 entry->type = CompositorEventType::CloseRequested;
 
-                                                secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                                ring->write_head = (ring->write_head + 1) % compositor_ring_length;
                                             }
                                         } else {           
                                             dragging_focused_window = key_state;
                                         }
                                     }
                                 } else {
-                                    auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+                                    auto entry = &ring->entries[ring->write_head];
 
                                     entry->window_id = focused_window->id;
 
@@ -644,7 +856,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                         entry->key_down.scancode = event->code;
                                     }
 
-                                    secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
                                 }
                             }
                         } break;
@@ -676,11 +888,13 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                             previous_cursor_y = cursor_y;
 
                             if(focused_window != nullptr) {
+                                auto ring = focused_window->client_process->ring;
+
                                 if(dragging_focused_window) {
                                     focused_window->x += cursor_x_difference;
                                     focused_window->y += cursor_y_difference;
-                                } else if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
-                                    auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+                                } else if(ring->read_head != ring->write_head) {
+                                    auto entry = &ring->entries[ring->write_head];
 
                                     entry->window_id = focused_window->id;
 
@@ -691,7 +905,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                     entry->mouse_move.y = cursor_y - focused_window->y - window_title_height;
                                     entry->mouse_move.dy = dy;
 
-                                    secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
                                 }
                             }
                         } break;
@@ -706,145 +920,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             }
         }
 
-        if(secondary_process_mailbox->command_present){
-            switch(secondary_process_mailbox->command_type) {
-                case CompositorCommandType::CreateWindow: {
-                    auto command = &secondary_process_mailbox->create_window;
-
-                    if(command->width <= 0 || command->height <= 0) {
-                        command->result = CreateWindowResult::InvalidSize;
-
-                        secondary_process_mailbox->command_present = false;
-
-                        break;
-                    }
-
-                    auto swap_indicator_address = syscall(SyscallType::CreateSharedMemory, sizeof(bool), 0);
-                    if(swap_indicator_address == 0) {
-                        command->result = CreateWindowResult::OutOfMemory;
-
-                        secondary_process_mailbox->command_present = false;
-
-                        break;
-                    }
-
-                    auto framebuffers_address = syscall(SyscallType::CreateSharedMemory, command->width * command->height * 4 * 2, 0);
-                    if(framebuffers_address == 0) {
-                        command->result = CreateWindowResult::OutOfMemory;
-
-                        secondary_process_mailbox->command_present = false;
-
-                        break;
-                    }
-
-                    auto window = allocate_from_bucket_array(&windows);
-                    if(window == nullptr) {
-                        command->result = CreateWindowResult::OutOfMemory;
-
-                        secondary_process_mailbox->command_present = false;
-
-                        break;
-                    }
-
-                    auto any_windows = false;
-                    size_t highest_window_z_index;
-                    for(auto window : windows) {
-                        if(!any_windows || window->z_index > highest_window_z_index) {
-                            highest_window_z_index = window->z_index;
-                            any_windows = true;
-                        }
-                    }
-
-                    window->owner_process_id = secondary_process_id;
-
-                    window->id = next_window_id;
-                    next_window_id += 1;
-
-                    window->x = command->x;
-                    window->y = command->y;
-                    window->width = command->width;
-                    window->height = command->height;
-
-                    if(any_windows) {
-                        window->z_index = highest_window_z_index + 1;
-                    }
-
-                    window->framebuffers = (volatile uint32_t*)framebuffers_address;
-                    window->swap_indicator = (volatile bool*)swap_indicator_address;
-
-                    command->result = CreateWindowResult::Success;
-
-                    command->id = window->id;
-                    command->framebuffers_shared_memory = framebuffers_address;
-                    command->swap_indicator_shared_memory = swap_indicator_address;
-
-                    secondary_process_mailbox->command_present = false;
-
-                    if(focused_window != nullptr) {
-                        if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
-                            auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
-
-                            entry->window_id = focused_window->id;
-
-                            entry->type = CompositorEventType::FocusLost;
-
-                            secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
-                        }
-                    }
-
-                    focused_window = window;
-                    dragging_focused_window = false;
-
-                    if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
-                        auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
-
-                        entry->window_id = focused_window->id;
-
-                        entry->type = CompositorEventType::FocusGained;
-
-                        entry->focus_gained.mouse_x = cursor_x - focused_window->x;
-                        entry->focus_gained.mouse_y = cursor_y - focused_window->y - window_title_height;
-
-                        secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
-                    }
-                } break;
-
-                case CompositorCommandType::DestroyWindow: {
-                    auto command = &secondary_process_mailbox->destroy_window;
-
-                    for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
-                        auto window = *window_iterator;
-
-                        if(window->id == command->id) {
-                            remove_item_from_bucket_array(window_iterator);
-                            break;
-                        }
-                    }
-
-                    secondary_process_mailbox->command_present = false;
-                } break;
-
-                default: {
-                    printf("Error: Unknown compositor command type %u\n", secondary_process_mailbox->command_type);
-                } break;
-            }
-        }
-
         memset((void*)display_framebuffer_address, 0, display_framebuffer_size);
-
-        if(!(bool)syscall(SyscallType::DoesProcessExist, secondary_process_id, 0)) {
-            for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
-                auto window = *window_iterator;
-
-                if(window->owner_process_id == secondary_process_id) {
-                    if(window == focused_window) {
-                        focused_window = nullptr;
-                    }
-
-                    remove_item_from_bucket_array(window_iterator);
-                }
-            }
-        }
 
         auto next_min_z_index = 0;
         while(true) {

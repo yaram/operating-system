@@ -91,11 +91,80 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
     auto parameters = (SecondaryProcessParameters*)data;
 
+    volatile CompositorConnectionMailbox *compositor_connection_mailbox;
+    {
+        MapSharedMemoryParameters syscall_parameters {
+            parameters->compositor_process_id,
+            parameters->compositor_connection_mailbox_shared_memory,
+            sizeof(CompositorConnectionMailbox)
+        };
+        switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, (size_t*)&compositor_connection_mailbox)) {
+            case MapSharedMemoryResult::Success: break;
+
+            case MapSharedMemoryResult::OutOfMemory: {
+                printf("Error: Unable to map compositor connection mailbox shared memory: Out of memory\n");
+
+                exit();
+            } break;
+
+            case MapSharedMemoryResult::InvalidProcessID: {
+                printf("Error: Unable to map compositor connection mailbox shared memory: Compositor process does not exist\n");
+
+                exit();
+            } break;
+
+            case MapSharedMemoryResult::InvalidMemoryRange: {
+                printf("Error: Unable to map compositor connection mailbox shared memory: Invalid memory range\n");
+
+                exit();
+            } break;
+        }
+    }
+
+    // Lock compositor connection mailbox using single-instruction compare-and-exchange, other wise
+    while(true) {
+        auto false_value = false; // Must be re-set every loop, __atomic_compare_exchange_n overwrites it!
+        if(__atomic_compare_exchange_n(&compositor_connection_mailbox->locked, &false_value, true, true, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+            break;
+        }
+
+        syscall(SyscallType::RelinquishTime, 0, 0);
+    }
+
+    compositor_connection_mailbox->process_id = process_id;
+
+    compositor_connection_mailbox->connection_requested = true;
+
+    while(compositor_connection_mailbox->connection_requested) {
+        syscall(SyscallType::RelinquishTime, 0, 0);
+    }
+
+    switch(compositor_connection_mailbox->result) {
+        case CompositorConnectionResult::Success: break;
+
+        case CompositorConnectionResult::InvalidProcessID: {
+            printf("Error: Unable to create compositor connection: Compositor does not exist\n");
+
+            exit();
+        } break;
+
+        case CompositorConnectionResult::OutOfMemory: {
+            printf("Error: Unable to create compositor connection: Out of memory\n");
+
+            exit();
+        } break;
+    }
+
+    auto compositor_mailbox_shared_memory = compositor_connection_mailbox->mailbox_shared_memory;
+    auto compositor_ring_shared_memory = compositor_connection_mailbox->ring_shared_memory;
+
+    compositor_connection_mailbox->locked = false;
+
     volatile CompositorMailbox *compositor_mailbox;
     {
         MapSharedMemoryParameters syscall_parameters {
             parameters->compositor_process_id,
-            parameters->compositor_mailbox_shared_memory,
+            compositor_mailbox_shared_memory,
             sizeof(CompositorMailbox)
         };
         switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, (size_t*)&compositor_mailbox)) {
@@ -125,7 +194,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     {
         MapSharedMemoryParameters syscall_parameters {
             parameters->compositor_process_id,
-            parameters->compositor_ring_shared_memory,
+            compositor_ring_shared_memory,
             sizeof(CompositorRing)
         };
         switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, (size_t*)&compositor_ring)) {
@@ -177,7 +246,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
     Windows windows {};
 
-    auto window_count = 5;
+    auto window_count = 3;
     for(auto i = 0; i < window_count; i += 1) {
         compositor_mailbox->command_type = CompositorCommandType::CreateWindow;
 
@@ -323,6 +392,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             switch(entry->type) {
                 case CompositorEventType::KeyDown: {
                     switch(entry->key_down.scancode) {
+                        case 1: { // KEY_ESC
+                            exit();
+                        } break;
+
                         case 17: { // KEY_W
                             window->moving_up = true;
                         } break;

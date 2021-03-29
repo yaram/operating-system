@@ -1,5 +1,25 @@
 #pragma once
 
+enum struct CompositorConnectionResult {
+    Success,
+    InvalidProcessID,
+    OutOfMemory
+};
+
+struct CompositorConnectionMailbox {
+    bool locked;
+
+    bool connection_requested;
+
+    // Parameters
+    size_t process_id;
+
+    // Returns
+    CompositorConnectionResult result;
+    size_t mailbox_shared_memory;
+    size_t ring_shared_memory;
+};
+
 enum struct CompositorCommandType {
     CreateWindow,
     DestroyWindow
