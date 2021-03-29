@@ -546,9 +546,12 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     const intptr_t window_title_height = 32;
 
     Window *focused_window = nullptr;
+    bool dragging_focused_window;
 
-    intptr_t mouse_x = 0;
-    intptr_t mouse_y = 0;
+    intptr_t previous_cursor_x = 0;
+    intptr_t previous_cursor_y = 0;
+    intptr_t cursor_x = 0;
+    intptr_t cursor_y = 0;
 
     while(true) {
         for(auto device : virtio_input_devices) {
@@ -576,8 +579,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                     }
 
                                     if(
-                                        mouse_x >= window->x && mouse_y >= window->y &&
-                                        mouse_x < window->x + window->width && mouse_y < window->y + window->height + window_title_height
+                                        cursor_x >= window->x && cursor_y >= window->y &&
+                                        cursor_x < window->x + window->width && cursor_y < window->y + window->height + window_title_height
                                     ) {
                                         if(highest_intersecting_window == nullptr || window->z_index > highest_intersecting_window->z_index) {
                                             highest_intersecting_window = window;
@@ -599,6 +602,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                     }
 
                                     focused_window = highest_intersecting_window;
+                                    dragging_focused_window = false;
                                 }
 
                                 if(
@@ -610,20 +614,26 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                 }
                             }
 
-                            if(focused_window != nullptr && (!is_mouse_button || mouse_y >= focused_window->y + window_title_height)) {
-                                auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
-
-                                entry->window_id = focused_window->id;
-
-                                if(key_state) {
-                                    entry->type = CompositorEventType::KeyDown;
-                                    entry->key_down.scancode = event->code;
+                            if(focused_window != nullptr) {
+                                if(is_mouse_button && cursor_y < focused_window->y + window_title_height) {
+                                    if(event->code == 0x110) {
+                                        dragging_focused_window = key_state;
+                                    }
                                 } else {
-                                    entry->type = CompositorEventType::KeyUp;
-                                    entry->key_down.scancode = event->code;
-                                }
+                                    auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
 
-                                secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                    entry->window_id = focused_window->id;
+
+                                    if(key_state) {
+                                        entry->type = CompositorEventType::KeyDown;
+                                        entry->key_down.scancode = event->code;
+                                    } else {
+                                        entry->type = CompositorEventType::KeyUp;
+                                        entry->key_down.scancode = event->code;
+                                    }
+
+                                    secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                }
                             }
                         } break;
 
@@ -641,25 +651,36 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                 } break;
                             }
 
-                            mouse_x += dx;
-                            mouse_y += dy;
+                            cursor_x += dx;
+                            cursor_y += dy;
 
-                            mouse_x = min(max(mouse_x, 0), (intptr_t)display_width);
-                            mouse_y = min(max(mouse_y, 0), (intptr_t)display_height);
+                            cursor_x = min(max(cursor_x, 0), (intptr_t)display_width);
+                            cursor_y = min(max(cursor_y, 0), (intptr_t)display_height);
 
-                            if(focused_window != nullptr && secondary_process_ring->read_head != secondary_process_ring->write_head) {
-                                auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+                            auto cursor_x_difference = cursor_x - previous_cursor_x;
+                            auto cursor_y_difference = cursor_y - previous_cursor_y;
 
-                                entry->window_id = focused_window->id;
+                            previous_cursor_x = cursor_x;
+                            previous_cursor_y = cursor_y;
 
-                                entry->type = CompositorEventType::MouseMove;
+                            if(focused_window != nullptr) {
+                                if(dragging_focused_window) {
+                                    focused_window->x += cursor_x_difference;
+                                    focused_window->y += cursor_y_difference;
+                                } else if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
+                                    auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
 
-                                entry->mouse_move.x = mouse_x - focused_window->x;
-                                entry->mouse_move.dx = dx;
-                                entry->mouse_move.y = mouse_y - focused_window->y - window_title_height;
-                                entry->mouse_move.dy = dy;
+                                    entry->window_id = focused_window->id;
 
-                                secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                    entry->type = CompositorEventType::MouseMove;
+
+                                    entry->mouse_move.x = cursor_x - focused_window->x;
+                                    entry->mouse_move.dx = dx;
+                                    entry->mouse_move.y = cursor_y - focused_window->y - window_title_height;
+                                    entry->mouse_move.dy = dy;
+
+                                    secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                }
                             }
                         } break;
                     }
@@ -760,6 +781,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                     }
 
                     focused_window = window;
+                    dragging_focused_window = false;
 
                     if(secondary_process_ring->read_head != secondary_process_ring->write_head) {
                         auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
@@ -768,8 +790,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                         entry->type = CompositorEventType::FocusGained;
 
-                        entry->focus_gained.mouse_x = mouse_x - focused_window->x;
-                        entry->focus_gained.mouse_y = mouse_y - focused_window->y - window_title_height;
+                        entry->focus_gained.mouse_x = cursor_x - focused_window->x;
+                        entry->focus_gained.mouse_y = cursor_y - focused_window->y - window_title_height;
 
                         secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
                     }
@@ -801,6 +823,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 auto window = *window_iterator;
 
                 if(window->owner_process_id == secondary_process_id) {
+                    if(window == focused_window) {
+                        focused_window = nullptr;
+                    }
+
                     remove_item_from_bucket_array(window_iterator);
                 }
             }
@@ -828,11 +854,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 auto left = next_window->x;
                 auto right = left + next_window->width;
 
-                auto visible_top = (size_t)max(top, 0);
-                auto visible_bottom = (size_t)min(bottom, (intptr_t)display_height);
+                auto visible_top = (size_t)min(max(top, 0), (intptr_t)display_height);
+                auto visible_bottom = (size_t)max(min(bottom, (intptr_t)display_height), 0);
 
-                auto visible_left = (size_t)max(left, 0);
-                auto visible_right = (size_t)min(right, (intptr_t)display_width);
+                auto visible_left = (size_t)min(max(left, 0), (intptr_t)display_width);
+                auto visible_right = (size_t)max(min(right, (intptr_t)display_width), 0);
 
                 auto visible_width = visible_right - visible_left;
 
@@ -856,11 +882,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 auto left = next_window->x;
                 auto right = left + next_window->width;
 
-                auto visible_top = (size_t)max(top, 0);
-                auto visible_bottom = (size_t)min(bottom, (intptr_t)display_height);
+                auto visible_top = (size_t)min(max(top, 0), (intptr_t)display_height);
+                auto visible_bottom = (size_t)max(min(bottom, (intptr_t)display_height), 0);
 
-                auto visible_left = (size_t)max(left, 0);
-                auto visible_right = (size_t)min(right, (intptr_t)display_width);
+                auto visible_left = (size_t)min(max(left, 0), (intptr_t)display_width);
+                auto visible_right = (size_t)max(min(right, (intptr_t)display_width), 0);
 
                 auto visible_height = visible_bottom - visible_top;
                 auto visible_width = visible_right - visible_left;
@@ -887,8 +913,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         intptr_t cursor_size = 16;
         for(auto y = 0; y < cursor_size; y += 1) {
             for(auto x = 0; x < cursor_size; x += 1) {
-                auto absolute_x = x + mouse_x;
-                auto absolute_y = y + mouse_y;
+                auto absolute_x = x + cursor_x;
+                auto absolute_y = y + cursor_y;
 
                 if(absolute_x >= 0 && absolute_y >= 0 && absolute_x < (intptr_t)display_width && absolute_y < (intptr_t)display_height) {
                     uint32_t color;
