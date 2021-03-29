@@ -617,7 +617,19 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                             if(focused_window != nullptr) {
                                 if(is_mouse_button && cursor_y < focused_window->y + window_title_height) {
                                     if(event->code == 0x110) {
-                                        dragging_focused_window = key_state;
+                                        if(cursor_x > focused_window->x + focused_window->width - window_title_height) {
+                                            if(key_state && secondary_process_ring->read_head != secondary_process_ring->write_head) {
+                                                auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
+
+                                                entry->window_id = focused_window->id;
+
+                                                entry->type = CompositorEventType::CloseRequested;
+
+                                                secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
+                                            }
+                                        } else {           
+                                            dragging_focused_window = key_state;
+                                        }
                                     }
                                 } else {
                                     auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
@@ -808,6 +820,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                             break;
                         }
                     }
+
+                    secondary_process_mailbox->command_present = false;
                 } break;
 
                 default: {
@@ -862,13 +876,49 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                 auto visible_width = visible_right - visible_left;
 
+                uint8_t shade;
+                if(next_window == focused_window) {
+                    shade = 0xFF;
+                } else {
+                    shade = 0xCC;
+                }
+
                 if(visible_width != 0) {
                     for(auto y = visible_top; y < visible_bottom; y += 1) {
                         memset(
                             (void*)(display_framebuffer_address + (y * display_width + visible_left) * 4),
-                            0xFF,
+                            shade,
                             visible_width * 4
                         );
+                    }
+                }
+            }
+
+            {
+                auto top = next_window->y;
+                auto bottom = top + window_title_height;
+
+                auto left = next_window->x + next_window->width - window_title_height;
+                auto right = left + window_title_height;
+
+                auto visible_top = (size_t)min(max(top, 0), (intptr_t)display_height);
+                auto visible_bottom = (size_t)max(min(bottom, (intptr_t)display_height), 0);
+
+                auto visible_left = (size_t)min(max(left, 0), (intptr_t)display_width);
+                auto visible_right = (size_t)max(min(right, (intptr_t)display_width), 0);
+
+                uint32_t color;
+                if(next_window == focused_window) {
+                    color = 0xFF;
+                } else {
+                    color = 0xCC;
+                }
+
+                if(visible_right != visible_left) {
+                    for(auto y = visible_top; y < visible_bottom; y += 1) {
+                        for(auto x = visible_left; x < visible_right; x += 1) {
+                            ((uint32_t*)display_framebuffer_address)[y * display_width + x] = color;
+                        }
                     }
                 }
             }

@@ -303,11 +303,21 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
             auto entry = &compositor_ring->entries[next_read_head];
 
-            Window *window;
-            for(auto the_window : windows) {
+            Window *window = nullptr;
+            Windows::Iterator window_iterator;
+            for(auto iterator = begin(windows); iterator != end(windows); ++iterator) {
+                auto the_window = *iterator;
+
                 if(entry->window_id == the_window->id) {
                     window = the_window;
+                    window_iterator = iterator;
                 }
+            }
+
+            if(window == nullptr) {
+                compositor_ring->read_head = next_read_head;
+
+                continue;
             }
 
             switch(entry->type) {
@@ -369,6 +379,22 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                     window->moving_down = false;
                     window->moving_left = false;
                     window->moving_right = false;
+                } break;
+
+                case CompositorEventType::CloseRequested: {
+                    compositor_mailbox->command_type = CompositorCommandType::DestroyWindow;
+
+                    auto command = &compositor_mailbox->destroy_window;
+
+                    command->id = window->id;
+
+                    compositor_mailbox->command_present = true;
+
+                    while(compositor_mailbox->command_present) {
+                        syscall(SyscallType::RelinquishTime, 0, 0);
+                    }
+
+                    remove_item_from_bucket_array(window_iterator);
                 } break;
             }
 

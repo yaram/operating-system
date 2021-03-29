@@ -43,7 +43,8 @@ enum struct CompositorEventType {
     KeyUp,
     MouseMove,
     FocusGained,
-    FocusLost
+    FocusLost,
+    CloseRequested
 };
 
 struct CompositorEvent {
