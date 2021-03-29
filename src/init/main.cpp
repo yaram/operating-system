@@ -108,6 +108,9 @@ static T *allocate_from_bucket_array(
 extern uint8_t secondary_executable[];
 extern uint8_t secondary_executable_end[];
 
+size_t cursor_bitmap_size = 16;
+extern uint32_t cursor_bitmap[];
+
 extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_size) {
     struct VirtIOInputDevice {
         volatile virtq_avail *available_ring;
@@ -1036,21 +1039,17 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             }
         }
 
-        intptr_t cursor_size = 16;
-        for(auto y = 0; y < cursor_size; y += 1) {
-            for(auto x = 0; x < cursor_size; x += 1) {
+        for(size_t y = 0; y < cursor_bitmap_size; y += 1) {
+            for(size_t x = 0; x < cursor_bitmap_size; x += 1) {
                 auto absolute_x = x + cursor_x;
                 auto absolute_y = y + cursor_y;
 
                 if(absolute_x >= 0 && absolute_y >= 0 && absolute_x < (intptr_t)display_width && absolute_y < (intptr_t)display_height) {
-                    uint32_t color;
-                    if(x == 0 || y == 0 || x == cursor_size - 1 || y == cursor_size - 1) {
-                        color = 0;
-                    } else {
-                        color = 0xFFFFFF;
-                    }
+                    auto pixel = cursor_bitmap[y * cursor_bitmap_size + x];
 
-                    ((uint32_t*)display_framebuffer_address)[(size_t)absolute_y * display_width + (size_t)absolute_x] = color;
+                    if(pixel >> 24 != 0) {
+                        ((uint32_t*)display_framebuffer_address)[(size_t)absolute_y * display_width + (size_t)absolute_x] = pixel;
+                    }
                 }
             }
         }
@@ -1113,4 +1112,10 @@ asm(
     "secondary_executable:\n"
     ".incbin \"build/init_secondary.elf\"\n"
     "secondary_executable_end:"
+);
+
+asm(
+    ".section .rodata\n"
+    "cursor_bitmap:\n"
+    ".incbin \"src/init/cursor.raw\"\n"
 );
