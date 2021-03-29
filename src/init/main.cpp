@@ -543,6 +543,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         }
     }
 
+    const intptr_t window_title_height = 32;
+
     Window *focused_window = nullptr;
 
     intptr_t mouse_x = 0;
@@ -560,13 +562,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                     switch(event->type) {
                         case 1: { // EV_KEY
-                            if(
-                                (bool)event->value &&
-                                ( // Mouse button ranges
-                                    (event->code >= 0x110 && event->code <= 0x117) ||
-                                    (event->code >= 0x140 && event->code <= 0x14F)
-                                )
-                            ) {
+                            auto key_state = (bool)event->value;
+                            auto is_mouse_button = (event->code >= 0x110 && event->code <= 0x117) || (event->code >= 0x140 && event->code <= 0x14F);
+
+                            if(key_state && is_mouse_button) {
                                 auto any_windows = false;
                                 size_t highest_window_z_index;
                                 Window *highest_intersecting_window = nullptr;
@@ -578,7 +577,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                     if(
                                         mouse_x >= window->x && mouse_y >= window->y &&
-                                        mouse_x < window->x + window->width && mouse_y < window->y + window->height
+                                        mouse_x < window->x + window->width && mouse_y < window->y + window->height + window_title_height
                                     ) {
                                         if(highest_intersecting_window == nullptr || window->z_index > highest_intersecting_window->z_index) {
                                             highest_intersecting_window = window;
@@ -611,12 +610,12 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                 }
                             }
 
-                            if(focused_window != nullptr) {
+                            if(focused_window != nullptr && (!is_mouse_button || mouse_y >= focused_window->y + window_title_height)) {
                                 auto entry = &secondary_process_ring->entries[secondary_process_ring->write_head];
 
                                 entry->window_id = focused_window->id;
 
-                                if((bool)event->value) {
+                                if(key_state) {
                                     entry->type = CompositorEventType::KeyDown;
                                     entry->key_down.scancode = event->code;
                                 } else {
@@ -657,7 +656,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                 entry->mouse_move.x = mouse_x - focused_window->x;
                                 entry->mouse_move.dx = dx;
-                                entry->mouse_move.y = mouse_y - focused_window->y;
+                                entry->mouse_move.y = mouse_y - focused_window->y - window_title_height;
                                 entry->mouse_move.dy = dy;
 
                                 secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
@@ -770,7 +769,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         entry->type = CompositorEventType::FocusGained;
 
                         entry->focus_gained.mouse_x = mouse_x - focused_window->x;
-                        entry->focus_gained.mouse_y = mouse_y - focused_window->y;
+                        entry->focus_gained.mouse_y = mouse_y - focused_window->y - window_title_height;
 
                         secondary_process_ring->write_head = (secondary_process_ring->write_head + 1) % compositor_ring_length;
                     }
@@ -822,48 +821,84 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
             next_min_z_index = next_window->z_index + 1;
 
-            auto framebuffer_size = next_window->width * next_window->height * sizeof(uint32_t);
+            {
+                auto top = next_window->y;
+                auto bottom = top + window_title_height;
 
-            auto next_window_top = next_window->y;
-            auto next_window_bottom = next_window->y + next_window->height;
+                auto left = next_window->x;
+                auto right = left + next_window->width;
 
-            auto next_window_left = next_window->x;
-            auto next_window_right = next_window->x + next_window->width;
+                auto visible_top = (size_t)max(top, 0);
+                auto visible_bottom = (size_t)min(bottom, (intptr_t)display_height);
 
-            auto visible_top = (size_t)max(next_window_top, 0);
-            auto visible_bottom = (size_t)min(next_window_bottom, (intptr_t)display_height);
+                auto visible_left = (size_t)max(left, 0);
+                auto visible_right = (size_t)min(right, (intptr_t)display_width);
 
-            auto visible_left = (size_t)max(next_window_left, 0);
-            auto visible_right = (size_t)min(next_window_right, (intptr_t)display_width);
+                auto visible_width = visible_right - visible_left;
 
-            auto visible_height = visible_bottom - visible_top;
-            auto visible_width = visible_right - visible_left;
-
-            auto visible_top_relative = visible_top - next_window_top;
-
-            auto visible_left_relative = visible_left - next_window_left;
-
-            if(visible_width == 0) { // Window is not on the screen (offscreen on the x axis)
-                continue;
+                if(visible_width != 0) {
+                    for(auto y = visible_top; y < visible_bottom; y += 1) {
+                        memset(
+                            (void*)(display_framebuffer_address + (y * display_width + visible_left) * 4),
+                            0xFF,
+                            visible_width * 4
+                        );
+                    }
+                }
             }
 
-            for(size_t y = 0; y < visible_height; y += 1) {
-                // Aquire the current swapbuffer again for this line to prevent flickering (double buffering)
-                auto current_framebuffer_address = (size_t)next_window->framebuffers + (size_t)*next_window->swap_indicator * framebuffer_size;
+            auto framebuffer_size = next_window->width * next_window->height * 4;
 
-                memcpy(
-                    (void*)(display_framebuffer_address + ((visible_top + y) * display_width + visible_left) * 4),
-                    (void*)(current_framebuffer_address + ((visible_top_relative + y) * next_window->width + visible_left_relative) * 4),
-                    visible_width * 4
-                );
+            {
+                auto top = next_window->y + window_title_height;
+                auto bottom = top + next_window->height;
+
+                auto left = next_window->x;
+                auto right = left + next_window->width;
+
+                auto visible_top = (size_t)max(top, 0);
+                auto visible_bottom = (size_t)min(bottom, (intptr_t)display_height);
+
+                auto visible_left = (size_t)max(left, 0);
+                auto visible_right = (size_t)min(right, (intptr_t)display_width);
+
+                auto visible_height = visible_bottom - visible_top;
+                auto visible_width = visible_right - visible_left;
+
+                auto visible_top_relative = (size_t)(visible_top - top);
+
+                auto visible_left_relative = (size_t)(visible_left - left);
+
+                if(visible_width != 0) {
+                    for(size_t y = 0; y < visible_height; y += 1) {
+                        // Aquire the current swapbuffer again for this line to prevent flickering (double buffering)
+                        auto current_framebuffer_address = (size_t)next_window->framebuffers + (size_t)*next_window->swap_indicator * framebuffer_size;
+
+                        memcpy(
+                            (void*)(display_framebuffer_address + ((visible_top + y) * display_width + visible_left) * 4),
+                            (void*)(current_framebuffer_address + ((visible_top_relative + y) * next_window->width + visible_left_relative) * 4),
+                            visible_width * 4
+                        );
+                    }
+                }
             }
         }
 
         intptr_t cursor_size = 16;
-        for(auto y = mouse_y; y < mouse_y + cursor_size; y += 1) {
-            for(auto x = mouse_x; x < mouse_x + cursor_size; x += 1) {
-                if(x >= 0 && x < (intptr_t)display_width && y >= 0 && y < (intptr_t)display_height) {
-                    ((uint32_t*)display_framebuffer_address)[(size_t)y * display_width + x] = 0xFFFFFF;
+        for(auto y = 0; y < cursor_size; y += 1) {
+            for(auto x = 0; x < cursor_size; x += 1) {
+                auto absolute_x = x + mouse_x;
+                auto absolute_y = y + mouse_y;
+
+                if(absolute_x >= 0 && absolute_y >= 0 && absolute_x < (intptr_t)display_width && absolute_y < (intptr_t)display_height) {
+                    uint32_t color;
+                    if(x == 0 || y == 0 || x == cursor_size - 1 || y == cursor_size - 1) {
+                        color = 0;
+                    } else {
+                        color = 0xFFFFFF;
+                    }
+
+                    ((uint32_t*)display_framebuffer_address)[(size_t)absolute_y * display_width + (size_t)absolute_x] = color;
                 }
             }
         }

@@ -328,6 +328,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         case 32: { // KEY_D
                             window->moving_right = true;
                         } break;
+
+                        case 0x110: { // BTN_LEFT
+                            window->position = HMM_Vec2(0, 0);
+                        } break;
                     }
                 } break;
 
