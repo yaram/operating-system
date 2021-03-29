@@ -548,10 +548,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     Window *focused_window = nullptr;
     bool dragging_focused_window;
 
-    intptr_t previous_cursor_x = 0;
-    intptr_t previous_cursor_y = 0;
-    intptr_t cursor_x = 0;
-    intptr_t cursor_y = 0;
+    intptr_t cursor_x = (intptr_t)display_width / 2;
+    intptr_t cursor_y = (intptr_t)display_height / 2;
+    auto previous_cursor_x = cursor_x;
+    auto previous_cursor_y = cursor_y;
 
     while(true) {
         for(auto device : virtio_input_devices) {
