@@ -1,60 +1,7 @@
 #include "process.h"
 #include "paging.h"
 #include "memory.h"
-
-#define align_round_up(value, alignment) divide_round_up(value, alignment) * alignment
-
-template <typename T, size_t N>
-static bool find_or_allocate_unoccupied_bucket_slot(
-    BucketArray<T, N> *bucket_array,
-    Array<uint8_t> bitmap,
-    BucketArrayIterator<T, N> *result_iterator
-) {
-    auto found_iterator = find_unoccupied_bucket_slot(bucket_array);
-
-    if(found_iterator.current_bucket == nullptr) {
-        auto new_bucket = (Bucket<T, N>*)map_and_allocate_memory(sizeof(Bucket<T, N>), bitmap);
-        if(new_bucket == nullptr) {
-            return false;
-        }
-
-        memset((void*)new_bucket, 0, sizeof(Bucket<T, N>));
-
-        {
-            auto current_bucket = &bucket_array->first_bucket;
-            while(current_bucket->next != nullptr) {
-                current_bucket = current_bucket->next;
-            }
-
-            current_bucket->next = new_bucket;
-        }
-
-        *result_iterator = {
-            new_bucket,
-            0
-        };
-        return true;
-    } else {
-        *result_iterator = found_iterator;
-        return true;
-    }
-}
-
-template <typename T, size_t N>
-static void unmap_and_deallocate_bucket(const Bucket<T, N> *bucket, Array<uint8_t> bitmap) {
-    if(bucket->next != nullptr) {
-        unmap_and_deallocate_bucket(bucket->next, bitmap);
-    }
-
-    unmap_and_deallocate_memory((void*)bucket, sizeof(Bucket<T, N>), bitmap);
-}
-
-template <typename T, size_t N>
-inline void unmap_and_deallocate_bucket_array(const BucketArray<T, N> *bucket_array, Array<uint8_t> bitmap) {
-    if(bucket_array->first_bucket.next != nullptr) {
-        unmap_and_deallocate_bucket(bucket_array->first_bucket.next, bitmap);
-    }
-}
+#include "bucket_array_kernel.h"
 
 struct ELFHeader {
     struct {
@@ -242,11 +189,7 @@ static bool map_and_allocate_pages_in_process_and_kernel(
         return false;
     }
 
-    if(!register_process_mapping(process, *user_pages_start, page_count, false, true, bitmap)) {
-        unmap_and_deallocate_pages(*kernel_pages_start, page_count, bitmap);
-
-        return false;
-    }
+    register_process_mapping(process, *user_pages_start, page_count, false, true, bitmap);
 
     memset((void*)(*kernel_pages_start * page_size), 0, page_count * page_size);
 
@@ -290,15 +233,10 @@ CreateProcessFromELFResult create_process_from_elf(
     Processes::Iterator *result_process_iterator
 ) {
     Processes::Iterator process_iterator;
-    if(!find_or_allocate_unoccupied_bucket_slot(processes, bitmap, &process_iterator)) {
+    auto process = allocate_from_bucket_array(processes, bitmap, &process_iterator);
+    if(process == nullptr) {
         return CreateProcessFromELFResult::OutOfMemory;
     }
-
-    process_iterator.current_bucket->occupied[process_iterator.current_sub_index] = true;
-
-    auto process = *process_iterator;
-
-    memset((void*)process, 0, sizeof(Process));
 
     process->id = next_process_id;
     next_process_id += 1;
@@ -313,7 +251,7 @@ CreateProcessFromELFResult create_process_from_elf(
         bitmap,
         &pml4_physical_page_index
     )) {
-        process_iterator.current_bucket->occupied[process_iterator.current_sub_index] = false;
+        remove_item_from_bucket_array(process_iterator);
 
         return CreateProcessFromELFResult::OutOfMemory;
     }
@@ -404,7 +342,7 @@ CreateProcessFromELFResult create_process_from_elf(
             bitmap
         );
         if(pml4_table == nullptr) {
-            process_iterator.current_bucket->occupied[process_iterator.current_sub_index] = false;
+            remove_item_from_bucket_array(process_iterator);
 
             return CreateProcessFromELFResult::OutOfMemory;
         }
@@ -523,19 +461,15 @@ CreateProcessFromELFResult create_process_from_elf(
                     return CreateProcessFromELFResult::OutOfMemory;
                 }
 
-                memset((void*)(kernel_pages_start * page_size), 0, page_count * page_size);
-
-                SectionAllocations::Iterator section_allocation_iterator;
-                if(!find_or_allocate_unoccupied_bucket_slot(&section_allocations, bitmap, &section_allocation_iterator)) {
+                auto section_allocation = allocate_from_bucket_array(&section_allocations, bitmap);
+                if(section_allocation == nullptr) {
                     destroy_process(process_iterator, bitmap);
                     unmap_and_deallocate_bucket_array(&section_allocations, bitmap);
 
                     return CreateProcessFromELFResult::OutOfMemory;
                 }
 
-                section_allocation_iterator.current_bucket->occupied[section_allocation_iterator.current_sub_index] = true;
-
-                **section_allocation_iterator = {
+                *section_allocation = {
                     user_pages_start,
                     kernel_pages_start,
                     page_count
@@ -825,7 +759,7 @@ inline void deallocate_page(size_t page_index, Array<uint8_t> bitmap) {
 }
 
 bool destroy_process(Processes::Iterator iterator, Array<uint8_t> bitmap) {
-    iterator.current_bucket->occupied[iterator.current_sub_index] = false;
+    remove_item_from_bucket_array(iterator);
 
     auto process = *iterator;
 
@@ -915,16 +849,12 @@ bool register_process_mapping(
     bool is_owned,
     Array<uint8_t> bitmap
 ) {
-    ProcessPageMappings::Iterator mapping_iterator;
-    if(!find_or_allocate_unoccupied_bucket_slot(&process->mappings, bitmap, &mapping_iterator)) {
+    auto page_mapping = allocate_from_bucket_array(&process->mappings, bitmap);
+    if(page_mapping == nullptr) {
         return false;
     }
 
-    mapping_iterator.current_bucket->occupied[mapping_iterator.current_sub_index] = true;
-
-    auto mapping = *mapping_iterator;
-
-    *mapping = {
+    *page_mapping = {
         logical_pages_start,
         page_count,
         is_shared,
