@@ -712,7 +712,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                             auto window = *window_iterator;
 
                             if(window->id == command->id) {
+                                syscall(SyscallType::UnmapMemory, (size_t)window->framebuffers, 0);
+                                syscall(SyscallType::UnmapMemory, (size_t)window->swap_indicator, 0);
+
                                 remove_item_from_bucket_array(window_iterator);
+
                                 break;
                             }
                         }
