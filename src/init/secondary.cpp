@@ -516,7 +516,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             compositor_ring->read_head = next_read_head;
         }
 
+        auto all_windows_closed = true;
         for(auto window : windows) {
+            all_windows_closed = false;
+
             auto framebuffer_size = (size_t)(window->framebuffer_width * window->framebuffer_height * 4);
 
             // Aquire the current offscreen swapbuffer to prevent flickering (double buffering)
@@ -681,8 +684,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             *window->swap_indicator = !*window->swap_indicator;
         }
 
-        counter += 1;
+        if(all_windows_closed) {
+            break;
+        }
 
+        counter += 1;
     }
 
     exit();
