@@ -319,8 +319,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         window->swap_indicator = swap_indicator;
     }
 
-    size_t counter = 0;
-
     while(true) {
         auto mouse_dx = 0;
         auto mouse_dy = 0;
@@ -516,6 +514,20 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             compositor_ring->read_head = next_read_head;
         }
 
+        uint32_t ticks_low;
+        uint32_t ticks_high;
+        asm volatile(
+            "cpuid\n" // Using CPUID instruction to serialize instruction execution
+            "rdtsc"
+            : "=a"(ticks_low), "=d"(ticks_high)
+            :
+            : "ebx", "ecx"
+        );
+
+        auto ticks = (size_t)ticks_low | (size_t)ticks_high << 32;
+
+        auto time = (float)ticks / 1e10f;
+
         auto all_windows_closed = true;
         for(auto window : windows) {
             all_windows_closed = false;
@@ -527,8 +539,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 window->framebuffers_address +
                 (size_t)!*window->swap_indicator * framebuffer_size
             );
-
-            auto time = (float)counter / 100;
 
             auto speed = 1.0f;
 
@@ -687,8 +697,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         if(all_windows_closed) {
             break;
         }
-
-        counter += 1;
     }
 
     exit();
