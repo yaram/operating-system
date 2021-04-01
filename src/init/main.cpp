@@ -73,6 +73,9 @@ extern uint8_t secondary_executable_end[];
 size_t cursor_bitmap_size = 16;
 extern uint32_t cursor_bitmap[];
 
+size_t background_bitmap_size = 16;
+extern uint32_t background_bitmap[];
+
 struct ClientProcess {
     size_t process_id;
 
@@ -132,6 +135,34 @@ static void send_focus_lost_event(const Window *window) {
         entry->type = CompositorEventType::FocusLost;
 
         ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+    }
+}
+
+static void draw_rectangle(
+    intptr_t x, intptr_t y,
+    intptr_t width, intptr_t height,
+    uint32_t color,
+    size_t framebuffer_width, size_t framebuffer_height,
+    size_t framebuffer_address
+) {
+    auto top = y;
+    auto bottom = y + height;
+
+    auto left = x;
+    auto right = x + width;
+
+    auto visible_top = (size_t)min(max(top, 0), (intptr_t)framebuffer_height);
+    auto visible_bottom = (size_t)max(min(bottom, (intptr_t)framebuffer_height), 0);
+
+    auto visible_left = (size_t)min(max(left, 0), (intptr_t)framebuffer_width);
+    auto visible_right = (size_t)max(min(right, (intptr_t)framebuffer_width), 0);
+
+    if(visible_right != visible_left) {
+        for(auto y = visible_top; y < visible_bottom; y += 1) {
+            for(auto x = visible_left; x < visible_right; x += 1) {
+                ((uint32_t*)framebuffer_address)[y * framebuffer_width + x] = color;
+            }
+        }
     }
 }
 
@@ -1066,7 +1097,27 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             }
         }
 
-        memset((void*)display_framebuffer_address, 0, display_framebuffer_size);
+        for(size_t y = 0; y < display_height; y += 1) {
+            auto background_y = y % background_bitmap_size;
+
+            auto x_copy_count = display_width / background_bitmap_size;
+
+            for(size_t x_index = 0; x_index < x_copy_count; x_index += 1) {
+                memcpy(
+                    (void*)(display_framebuffer_address + (y * display_width + x_index * background_bitmap_size) * 4),
+                    &background_bitmap[background_y * background_bitmap_size],
+                    background_bitmap_size * 4
+                );
+            }
+
+            auto x_left = display_width % background_bitmap_size;
+
+            memcpy(
+                (void*)(display_framebuffer_address + (y * display_width + x_copy_count * background_bitmap_size) * 4),
+                &background_bitmap[background_y * background_bitmap_size],
+                x_left * 4
+            );
+        }
 
         auto next_min_z_index = 0;
         while(true) {
@@ -1083,67 +1134,35 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
             next_min_z_index = next_window->z_index + 1;
 
-            {
-                auto top = next_window->y;
-                auto bottom = top + window_title_height;
-
-                auto left = next_window->x;
-                auto right = left + next_window->width;
-
-                auto visible_top = (size_t)min(max(top, 0), (intptr_t)display_height);
-                auto visible_bottom = (size_t)max(min(bottom, (intptr_t)display_height), 0);
-
-                auto visible_left = (size_t)min(max(left, 0), (intptr_t)display_width);
-                auto visible_right = (size_t)max(min(right, (intptr_t)display_width), 0);
-
-                auto visible_width = visible_right - visible_left;
-
-                uint8_t shade;
-                if(next_window == focused_window) {
-                    shade = 0xFF;
-                } else {
-                    shade = 0xCC;
-                }
-
-                if(visible_width != 0) {
-                    for(auto y = visible_top; y < visible_bottom; y += 1) {
-                        memset(
-                            (void*)(display_framebuffer_address + (y * display_width + visible_left) * 4),
-                            shade,
-                            visible_width * 4
-                        );
-                    }
-                }
+            uint32_t title_bar_color;
+            if(next_window == focused_window) {
+                title_bar_color = 0xFFFFFF;
+            } else {
+                title_bar_color = 0xCCCCCC;
             }
 
-            {
-                auto top = next_window->y;
-                auto bottom = top + window_title_height;
+            draw_rectangle(
+                next_window->x, next_window->y,
+                next_window->width, window_title_height,
+                title_bar_color,
+                display_width, display_height,
+                display_framebuffer_address
+            );
 
-                auto left = next_window->x + next_window->width - window_title_height;
-                auto right = left + window_title_height;
-
-                auto visible_top = (size_t)min(max(top, 0), (intptr_t)display_height);
-                auto visible_bottom = (size_t)max(min(bottom, (intptr_t)display_height), 0);
-
-                auto visible_left = (size_t)min(max(left, 0), (intptr_t)display_width);
-                auto visible_right = (size_t)max(min(right, (intptr_t)display_width), 0);
-
-                uint32_t color;
-                if(next_window == focused_window) {
-                    color = 0xFF;
-                } else {
-                    color = 0xCC;
-                }
-
-                if(visible_right != visible_left) {
-                    for(auto y = visible_top; y < visible_bottom; y += 1) {
-                        for(auto x = visible_left; x < visible_right; x += 1) {
-                            ((uint32_t*)display_framebuffer_address)[y * display_width + x] = color;
-                        }
-                    }
-                }
+            uint32_t exit_button_color;
+            if(next_window == focused_window) {
+                exit_button_color = 0x0000FF;
+            } else {
+                exit_button_color = 0x0000CC;
             }
+
+            draw_rectangle(
+                next_window->x + next_window->width - window_title_height, next_window->y,
+                window_title_height, window_title_height,
+                exit_button_color,
+                display_width, display_height,
+                display_framebuffer_address
+            );
 
             auto framebuffer_size = next_window->framebuffer_width * next_window->framebuffer_height * 4;
 
@@ -1180,6 +1199,41 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                     }
                 }
             }
+
+            auto border_size = 2;
+            uint32_t border_color = 0;
+
+            draw_rectangle(
+                next_window->x - border_size, next_window->y - border_size,
+                next_window->width + border_size * 2, border_size,
+                border_color,
+                display_width, display_height,
+                display_framebuffer_address
+            );
+
+            draw_rectangle(
+                next_window->x - border_size, next_window->y + next_window->height + window_title_height,
+                next_window->width + border_size * 2, border_size,
+                border_color,
+                display_width, display_height,
+                display_framebuffer_address
+            );
+
+            draw_rectangle(
+                next_window->x - border_size, next_window->y - border_size,
+                border_size, next_window->height + window_title_height + border_size * 2,
+                border_color,
+                display_width, display_height,
+                display_framebuffer_address
+            );
+
+            draw_rectangle(
+                next_window->x + next_window->width, next_window->y - border_size,
+                border_size, next_window->height + window_title_height + border_size * 2,
+                border_color,
+                display_width, display_height,
+                display_framebuffer_address
+            );
         }
 
         for(size_t y = 0; y < cursor_bitmap_size; y += 1) {
@@ -1261,4 +1315,10 @@ asm(
     ".section .rodata\n"
     "cursor_bitmap:\n"
     ".incbin \"src/init/cursor.raw\"\n"
+);
+
+asm(
+    ".section .rodata\n"
+    "background_bitmap:\n"
+    ".incbin \"src/init/background.raw\"\n"
 );
