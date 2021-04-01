@@ -73,6 +73,68 @@ extern uint8_t secondary_executable_end[];
 size_t cursor_bitmap_size = 16;
 extern uint32_t cursor_bitmap[];
 
+struct ClientProcess {
+    size_t process_id;
+
+    volatile CompositorMailbox* mailbox;
+    volatile CompositorRing* ring;
+};
+
+using ClientProcesses = BucketArray<ClientProcess, 4>;
+
+struct Window {
+    ClientProcess *client_process;
+
+    size_t id;
+
+    intptr_t x;
+    intptr_t y;
+
+    intptr_t width;
+    intptr_t height;
+
+    intptr_t framebuffer_width;
+    intptr_t framebuffer_height;
+
+    size_t z_index;
+
+    volatile uint32_t *framebuffers;
+    volatile bool *swap_indicator;
+};
+
+using Windows = BucketArray<Window, 4>;
+
+static void send_size_changed_event(const Window *window) {
+    auto ring = window->client_process->ring;
+
+    if(ring->read_head != ring->write_head) {
+        auto entry = &ring->entries[ring->write_head];
+
+        entry->window_id = window->id;
+
+        entry->type = CompositorEventType::SizeChanged;
+
+        entry->size_changed.width = window->width;
+        entry->size_changed.height = window->height;
+
+        ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+    }
+}
+
+static void send_focus_lost_event(const Window *window) {
+    auto ring = window->client_process->ring;
+
+    if(ring->read_head != ring->write_head) {
+        auto entry = &ring->entries[ring->write_head];
+
+        entry->window_id = window->id;
+
+        entry->type = CompositorEventType::FocusLost;
+
+        ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+    }
+}
+
 extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_size) {
     struct VirtIOInputDevice {
         volatile virtq_avail *available_ring;
@@ -427,38 +489,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         exit();
     }
 
-    struct ClientProcess {
-        size_t process_id;
-
-        volatile CompositorMailbox* mailbox;
-        volatile CompositorRing* ring;
-    };
-
-    using ClientProcesses = BucketArray<ClientProcess, 4>;
-
     ClientProcesses client_processes {};
-
-    struct Window {
-        ClientProcess *client_process;
-
-        size_t id;
-
-        intptr_t x;
-        intptr_t y;
-
-        intptr_t width;
-        intptr_t height;
-
-        intptr_t framebuffer_width;
-        intptr_t framebuffer_height;
-
-        size_t z_index;
-
-        volatile uint32_t *framebuffers;
-        volatile bool *swap_indicator;
-    };
-
-    using Windows = BucketArray<Window, 4>;
 
     Windows windows {};
 
@@ -691,31 +722,15 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         mailbox->command_present = false;
 
                         if(focused_window != nullptr) {
-                            if(resizing_focused_window && ring->read_head != ring->write_head) {
-                                auto entry = &ring->entries[ring->write_head];
+                            if(resizing_focused_window) {
+                                send_size_changed_event(focused_window);
 
-                                entry->window_id = focused_window->id;
-
-                                entry->type = CompositorEventType::SizeChanged;
-
-                                entry->size_changed.width = window->width;
-                                entry->size_changed.height = window->height;
-
-                                ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                resizing_focused_window = false;
                             }
 
                             dragging_focused_window = false;
-                            resizing_focused_window = false;
 
-                            if(ring->read_head != ring->write_head) {
-                                auto entry = &ring->entries[ring->write_head];
-
-                                entry->window_id = focused_window->id;
-
-                                entry->type = CompositorEventType::FocusLost;
-
-                                ring->write_head = (ring->write_head + 1) % compositor_ring_length;
-                            }
+                            send_focus_lost_event(focused_window);
                         }
 
                         focused_window = window;
@@ -839,33 +854,15 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                 if(!any_windows || highest_intersecting_window != focused_window) {
                                     if(focused_window != nullptr) {
-                                        auto ring = focused_window->client_process->ring;
+                                        if(resizing_focused_window) {
+                                            send_size_changed_event(focused_window);
 
-                                        if(resizing_focused_window && ring->read_head != ring->write_head) {
-                                            auto entry = &ring->entries[ring->write_head];
-
-                                            entry->window_id = focused_window->id;
-
-                                            entry->type = CompositorEventType::SizeChanged;
-
-                                            entry->size_changed.width = highest_intersecting_window->width;
-                                            entry->size_changed.height = highest_intersecting_window->height;
-
-                                            ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                            resizing_focused_window = false;
                                         }
 
                                         dragging_focused_window = false;
-                                        resizing_focused_window = false;
 
-                                        if(ring->read_head != ring->write_head) {
-                                            auto entry = &ring->entries[ring->write_head];
-
-                                            entry->window_id = focused_window->id;
-
-                                            entry->type = CompositorEventType::FocusLost;
-
-                                            ring->write_head = (ring->write_head + 1) % compositor_ring_length;
-                                        }
+                                        send_focus_lost_event(focused_window);
                                     }
 
                                     focused_window = highest_intersecting_window;
@@ -895,20 +892,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                                 forward_event = false;
                                             } else {
-                                                if(resizing_focused_window && ring->read_head != ring->write_head) {
-                                                    auto entry = &ring->entries[ring->write_head];
+                                                if(resizing_focused_window) {
+                                                    send_size_changed_event(focused_window);
 
-                                                    entry->window_id = focused_window->id;
-
-                                                    entry->type = CompositorEventType::SizeChanged;
-
-                                                    entry->size_changed.width = focused_window->width;
-                                                    entry->size_changed.height = focused_window->height;
-
-                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                    resizing_focused_window = false;
                                                 }
-
-                                                resizing_focused_window = false;
                                             }
                                         }
                                     } else if(cursor_y < focused_window->y + resize_region_size) {
@@ -919,20 +907,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                                 forward_event = false;
                                             } else {
-                                                if(resizing_focused_window && ring->read_head != ring->write_head) {
-                                                    auto entry = &ring->entries[ring->write_head];
+                                                if(resizing_focused_window) {
+                                                    send_size_changed_event(focused_window);
 
-                                                    entry->window_id = focused_window->id;
-
-                                                    entry->type = CompositorEventType::SizeChanged;
-
-                                                    entry->size_changed.width = focused_window->width;
-                                                    entry->size_changed.height = focused_window->height;
-
-                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                    resizing_focused_window = false;
                                                 }
-
-                                                resizing_focused_window = false;
                                             }
                                         }
                                     } else if(cursor_x >= focused_window->x + focused_window->width - resize_region_size) {
@@ -943,20 +922,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                                 forward_event = false;
                                             } else {
-                                                if(resizing_focused_window && ring->read_head != ring->write_head) {
-                                                    auto entry = &ring->entries[ring->write_head];
+                                                if(resizing_focused_window) {
+                                                    send_size_changed_event(focused_window);
 
-                                                    entry->window_id = focused_window->id;
-
-                                                    entry->type = CompositorEventType::SizeChanged;
-
-                                                    entry->size_changed.width = focused_window->width;
-                                                    entry->size_changed.height = focused_window->height;
-
-                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                    resizing_focused_window = false;
                                                 }
-
-                                                resizing_focused_window = false;
                                             }
                                         }
                                     } else if(cursor_y >= focused_window->y + focused_window->height + window_title_height - resize_region_size) {
@@ -967,20 +937,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                                 forward_event = false;
                                             } else {
-                                                if(resizing_focused_window && ring->read_head != ring->write_head) {
-                                                    auto entry = &ring->entries[ring->write_head];
+                                                if(resizing_focused_window) {
+                                                    send_size_changed_event(focused_window);
 
-                                                    entry->window_id = focused_window->id;
-
-                                                    entry->type = CompositorEventType::SizeChanged;
-
-                                                    entry->size_changed.width = focused_window->width;
-                                                    entry->size_changed.height = focused_window->height;
-
-                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                    resizing_focused_window = false;
                                                 }
-
-                                                resizing_focused_window = false;
                                             }
                                         }
                                     } else if(cursor_y < focused_window->y + window_title_height) {
