@@ -740,7 +740,7 @@ CreateProcessFromELFResult create_process_from_elf(
     process->frame.interrupt_frame.instruction_pointer = entry_point;
     process->frame.interrupt_frame.code_segment = 0x23;
     process->frame.interrupt_frame.cpu_flags = 1 << 9;
-    process->frame.interrupt_frame.stack_pointer = stack_top;
+    process->frame.interrupt_frame.stack_pointer = (void*)((size_t)stack_top - 8);
     process->frame.interrupt_frame.stack_segment = 0x1B;
 
     // Set entry function parameters (process ID, data & data-size)
