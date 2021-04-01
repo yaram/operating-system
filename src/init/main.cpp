@@ -94,6 +94,12 @@ struct Window {
     intptr_t width;
     intptr_t height;
 
+    bool maximized;
+    intptr_t pre_maximized_x;
+    intptr_t pre_maximized_y;
+    intptr_t pre_maximized_width;
+    intptr_t pre_maximized_height;
+
     intptr_t framebuffer_width;
     intptr_t framebuffer_height;
 
@@ -717,6 +723,15 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                 exit();
             }
+
+            for(auto window : windows) {
+                if(window->maximized) {
+                    window->width = display_width;
+                    window->height = display_height;
+
+                    send_size_changed_event(window);
+                }
+            }
         }
 
         if(connection_mailbox->locked && connection_mailbox->connection_requested) {
@@ -1045,10 +1060,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                 auto forward_event = true;
                                 if(is_mouse_button) {
-                                    if(cursor_x < focused_window->x + resize_region_size) {
+                                    if(!focused_window->maximized && cursor_x < focused_window->x + resize_region_size) {
                                         if(event->code == 0x110) { // BTN_LEFT
                                             if(key_state) {
-                                                resizing_focused_window = key_state;
+                                                resizing_focused_window = true;
                                                 resizing_side = WindowSide::Left;
 
                                                 forward_event = false;
@@ -1060,10 +1075,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                                 }
                                             }
                                         }
-                                    } else if(cursor_y < focused_window->y + resize_region_size) {
+                                    } else if(!focused_window->maximized && cursor_y < focused_window->y + resize_region_size) {
                                         if(event->code == 0x110) { // BTN_LEFT
                                             if(key_state) {
-                                                resizing_focused_window = key_state;
+                                                resizing_focused_window = true;
                                                 resizing_side = WindowSide::Top;
 
                                                 forward_event = false;
@@ -1075,10 +1090,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                                 }
                                             }
                                         }
-                                    } else if(cursor_x >= focused_window->x + focused_window->width - resize_region_size) {
+                                    } else if(!focused_window->maximized && cursor_x >= focused_window->x + focused_window->width - resize_region_size) {
                                         if(event->code == 0x110) { // BTN_LEFT
                                             if(key_state) {
-                                                resizing_focused_window = key_state;
+                                                resizing_focused_window = true;
                                                 resizing_side = WindowSide::Right;
 
                                                 forward_event = false;
@@ -1090,10 +1105,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                                 }
                                             }
                                         }
-                                    } else if(cursor_y >= focused_window->y + focused_window->height + window_title_height - resize_region_size) {
+                                    } else if(!focused_window->maximized && cursor_y >= focused_window->y + focused_window->height + window_title_height - resize_region_size) {
                                         if(event->code == 0x110) { // BTN_LEFT
                                             if(key_state) {
-                                                resizing_focused_window = key_state;
+                                                resizing_focused_window = true;
                                                 resizing_side = WindowSide::Bottom;
 
                                                 forward_event = false;
@@ -1117,7 +1132,29 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                                                     ring->write_head = (ring->write_head + 1) % compositor_ring_length;
                                                 }
-                                            } else {           
+                                            } else if(cursor_x > focused_window->x + focused_window->width - window_title_height * 2) {
+                                                if(key_state) {
+                                                    if(focused_window->maximized) {
+                                                        focused_window->maximized = false;
+                                                        focused_window->x = focused_window->pre_maximized_x;
+                                                        focused_window->y = focused_window->pre_maximized_y;
+                                                        focused_window->width = focused_window->pre_maximized_width;
+                                                        focused_window->height = focused_window->pre_maximized_height;
+                                                    } else {
+                                                        focused_window->maximized = true;
+                                                        focused_window->pre_maximized_x = focused_window->x;
+                                                        focused_window->pre_maximized_y = focused_window->y;
+                                                        focused_window->pre_maximized_width = focused_window->width;
+                                                        focused_window->pre_maximized_height = focused_window->height;
+                                                        focused_window->x = 0;
+                                                        focused_window->y = 0;
+                                                        focused_window->width = display_width;
+                                                        focused_window->height = display_height;
+                                                    }
+
+                                                    send_size_changed_event(focused_window);
+                                                }
+                                            } else {
                                                 dragging_focused_window = key_state;
                                             }
                                         }
@@ -1174,6 +1211,15 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                 auto ring = focused_window->client_process->ring;
 
                                 if(dragging_focused_window) {
+                                    if(focused_window->maximized) {
+                                        focused_window->maximized = false;
+                                        focused_window->width = focused_window->pre_maximized_width;
+                                        focused_window->height = focused_window->pre_maximized_height;
+                                        focused_window->x = cursor_x - focused_window->width / 2;
+
+                                        send_size_changed_event(focused_window);
+                                    }
+
                                     focused_window->x += cursor_x_difference;
                                     focused_window->y += cursor_y_difference;
                                 } else if(resizing_focused_window) {
@@ -1286,6 +1332,21 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 next_window->x + next_window->width - window_title_height, next_window->y,
                 window_title_height, window_title_height,
                 exit_button_color,
+                display_width, display_height,
+                display_framebuffer_address
+            );
+
+            uint32_t maximize_button_color;
+            if(next_window == focused_window) {
+                maximize_button_color = 0xCCCCCC;
+            } else {
+                maximize_button_color = 0xAAAAAA;
+            }
+
+            draw_rectangle(
+                next_window->x + next_window->width - window_title_height * 2, next_window->y,
+                window_title_height, window_title_height,
+                maximize_button_color,
                 display_width, display_height,
                 display_framebuffer_address
             );
