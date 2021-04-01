@@ -591,6 +591,134 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     auto previous_cursor_y = cursor_y;
 
     while(true) {
+        auto get_display_info_command = (volatile virtio_gpu_ctrl_hdr*)buffers_address;
+        get_display_info_command->type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_GET_DISPLAY_INFO;
+        get_display_info_command->flags = 0;
+
+        auto get_display_info_response = (volatile virtio_gpu_resp_display_info*)send_command(
+            sizeof(virtio_gpu_ctrl_hdr),
+            buffers_address,
+            queue_descriptors,
+            available_ring,
+            used_ring,
+            notify
+        );
+
+        if(get_display_info_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_DISPLAY_INFO) {
+            printf("Error: Invalid response from VIRTIO_GPU_CMD_GET_DISPLAY_INFO command\n");
+
+            exit();
+        }
+
+        auto new_display_width = (size_t)get_display_info_response->pmodes[0].r.width;
+        auto new_display_height = (size_t)get_display_info_response->pmodes[0].r.height;
+
+        if(new_display_width != display_width || new_display_height != display_height) {
+            display_width = new_display_width;
+            display_height = new_display_height;
+
+            auto resource_unref_command = (volatile virtio_gpu_resource_unref*)buffers_address;
+            resource_unref_command->type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_RESOURCE_UNREF;
+            resource_unref_command->flags = 0;
+            resource_unref_command->resource_id = 1;
+
+            auto resource_unref_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+                sizeof(virtio_gpu_resource_unref),
+                buffers_address,
+                queue_descriptors,
+                available_ring,
+                used_ring,
+                notify
+            );
+
+            if(resource_unref_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+                printf("Error: Invalid response from VIRTIO_GPU_CMD_RESOURCE_UNREF command\n");
+
+                exit();
+            }
+
+            auto create_resource_command = (volatile virtio_gpu_resource_create_2d*)buffers_address;
+            create_resource_command->type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_RESOURCE_CREATE_2D;
+            create_resource_command->flags = 0;
+            create_resource_command->resource_id = 1;
+            create_resource_command->format = virtio_gpu_formats::VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM;
+            create_resource_command->width = display_width;
+            create_resource_command->height = display_height;
+
+            auto create_resource_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+                sizeof(virtio_gpu_resource_create_2d),
+                buffers_address,
+                queue_descriptors,
+                available_ring,
+                used_ring,
+                notify
+            );
+
+            if(create_resource_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+                printf("Error: Invalid response from VIRTIO_GPU_CMD_RESOURCE_CREATE_2D command\n");
+
+                exit();
+            }
+
+            auto display_framebuffer_size = display_height * display_width * 4;
+
+            size_t framebuffer_physical_address;
+            display_framebuffer_address = syscall(SyscallType::MapFreeConsecutiveMemory, display_framebuffer_size, 0, &framebuffer_physical_address);
+            if(display_framebuffer_address == 0) {
+                printf("Error: Unable to allocate memory for display framebuffer\n");
+
+                exit();
+            }
+
+            auto attach_backing_command = (volatile virtio_gpu_resource_attach_backing*)buffers_address;
+            attach_backing_command->type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING;
+            attach_backing_command->flags = 0;
+            attach_backing_command->resource_id = 1;
+            attach_backing_command->nr_entries = 1;
+            attach_backing_command->entries[0].addr = framebuffer_physical_address;
+            attach_backing_command->entries[0].length = display_framebuffer_size;
+
+            auto attach_backing_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+                sizeof(virtio_gpu_resource_attach_backing) + sizeof(virtio_gpu_mem_entry),
+                buffers_address,
+                queue_descriptors,
+                available_ring,
+                used_ring,
+                notify
+            );
+
+            if(attach_backing_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+                printf("Error: Invalid response from VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING command\n");
+
+                exit();
+            }
+
+            auto set_scanout_command = (volatile virtio_gpu_set_scanout*)buffers_address;
+            set_scanout_command->type = virtio_gpu_ctrl_type::VIRTIO_GPU_CMD_SET_SCANOUT;
+            set_scanout_command->flags = 0;
+            set_scanout_command->r.x = 0;
+            set_scanout_command->r.y = 0;
+            set_scanout_command->r.width = display_width;
+            set_scanout_command->r.height = display_height;
+            set_scanout_command->scanout_id = 0;
+            set_scanout_command->resource_id = 1;
+
+            auto set_scanout_response = (volatile virtio_gpu_ctrl_hdr*)send_command(
+                sizeof(virtio_gpu_set_scanout),
+                buffers_address,
+                queue_descriptors,
+                available_ring,
+                used_ring,
+                notify
+            );
+
+            if(set_scanout_response->type != virtio_gpu_ctrl_type::VIRTIO_GPU_RESP_OK_NODATA) {
+                printf("Error: Invalid response from VIRTIO_GPU_CMD_SET_SCANOUT command\n");
+
+                exit();
+            }
+        }
+
         if(connection_mailbox->locked && connection_mailbox->connection_requested) {
             do { // Purely so break can be used for early-out
                 if(!(bool)syscall(SyscallType::DoesProcessExist, connection_mailbox->process_id, 0)) {

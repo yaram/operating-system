@@ -154,6 +154,16 @@ struct virtio_gpu_resource_attach_backing : virtio_gpu_ctrl_hdr {
     virtio_gpu_mem_entry entries[];
 };
 
+struct virtio_gpu_resource_detach_backing : virtio_gpu_ctrl_hdr {
+    uint32_t resource_id;
+    uint32_t padding;
+};
+
+struct virtio_gpu_resource_unref : virtio_gpu_ctrl_hdr {
+    uint32_t resource_id;
+    uint32_t padding;
+};
+
 struct virtio_gpu_set_scanout : virtio_gpu_ctrl_hdr {
     struct virtio_gpu_rect r;
     uint32_t scanout_id;
