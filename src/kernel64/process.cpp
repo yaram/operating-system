@@ -3,6 +3,8 @@
 #include "memory.h"
 #include "bucket_array_kernel.h"
 
+#define bits_to_mask(bits) ((1 << (bits)) - 1)
+
 struct ELFHeader {
     struct {
         uint8_t magic[4];
@@ -745,6 +747,10 @@ CreateProcessFromELFResult create_process_from_elf(
     process->frame.rdi = process->id;
     process->frame.rsi = data_user_pages_start * page_size;
     process->frame.rdx = data_size;
+
+    // Set ABI-specified intial register states
+
+    process->frame.mxcsr |= bits_to_mask(6) << 7;
 
     *result_processs = process;
     *result_process_iterator = process_iterator;

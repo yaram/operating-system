@@ -1651,10 +1651,6 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
         default: halt();
     }
 
-    // Set ABI-specified intial register states
-
-    init_process->frame.mxcsr |= bits_to_mask(6) << 7;
-
     auto stack_frame_copy = init_process->frame;
 
     // Set timer value
