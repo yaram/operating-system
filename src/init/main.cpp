@@ -1004,7 +1004,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                     }
                                 }
 
-                                if(forward_event) {
+                                if(forward_event && ring->read_head != ring->write_head) {
                                     auto entry = &ring->entries[ring->write_head];
 
                                     entry->window_id = focused_window->id;
