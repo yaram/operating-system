@@ -182,13 +182,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         }
     }
 
-    intptr_t window_width = 300;
-    intptr_t window_height = 300;
-
-    auto framebuffer_size = (size_t)(window_width * window_height * 4);
-
     struct Window {
         size_t id;
+
+        intptr_t framebuffer_width;
+        intptr_t framebuffer_height;
 
         bool moving_up;
         bool moving_down;
@@ -216,8 +214,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
         command->x = i * 100;
         command->y = i * 50;
-        command->width = window_width;
-        command->height = window_height;
+        command->width = 300;
+        command->height = 300;
 
         compositor_mailbox->command_present = true;
 
@@ -253,7 +251,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             MapSharedMemoryParameters syscall_parameters {
                 parameters->compositor_process_id,
                 command->framebuffers_shared_memory,
-                framebuffer_size * 2
+                (size_t)(command->width * command->height * 4 * 2)
             };
             switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, &framebuffers_address)) {
                 case MapSharedMemoryResult::Success: break;
@@ -313,6 +311,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         auto background_shade = HMM_Lerp(.3f, shade, .7f);
 
         window->id = compositor_mailbox->create_window.id;
+        window->framebuffer_width = command->width;
+        window->framebuffer_height = command->height;
         window->color = HMM_Vec3(1, shade, shade);
         window->background_shade = background_shade;
         window->framebuffers_address = framebuffers_address;
@@ -353,7 +353,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
             switch(entry->type) {
                 case CompositorEventType::KeyDown: {
-                    switch(entry->key_down.scancode) {
+                    auto event = &entry->key_down;
+
+                    switch(event->scancode) {
                         case 1: { // KEY_ESC
                             exit();
                         } break;
@@ -381,7 +383,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 } break;
 
                 case CompositorEventType::KeyUp: {
-                    switch(entry->key_down.scancode) {
+                    auto event = &entry->key_up;
+
+                    switch(event->scancode) {
                         case 17: { // KEY_W
                             window->moving_up = false;
                         } break;
@@ -401,8 +405,10 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 } break;
 
                 case CompositorEventType::MouseMove: {
-                    window->position.X += entry->mouse_move.dx;
-                    window->position.Y += entry->mouse_move.dy;
+                    auto event = &entry->mouse_move;
+
+                    window->position.X += event->dx;
+                    window->position.Y += event->dy;
                 } break;
 
                 case CompositorEventType::FocusGained: {
@@ -429,7 +435,81 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         syscall(SyscallType::RelinquishTime, 0, 0);
                     }
 
+                    syscall(SyscallType::UnmapMemory, window->framebuffers_address, 0);
+                    syscall(SyscallType::UnmapMemory, (size_t)window->swap_indicator, 0);
+
                     remove_item_from_bucket_array(window_iterator);
+                } break;
+
+                case CompositorEventType::SizeChanged: {
+                    auto event = &entry->size_changed;
+
+                    compositor_mailbox->command_type = CompositorCommandType::ResizeFramebuffers;
+
+                    auto command = &compositor_mailbox->resize_framebuffers;
+
+                    command->id = window->id;
+                    command->width = event->width;
+                    command->height = event->height;
+
+                    compositor_mailbox->command_present = true;
+
+                    while(compositor_mailbox->command_present) {
+                        syscall(SyscallType::RelinquishTime, 0, 0);
+                    }
+
+                    switch(command->result) {
+                        case ResizeFramebuffersResult::Success: {
+                            syscall(SyscallType::UnmapMemory, window->framebuffers_address, 0);
+
+                            window->framebuffer_width = event->width;
+                            window->framebuffer_height = event->height;
+
+                            size_t framebuffers_address;
+                            {
+                                MapSharedMemoryParameters syscall_parameters {
+                                    parameters->compositor_process_id,
+                                    command->framebuffers_shared_memory,
+                                    (size_t)(window->framebuffer_width * window->framebuffer_height * 4 * 2)
+                                };
+                                switch((MapSharedMemoryResult)syscall(SyscallType::MapSharedMemory, (size_t)&syscall_parameters, 0, &framebuffers_address)) {
+                                    case MapSharedMemoryResult::Success: break;
+
+                                    case MapSharedMemoryResult::OutOfMemory: {
+                                        printf("Error: Unable to map framebuffers shared memory: Out of memory\n");
+
+                                        exit();
+                                    } break;
+
+                                    case MapSharedMemoryResult::InvalidProcessID: {
+                                        printf("Error: Unable to map framebuffers shared memory: Compositor process does not exist\n");
+
+                                        exit();
+                                    } break;
+
+                                    case MapSharedMemoryResult::InvalidMemoryRange: {
+                                        printf("Error: Unable to map framebuffers shared memory: Invalid memory range\n");
+
+                                        exit();
+                                    } break;
+                                }
+                            }
+
+                            window->framebuffers_address = framebuffers_address;
+                        } break;
+
+                        case ResizeFramebuffersResult::InvalidSize: {
+                            printf("Error: Unable to resize framebuffer: Invalid framebuffer size\n");
+                        } break;
+
+                        case ResizeFramebuffersResult::InvalidWindowID: {
+                            printf("Error: Unable to resize framebuffer: Invalid window ID\n");
+                        } break;
+
+                        case ResizeFramebuffersResult::OutOfMemory: {
+                            printf("Error: Unable to resize framebuffer: Out of memory\n");
+                        } break;
+                    }
                 } break;
             }
 
@@ -437,8 +517,13 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         }
 
         for(auto window : windows) {
+            auto framebuffer_size = (size_t)(window->framebuffer_width * window->framebuffer_height * 4);
+
             // Aquire the current offscreen swapbuffer to prevent flickering (double buffering)
-            auto framebuffer = (uint32_t*)(window->framebuffers_address + (size_t)!*window->swap_indicator * framebuffer_size);
+            auto framebuffer = (uint32_t*)(
+                window->framebuffers_address +
+                (size_t)!*window->swap_indicator * framebuffer_size
+            );
 
             auto time = (float)counter / 100;
 
@@ -514,9 +599,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 auto long_mid_x = HMM_Lerp(first.X, ((float)second.Y - first.Y) / (third.Y - first.Y), third.X);
                 auto short_mid_x = second.X;
 
-                auto first_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(first.Y, 0), window_height);
-                auto second_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(second.Y, 0), window_height);
-                auto third_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(third.Y, 0), window_height);
+                auto first_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(first.Y, 0), window->framebuffer_height);
+                auto second_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(second.Y, 0), window->framebuffer_height);
+                auto third_y_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(third.Y, 0), window->framebuffer_height);
 
                 if(long_mid_x < short_mid_x) {
                     for(size_t y = first_y_pixel; y < second_y_pixel; y += 1) {
@@ -524,16 +609,16 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                         auto long_x = HMM_Lerp(first.X, long_progress, third.X);
 
-                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window_width);
+                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window->framebuffer_width);
 
                         auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
 
                         auto short_x = HMM_Lerp(first.X, short_progress, second.X);
 
-                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window_width);
+                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window->framebuffer_width);
 
                         for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
-                            framebuffer[y * window_width + x] = color;
+                            framebuffer[y * window->framebuffer_width + x] = color;
                         }
                     }
 
@@ -542,16 +627,16 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                         auto long_x = HMM_Lerp(first.X, long_progress, third.X);
 
-                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window_width);
+                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window->framebuffer_width);
 
                         auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
 
                         auto short_x = HMM_Lerp(second.X, short_progress, third.X);
 
-                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window_width);
+                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window->framebuffer_width);
 
                         for(size_t x = long_x_pixel; x < short_x_pixel; x += 1) {
-                            framebuffer[y * window_width + x] = color;
+                            framebuffer[y * window->framebuffer_width + x] = color;
                         }
                     }
                 } else {
@@ -560,16 +645,16 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                         auto long_x = HMM_Lerp(first.X, long_progress, third.X);
 
-                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window_width);
+                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window->framebuffer_width);
 
                         auto short_progress = ((float)y - first.Y) / (second.Y - first.Y);
 
                         auto short_x = HMM_Lerp(first.X, short_progress, second.X);
 
-                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window_width);
+                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window->framebuffer_width);
 
                         for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
-                            framebuffer[y * window_width + x] = color;
+                            framebuffer[y * window->framebuffer_width + x] = color;
                         }
                     }
 
@@ -578,16 +663,16 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                         auto long_x = HMM_Lerp(first.X, long_progress, third.X);
 
-                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window_width);
+                        auto long_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(long_x, 0), window->framebuffer_width);
 
                         auto short_progress = ((float)y - second.Y) / (third.Y - second.Y);
 
                         auto short_x = HMM_Lerp(second.X, short_progress, third.X);
 
-                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window_width);
+                        auto short_x_pixel = (size_t)HMM_MIN((intptr_t)HMM_MAX(short_x, 0), window->framebuffer_width);
 
                         for(size_t x = short_x_pixel; x < long_x_pixel; x += 1) {
-                            framebuffer[y * window_width + x] = color;
+                            framebuffer[y * window->framebuffer_width + x] = color;
                         }
                     }
                 }

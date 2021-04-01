@@ -449,6 +449,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         intptr_t width;
         intptr_t height;
 
+        intptr_t framebuffer_width;
+        intptr_t framebuffer_height;
+
         size_t z_index;
 
         volatile uint32_t *framebuffers;
@@ -510,8 +513,17 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
     const intptr_t window_title_height = 32;
 
+    enum struct WindowSide {
+        Top,
+        Bottom,
+        Left,
+        Right
+    };
+
     Window *focused_window = nullptr;
     bool dragging_focused_window;
+    bool resizing_focused_window;
+    WindowSide resizing_side;
 
     intptr_t cursor_x = (intptr_t)display_width / 2;
     intptr_t cursor_y = (intptr_t)display_height / 2;
@@ -660,6 +672,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         window->y = command->y;
                         window->width = command->width;
                         window->height = command->height;
+                        window->framebuffer_width = command->width;
+                        window->framebuffer_height = command->height;
 
                         if(any_windows) {
                             window->z_index = highest_window_z_index + 1;
@@ -677,6 +691,22 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         mailbox->command_present = false;
 
                         if(focused_window != nullptr) {
+                            if(resizing_focused_window && ring->read_head != ring->write_head) {
+                                auto entry = &ring->entries[ring->write_head];
+
+                                entry->window_id = focused_window->id;
+
+                                entry->type = CompositorEventType::SizeChanged;
+
+                                entry->size_changed.width = window->width;
+                                entry->size_changed.height = window->height;
+
+                                ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                            }
+
+                            dragging_focused_window = false;
+                            resizing_focused_window = false;
+
                             if(ring->read_head != ring->write_head) {
                                 auto entry = &ring->entries[ring->write_head];
 
@@ -689,7 +719,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         }
 
                         focused_window = window;
-                        dragging_focused_window = false;
 
                         if(ring->read_head != ring->write_head) {
                             auto entry = &ring->entries[ring->write_head];
@@ -724,8 +753,51 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         mailbox->command_present = false;
                     } break;
 
+                    case CompositorCommandType::ResizeFramebuffers: {
+                        auto command = &mailbox->resize_framebuffers;
+
+                        if(command->width <= 0 || command->height <= 0) {
+                            command->result = ResizeFramebuffersResult::InvalidSize;
+
+                            mailbox->command_present = false;
+
+                            break;
+                        }
+
+                        command->result = ResizeFramebuffersResult::InvalidWindowID;
+
+                        for(auto window_iterator = begin(windows); window_iterator != end(windows); ++window_iterator) {
+                            auto window = *window_iterator;
+
+                            if(window->id == command->id) {
+                                auto framebuffers_address = syscall(SyscallType::CreateSharedMemory, command->width * command->height * 4 * 2, 0);
+                                if(framebuffers_address == 0) {
+                                    command->result = ResizeFramebuffersResult::OutOfMemory;
+
+                                    mailbox->command_present = false;
+
+                                    break;
+                                }
+
+                                syscall(SyscallType::UnmapMemory, (size_t)window->framebuffers, 0);
+
+                                window->framebuffer_width = command->width;
+                                window->framebuffer_height = command->height;
+                                window->framebuffers = (volatile uint32_t*)framebuffers_address;
+
+                                command->framebuffers_shared_memory = framebuffers_address;
+
+                                command->result = ResizeFramebuffersResult::Success;
+
+                                break;
+                            }
+                        }
+
+                        mailbox->command_present = false;
+                    } break;
+
                     default: {
-                        printf("Error: Unknown compositor command type %u\n", mailbox->command_type);
+                        printf("Error: Unknown compositor command type %u from client process %zu\n", mailbox->command_type, client_process->process_id);
                     } break;
                 }
             }
@@ -769,6 +841,22 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                     if(focused_window != nullptr) {
                                         auto ring = focused_window->client_process->ring;
 
+                                        if(resizing_focused_window && ring->read_head != ring->write_head) {
+                                            auto entry = &ring->entries[ring->write_head];
+
+                                            entry->window_id = focused_window->id;
+
+                                            entry->type = CompositorEventType::SizeChanged;
+
+                                            entry->size_changed.width = highest_intersecting_window->width;
+                                            entry->size_changed.height = highest_intersecting_window->height;
+
+                                            ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                        }
+
+                                        dragging_focused_window = false;
+                                        resizing_focused_window = false;
+
                                         if(ring->read_head != ring->write_head) {
                                             auto entry = &ring->entries[ring->write_head];
 
@@ -781,7 +869,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                     }
 
                                     focused_window = highest_intersecting_window;
-                                    dragging_focused_window = false;
                                 }
 
                                 if(
@@ -793,26 +880,131 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                 }
                             }
 
+                            intptr_t resize_region_size = 8;
+
                             if(focused_window != nullptr) {
                                 auto ring = focused_window->client_process->ring;
 
-                                if(is_mouse_button && cursor_y < focused_window->y + window_title_height) {
-                                    if(event->code == 0x110) {
-                                        if(cursor_x > focused_window->x + focused_window->width - window_title_height) {
-                                            if(key_state && ring->read_head != ring->write_head) {
-                                                auto entry = &ring->entries[ring->write_head];
+                                auto forward_event = true;
+                                if(is_mouse_button) {
+                                    if(cursor_x < focused_window->x + resize_region_size) {
+                                        if(event->code == 0x110) { // BTN_LEFT
+                                            if(key_state) {
+                                                resizing_focused_window = key_state;
+                                                resizing_side = WindowSide::Left;
 
-                                                entry->window_id = focused_window->id;
+                                                forward_event = false;
+                                            } else {
+                                                if(resizing_focused_window && ring->read_head != ring->write_head) {
+                                                    auto entry = &ring->entries[ring->write_head];
 
-                                                entry->type = CompositorEventType::CloseRequested;
+                                                    entry->window_id = focused_window->id;
 
-                                                ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                    entry->type = CompositorEventType::SizeChanged;
+
+                                                    entry->size_changed.width = focused_window->width;
+                                                    entry->size_changed.height = focused_window->height;
+
+                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                }
+
+                                                resizing_focused_window = false;
                                             }
-                                        } else {           
-                                            dragging_focused_window = key_state;
                                         }
+                                    } else if(cursor_y < focused_window->y + resize_region_size) {
+                                        if(event->code == 0x110) { // BTN_LEFT
+                                            if(key_state) {
+                                                resizing_focused_window = key_state;
+                                                resizing_side = WindowSide::Top;
+
+                                                forward_event = false;
+                                            } else {
+                                                if(resizing_focused_window && ring->read_head != ring->write_head) {
+                                                    auto entry = &ring->entries[ring->write_head];
+
+                                                    entry->window_id = focused_window->id;
+
+                                                    entry->type = CompositorEventType::SizeChanged;
+
+                                                    entry->size_changed.width = focused_window->width;
+                                                    entry->size_changed.height = focused_window->height;
+
+                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                }
+
+                                                resizing_focused_window = false;
+                                            }
+                                        }
+                                    } else if(cursor_x >= focused_window->x + focused_window->width - resize_region_size) {
+                                        if(event->code == 0x110) { // BTN_LEFT
+                                            if(key_state) {
+                                                resizing_focused_window = key_state;
+                                                resizing_side = WindowSide::Right;
+
+                                                forward_event = false;
+                                            } else {
+                                                if(resizing_focused_window && ring->read_head != ring->write_head) {
+                                                    auto entry = &ring->entries[ring->write_head];
+
+                                                    entry->window_id = focused_window->id;
+
+                                                    entry->type = CompositorEventType::SizeChanged;
+
+                                                    entry->size_changed.width = focused_window->width;
+                                                    entry->size_changed.height = focused_window->height;
+
+                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                }
+
+                                                resizing_focused_window = false;
+                                            }
+                                        }
+                                    } else if(cursor_y >= focused_window->y + focused_window->height + window_title_height - resize_region_size) {
+                                        if(event->code == 0x110) { // BTN_LEFT
+                                            if(key_state) {
+                                                resizing_focused_window = key_state;
+                                                resizing_side = WindowSide::Bottom;
+
+                                                forward_event = false;
+                                            } else {
+                                                if(resizing_focused_window && ring->read_head != ring->write_head) {
+                                                    auto entry = &ring->entries[ring->write_head];
+
+                                                    entry->window_id = focused_window->id;
+
+                                                    entry->type = CompositorEventType::SizeChanged;
+
+                                                    entry->size_changed.width = focused_window->width;
+                                                    entry->size_changed.height = focused_window->height;
+
+                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                }
+
+                                                resizing_focused_window = false;
+                                            }
+                                        }
+                                    } else if(cursor_y < focused_window->y + window_title_height) {
+                                        if(event->code == 0x110) { // BTN_LEFT
+                                            if(cursor_x > focused_window->x + focused_window->width - window_title_height) {
+                                                if(key_state && ring->read_head != ring->write_head) {
+                                                    auto entry = &ring->entries[ring->write_head];
+
+                                                    entry->window_id = focused_window->id;
+
+                                                    entry->type = CompositorEventType::CloseRequested;
+
+                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                }
+                                            } else {           
+                                                dragging_focused_window = key_state;
+                                            }
+                                        }
+
+                                        forward_event = false;
                                     }
-                                } else {
+                                }
+
+                                if(forward_event) {
                                     auto entry = &ring->entries[ring->write_head];
 
                                     entry->window_id = focused_window->id;
@@ -862,6 +1054,26 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                 if(dragging_focused_window) {
                                     focused_window->x += cursor_x_difference;
                                     focused_window->y += cursor_y_difference;
+                                } else if(resizing_focused_window) {
+                                    switch(resizing_side) {
+                                        case WindowSide::Top: {
+                                            focused_window->y += cursor_y_difference;
+                                            focused_window->height -= cursor_y_difference;
+                                        } break;
+
+                                        case WindowSide::Bottom: {
+                                            focused_window->height += cursor_y_difference;
+                                        } break;
+
+                                        case WindowSide::Left: {
+                                            focused_window->x += cursor_x_difference;
+                                            focused_window->width -= cursor_x_difference;
+                                        } break;
+
+                                        case WindowSide::Right: {
+                                            focused_window->width += cursor_x_difference;
+                                        } break;
+                                    }
                                 } else if(ring->read_head != ring->write_head) {
                                     auto entry = &ring->entries[ring->write_head];
 
@@ -968,14 +1180,14 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 }
             }
 
-            auto framebuffer_size = next_window->width * next_window->height * 4;
+            auto framebuffer_size = next_window->framebuffer_width * next_window->framebuffer_height * 4;
 
             {
                 auto top = next_window->y + window_title_height;
-                auto bottom = top + next_window->height;
+                auto bottom = top + min(next_window->height, next_window->framebuffer_height);
 
                 auto left = next_window->x;
-                auto right = left + next_window->width;
+                auto right = left + min(next_window->width, next_window->framebuffer_width);
 
                 auto visible_top = (size_t)min(max(top, 0), (intptr_t)display_height);
                 auto visible_bottom = (size_t)max(min(bottom, (intptr_t)display_height), 0);
@@ -997,7 +1209,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
                         memcpy(
                             (void*)(display_framebuffer_address + ((visible_top + y) * display_width + visible_left) * 4),
-                            (void*)(current_framebuffer_address + ((visible_top_relative + y) * next_window->width + visible_left_relative) * 4),
+                            (void*)(current_framebuffer_address + ((visible_top_relative + y) * next_window->framebuffer_width + visible_left_relative) * 4),
                             visible_width * 4
                         );
                     }

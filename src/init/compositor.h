@@ -22,12 +22,20 @@ struct CompositorConnectionMailbox {
 
 enum struct CompositorCommandType {
     CreateWindow,
-    DestroyWindow
+    DestroyWindow,
+    ResizeFramebuffers
 };
 
 enum struct CreateWindowResult {
     Success,
     InvalidSize,
+    OutOfMemory
+};
+
+enum struct ResizeFramebuffersResult {
+    Success,
+    InvalidSize,
+    InvalidWindowID,
     OutOfMemory
 };
 
@@ -55,6 +63,17 @@ struct CompositorMailbox {
             // Parameters
             size_t id;
         } destroy_window;
+
+        struct {
+            // Parameters
+            size_t id;
+            intptr_t width;
+            intptr_t height;
+
+            // Returns
+            ResizeFramebuffersResult result;
+            size_t framebuffers_shared_memory;
+        } resize_framebuffers;
     };
 };
 
@@ -64,7 +83,8 @@ enum struct CompositorEventType {
     MouseMove,
     FocusGained,
     FocusLost,
-    CloseRequested
+    CloseRequested,
+    SizeChanged
 };
 
 struct CompositorEvent {
@@ -93,6 +113,11 @@ struct CompositorEvent {
             intptr_t mouse_x;
             intptr_t mouse_y;
         } focus_gained;
+
+        struct {
+            intptr_t width;
+            intptr_t height;
+        } size_changed;
     };
 };
 
