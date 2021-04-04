@@ -1155,7 +1155,25 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                                                     send_size_changed_event(focused_window);
                                                 }
                                             } else {
-                                                dragging_focused_window = key_state;
+                                                if(key_state) {
+                                                    dragging_focused_window = true;
+                                                } else {
+                                                    dragging_focused_window = false;
+
+                                                    if(cursor_y == 0) {
+                                                        focused_window->maximized = true;
+                                                        focused_window->pre_maximized_x = focused_window->x;
+                                                        focused_window->pre_maximized_y = focused_window->y;
+                                                        focused_window->pre_maximized_width = focused_window->width;
+                                                        focused_window->pre_maximized_height = focused_window->height;
+                                                        focused_window->x = 0;
+                                                        focused_window->y = 0;
+                                                        focused_window->width = display_width;
+                                                        focused_window->height = display_height;
+
+                                                        send_size_changed_event(focused_window);
+                                                    }
+                                                }
                                             }
                                         }
 
