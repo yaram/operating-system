@@ -42,6 +42,11 @@ thirdparty_directory = os.path.join(parent_directory, 'thirdparty')
 object_directory = os.path.join(build_directory, 'objects')
 
 def build_objects(objects, target, name, *extra_arguments):
+    sub_object_directory = os.path.join(object_directory, name)
+
+    if not os.path.exists(sub_object_directory):
+        os.makedirs(sub_object_directory)
+
     if debug_info:
         extra_arguments = (*extra_arguments, '-g')
 
@@ -60,7 +65,7 @@ def build_objects(objects, target, name, *extra_arguments):
             '-Wall',
             *extra_arguments,
             '-c',
-            '-o', os.path.join(object_directory, name, object_name),
+            '-o', os.path.join(sub_object_directory, object_name),
             source_path
         )
 
@@ -69,6 +74,9 @@ def build_objects_64bit(objects, name, *extra_arguments):
 
 def build_objects_32bit(objects, name, *extra_arguments):
     build_objects(objects, 'i686-unknown-unknown-elf', name, *extra_arguments)
+
+def build_objects_16bit(objects, name, *extra_arguments):
+    build_objects(objects, 'i686-unknown-unknown-code16', name, *extra_arguments)
 
 def do_linking(objects, name, *extra_arguments):
     run_command(
@@ -312,11 +320,42 @@ build_objects_64bit(
     '-fpie'
 )
 
-
 do_linking(
     init_objects,
     'init',
     '--relocatable'
+)
+
+objects_multiprocessor = [
+    (os.path.join(source_directory, 'kernel64', 'multiprocessor.S'), 'multiprocessor.o')
+]
+
+build_objects_16bit(
+    objects_multiprocessor,
+    'multiprocessor',
+    '-mcmodel=kernel',
+    '-fno-stack-protector',
+    '-mno-red-zone',
+    '-mno-mmx',
+    '-mno-sse',
+    '-mno-sse2'
+)
+
+do_linking(
+    objects_multiprocessor,
+    'multiprocessor',
+    '-e', 'entry',
+    '-T', os.path.join(source_directory, 'kernel64', 'multiprocessor.ld')
+)
+
+run_command(
+    shutil.which('llvm-objcopy'),
+    '--output-target=binary',
+    '--only-section', '.text',
+    '--only-section', '.data',
+    '--only-section', '.rodata',
+    os.path.join(build_directory, 'multiprocessor.elf'),
+    os.path.join(build_directory, 'multiprocessor.bin')
 )
 
 objects_kernel64 = [

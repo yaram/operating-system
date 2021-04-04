@@ -1,3 +1,5 @@
+.set protection_bit_mask, 1 << 0
+
 .set paging_bit_mask, 1 << 31
 
 .set pae_bit_mask, 1 << 5
@@ -6,73 +8,12 @@
 
 .equ kernel64_load_location, 0x200000
 
-.section .text
+.section .text.entry
 
-.globl entry
+.global entry
+
 entry:
     cli
-
-    // Set up known GDT
-
-    lgdt gdt_descriptor
-
-    mov $0x10, %ax
-    mov %ax, %ds
-    mov %ax, %ss
-    mov %ax, %es
-    mov %ax, %fs
-    mov %ax, %gs
-
-    ljmp $0x08, $.long_jump_target
-.long_jump_target:
-
-    // Fill in memory map from the multiboot memory map
-
-    mov 44(%ebx), %eax
-    mov 48(%ebx), %esi
-    mov %esi, %edi
-    add %eax, %edi
-
-    mov $0, %eax
-
-.memory_map_loop:
-    mov 4(%esi), %ebx
-    mov %ebx, memory_map_buffer(%eax)
-
-    mov 8(%esi), %ebx
-    mov %ebx, memory_map_buffer + 4(%eax)
-
-    mov 12(%esi), %ebx
-    mov %ebx, memory_map_buffer + 8(%eax)
-
-    mov 16(%esi), %ebx
-    mov %ebx, memory_map_buffer + 12(%eax)
-
-    mov $0, %ebx
-    mov 20(%esi), %bl
-    cmp $1, %bl
-    sete %bl
-    mov %bl, memory_map_buffer + 16(%eax)
-
-    mov (%esi), %ebx
-    add %ebx, %esi
-    add $4, %esi
-
-    add $24, %eax
-
-    cmp %edi, %esi
-    jl .memory_map_loop
-
-    mov $0, %edx
-    mov $24, %ebx
-    div %ebx
-    mov %eax, (memory_map_size)
-
-    // Copy 64-bit kernel to it's final memory location
-    mov $kernel64, %esi
-    mov $kernel64_load_location, %edi
-    mov $(kernel64_end - kernel64), %ecx
-    rep movsb
 
     // Enable extended memory
     mov %cr4, %eax
@@ -139,19 +80,22 @@ entry:
     or $long_mode_bit_mask, %eax
     wrmsr
 
-    // Enable paging
+    // Enable paging and protection
     mov %cr0, %eax
     or $paging_bit_mask, %eax
+    or $protection_bit_mask, %eax
     mov %eax, %cr0
 
     // Load main parameters
-    mov $1, %edi
-    mov $memory_map_buffer, %esi
-    mov (memory_map_size), %edx
+    mov $0, %edi
+    mov $0, %esi
+    mov $0, %edx
+
+    lgdt gdt_descriptor
 
     // Switch from 32-bit to 64-bit mode code segment & jump to 64-bit kernel code
 
-    ljmp $0x18, $kernel64_load_location
+    ljmpl $0x18, $kernel64_load_location
 
 .section .rodata
 
@@ -163,19 +107,11 @@ gdt_entries:
     .long 0
     .long 0
 
-    .word 0xFFFF
-    .word 0
-    .byte 0
-    .byte 0b10011010
-    .byte 0b11001111
-    .byte 0
+    .long 0
+    .long 0
 
-    .word 0xFFFF
-    .word 0
-    .byte 0
-    .byte 0b10010010
-    .byte 0b11001111
-    .byte 0
+    .long 0
+    .long 0
 
     .word 0
     .word 0
@@ -193,12 +129,6 @@ gdt_entries:
 
 .section .bss
 
-memory_map_size:
-    .skip 4
-
-memory_map_buffer:
-    .skip 4096
-
 .align 4096
 
 pml4t:
@@ -212,9 +142,3 @@ pdt:
 
 pt:
     .skip 4096 * 4
-
-.section .data
-
-kernel64:
-.incbin "build/kernel64.bin"
-kernel64_end:

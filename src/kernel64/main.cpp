@@ -253,8 +253,13 @@ PageTableEntry kernel_pd_tables[kernel_pdp_count][page_table_length] {};
 __attribute__((aligned(page_size)))
 PageTableEntry kernel_page_tables[kernel_pd_count][page_table_length] {};
 
+extern uint8_t multiprocessor_binary[];
+extern uint8_t multiprocessor_binary_end[];
+
 extern uint8_t embedded_init_binary[];
 extern uint8_t embedded_init_binary_end[];
+
+volatile bool additional_processor_initialized_flag = false;
 
 Array<uint8_t> global_bitmap;
 
@@ -1183,7 +1188,7 @@ volatile uint32_t* global_io_apic_registers;
 extern void (*init_array_start[])();
 extern void (*init_array_end[])();
 
-extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries, size_t bootstrap_memory_map_length) {
+[[noreturn]] static void bootstrap_processor_entry(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries, size_t bootstrap_memory_map_length) {
     ConstArray<BootstrapMemoryMapEntry> bootstrap_memory_map {
         bootstrap_memory_map_entries,
         bootstrap_memory_map_length
@@ -1543,8 +1548,6 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
         halt();
     }
 
-    AcpiPutTable(&madt_table->preamble.Header);
-
     global_apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap);
     if(global_apic_registers == nullptr) {
         printf("Error: Out of memory\n");
@@ -1619,6 +1622,76 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
         halt();
     }
 
+    const size_t multiprocessor_binary_load_location = 0x1000;
+    static_assert(multiprocessor_binary_load_location % 0x1000 == 0, "Multiprocessor binary load location not page-aligned");
+    static_assert(multiprocessor_binary_load_location < 0x100000, "Multiprocessor binary load location not within first 1M");
+
+    auto multiprocessor_binary_size = (size_t)multiprocessor_binary_end - (size_t)multiprocessor_binary;
+
+    memcpy((void*)multiprocessor_binary_load_location, multiprocessor_binary, multiprocessor_binary_size);
+
+    uint8_t bootstrap_processor_id;
+    asm volatile(
+        "mov $1, %%eax\n"
+        "cpuid\n"
+        "shrl $24, %%ebx\n"
+        : "=b"(bootstrap_processor_id)
+        :
+        : "eax", "ecx", "edx"
+    );
+
+    current_madt_index = 0;
+    while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
+        auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
+
+        switch(header->Type) {
+            case ACPI_MADT_TYPE_LOCAL_APIC: {
+                auto subtable = (ACPI_MADT_LOCAL_APIC*)header;
+
+                if(subtable->ProcessorId != bootstrap_processor_id) {
+                    // Reset error status register
+                    global_apic_registers[0x280 / 4] = 0;
+
+                    // Set target processor APIC ID
+                    global_apic_registers[0x310 / 4] = (uint32_t)subtable->Id << 24;
+
+                    // Set vector number to 0, set delivery mode to INIT, set destination mode to physical,
+                    // set level assert, set edge trigger, set no shorthand
+                    global_apic_registers[0x300 / 4] = 5 << 8 | 1 << 14;
+
+                    // Wait for delivery of the INIT IPI
+                    while((global_apic_registers[0x300 / 4] & (1 << 12)) != 0) {
+                        asm volatile("pause");
+                    }
+
+                    // TODO: Need to wait 10ms for a real physical CPU to reset
+
+                    // Set entry page number to 1 (address 0x1000), set delivery mode to STARTUP, set destination mode to physical,
+                    // set level assert, set edge trigger, set no shorthand
+                    global_apic_registers[0x300 / 4] = 1 | 6 << 8 | 1 << 14;
+
+                    // Wait for delivery of the STARTUP IPI
+                    while((global_apic_registers[0x300 / 4] & (1 << 12)) != 0) {
+                        asm volatile("pause");
+                    }
+
+                    // No need to wait 200us for a real physical cpu to start executing, as we wait for the flag to be set anyway
+
+                    // Wait for additional processor to set flag
+                    while(!additional_processor_initialized_flag) {
+                        asm volatile("pause");
+                    }
+
+                    additional_processor_initialized_flag = false;
+                }
+            } break;
+        }
+
+        current_madt_index += (size_t)header->Length;
+    }
+
+    AcpiPutTable(&madt_table->preamble.Header);
+
     printf("Loading init process...\n");
 
     auto embedded_init_binary_size = (size_t)embedded_init_binary_end - (size_t)embedded_init_binary;
@@ -1663,6 +1736,28 @@ extern "C" void main(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries
     );
 
     user_enter_thunk(&stack_frame_copy);
+}
+
+[[noreturn]] static void additional_processor_entry() {
+    asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&kernel_pml4_table)
+    );
+
+    printf("Additional processor entry\n");
+
+    additional_processor_initialized_flag = true;
+
+    halt();
+}
+
+extern "C" [[noreturn]] void main(bool is_first_entry, const BootstrapMemoryMapEntry *bootstrap_memory_map_entries, size_t bootstrap_memory_map_length) {
+    if(is_first_entry) {
+        bootstrap_processor_entry(bootstrap_memory_map_entries, bootstrap_memory_map_length);
+    } else {
+        additional_processor_entry();
+    }
 }
 
 void *allocate(size_t size) {
