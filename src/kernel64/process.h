@@ -71,6 +71,8 @@ struct Process {
 
     bool is_resident;
     uint8_t resident_processor_id;
+
+    bool is_ready;
 };
 
 using Processes = BucketArray<Process, 4>;

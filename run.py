@@ -16,7 +16,7 @@ run_command(
     shutil.which('qemu-system-x86_64'),
     '-monitor', 'stdio',
     '-machine', 'q35',
-    '-smp', '1',
+    '-smp', '2',
     '-m', '4G',
     '-vga', 'virtio',
     '-device', 'virtio-keyboard',

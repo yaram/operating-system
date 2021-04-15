@@ -136,7 +136,7 @@ Processes global_processes {};
 
         process = *processor_area->current_process_iterator;
 
-        if(compare_and_swap(&process->is_resident, false, true)) {
+        if(process->is_ready && compare_and_swap(&process->is_resident, false, true)) {
             break;
         }
 
@@ -169,7 +169,7 @@ Processes global_processes {};
 
             process = *processor_area->current_process_iterator;
 
-            if(compare_and_swap(&process->is_resident, false, true)) {
+            if(process->is_ready && compare_and_swap(&process->is_resident, false, true)) {
                 break;
             }
 
@@ -227,7 +227,10 @@ Processes global_processes {};
         // Load GDT
         "lgdtq (%0)\n"
 
+        // Switch to user page tables
         "mov %1, %%cr3\n"
+
+        // Jump to thunk for entering user mode
         "jmp user_enter_thunk"
         :
         : "r"(&gdt_descriptor), "r"(process->pml4_table_physical_address), "D"(stack_frame_copy_user_address)
@@ -261,7 +264,7 @@ static ProcessorArea *get_processor_area() {
         }
     }
 
-    halt();
+    unreachable();
 }
 
 // Basically using always_inline as a type-safe macro
@@ -1434,7 +1437,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "wrmsr\n"
         :
         :
-        : "edx"
+        : "eax", "ecx", "edx"
     );
 
     // Set APIC to known state
@@ -1860,7 +1863,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "wrmsr\n"
         :
         :
-        : "edx"
+        : "eax", "ecx", "edx"
     );
 
     Array<uint8_t> bitmap {
@@ -1906,7 +1909,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "wrmsr\n"
         :
         :
-        : "edx"
+        : "eax", "ecx", "edx"
     );
 
     asm volatile(
@@ -1993,6 +1996,17 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         : "al"
     );
 
+    // Enable execution-disable page bit
+    asm volatile(
+        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
+        "rdmsr\n"
+        "or $(1 << 11), %%eax\n"
+        "wrmsr\n"
+        :
+        :
+        : "eax", "ecx", "edx"
+    );
+
     asm volatile(
         "mov %0, %%cr3"
         :
@@ -2008,7 +2022,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "wrmsr\n"
         :
         :
-        : "edx"
+        : "eax", "ecx", "edx"
     );
 
     asm volatile(

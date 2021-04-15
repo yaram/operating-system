@@ -681,6 +681,8 @@ CreateProcessFromELFResult create_process_from_elf(
     // Set ABI-specified intial register states
 
     process->frame.mxcsr |= bits_to_mask(6) << 7;
+    
+    process->is_ready = true;
 
     *result_processs = process;
     *result_process_iterator = process_iterator;
