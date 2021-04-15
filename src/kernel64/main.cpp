@@ -787,7 +787,7 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
 
                     *return_1 = (size_t)MapSharedMemoryResult::InvalidProcessID;
                     for(auto target_process : global_processes) {
-                        if(target_process->id == parameters->process_id) {
+                        if(target_process->id == parameters->process_id && target_process->is_ready) {
                             *return_1 = (size_t)MapSharedMemoryResult::InvalidMemoryRange;
                             for(auto mapping : target_process->mappings) {
                                 if(
@@ -957,7 +957,7 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
             *return_1 = 0;
 
             for(auto process : global_processes) {
-                if(process->id == process_id) {
+                if(process->id == process_id && process->is_ready) {
                     *return_1 = 1;
                     break;
                 }
