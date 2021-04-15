@@ -139,6 +139,44 @@ static BucketArrayIterator<T, N> find_unoccupied_bucket_slot(BucketArray<T, N> *
 }
 
 template <typename T, size_t N>
+static T *index_bucket_array(BucketArray<T, N> *bucket_array, size_t index, BucketArrayIterator<T, N> *result_iterator = nullptr) {
+    BucketArrayIterator<T, N> iterator {
+        &bucket_array->first_bucket,
+        0
+    };
+
+    size_t current_index = 0;
+    while(current_index != index) {
+        if(iterator.current_bucket == nullptr) {
+            break;
+        }
+
+        if(iterator.current_sub_index == N - 1) {
+            iterator.current_bucket = iterator.current_bucket->next;
+            iterator.current_sub_index = 0;
+
+            if(iterator.current_bucket == nullptr) {
+                break;
+            }
+        } else {
+            iterator.current_sub_index += 1;
+        }
+
+        current_index += 1;
+    }
+
+    if(result_iterator != nullptr) {
+        *result_iterator = iterator;
+    }
+
+    if(iterator.current_bucket == nullptr) {
+        return nullptr;
+    } else {
+        return *iterator;
+    }
+}
+
+template <typename T, size_t N>
 static BucketArrayIterator<T, N> begin(BucketArray<T, N> &bucket_array) {
     BucketArrayIterator<T, N> iterator {
         &bucket_array.first_bucket,
@@ -171,6 +209,44 @@ static BucketArrayIterator<T, N> end(BucketArray<T, N> &bucket_array) {
         nullptr,
         0
     };
+}
+
+template <typename T, size_t N>
+static T *index_bucket_array(const BucketArray<T, N> *bucket_array, size_t index, ConstBucketArrayIterator<T, N> *result_iterator = nullptr) {
+    ConstBucketArrayIterator<T, N> iterator {
+        &bucket_array->first_bucket,
+        0
+    };
+
+    size_t current_index = 0;
+    while(current_index != index) {
+        if(iterator.current_bucket == nullptr) {
+            break;
+        }
+
+        if(iterator.current_sub_index == N - 1) {
+            iterator.current_bucket = iterator.current_bucket->next;
+            iterator.current_sub_index = 0;
+
+            if(iterator.current_bucket == nullptr) {
+                break;
+            }
+        } else {
+            iterator.current_sub_index += 1;
+        }
+
+        current_index += 1;
+    }
+
+    if(result_iterator != nullptr) {
+        *result_iterator = iterator;
+    }
+
+    if(iterator.current_bucket == nullptr) {
+        return nullptr;
+    } else {
+        return *iterator;
+    }
 }
 
 template <typename T, size_t N>

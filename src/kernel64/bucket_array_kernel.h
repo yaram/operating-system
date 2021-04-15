@@ -3,6 +3,7 @@
 #include "bucket_array.h"
 #include "paging.h"
 #include "memory.h"
+#include "threading_kernel.h"
 
 template <typename T, size_t N>
 static T *allocate_from_bucket_array(
@@ -10,38 +11,44 @@ static T *allocate_from_bucket_array(
     Array<uint8_t> bitmap,
     BucketArrayIterator<T, N> *result_iterator = nullptr
 ) {
-    auto iterator = find_unoccupied_bucket_slot(bucket_array);
+    while(true) {
+        auto iterator = find_unoccupied_bucket_slot(bucket_array);
 
-    if(iterator.current_bucket == nullptr) {
-        auto new_bucket = (Bucket<T, N>*)map_and_allocate_memory(sizeof(Bucket<T, N>), bitmap);
-        if(new_bucket == nullptr) {
-            return nullptr;
-        }
-
-        {
-            auto current_bucket = &bucket_array->first_bucket;
-            while(current_bucket->next != nullptr) {
-                current_bucket = current_bucket->next;
+        if(iterator.current_bucket == nullptr) {
+            auto new_bucket = (Bucket<T, N>*)map_and_allocate_memory(sizeof(Bucket<T, N>), bitmap);
+            if(new_bucket == nullptr) {
+                return nullptr;
             }
 
-            current_bucket->next = new_bucket;
+            while(true) {
+                auto current_bucket = &bucket_array->first_bucket;
+                while(current_bucket->next != nullptr) {
+                    current_bucket = current_bucket->next;
+                }
+
+                if(compare_and_swap(&current_bucket->next, (Bucket<T, N>*)nullptr, new_bucket)) {
+                    break;
+                }
+            }
+
+            iterator = {
+                new_bucket,
+                0
+            };
         }
 
-        iterator = {
-            new_bucket,
-            0
-        };
-    } else {
+        if(!compare_and_swap(&iterator.current_bucket->occupied[iterator.current_sub_index], false, true)) {
+            continue;
+        }
+
         memset(*iterator, 0, sizeof(T));
+
+        if(result_iterator != nullptr) {
+            *result_iterator = iterator;
+        }
+
+        return *iterator;
     }
-
-    iterator.current_bucket->occupied[iterator.current_sub_index] = true;
-
-    if(result_iterator != nullptr) {
-        *result_iterator = iterator;
-    }
-
-    return *iterator;
 }
 
 template <typename T, size_t N>

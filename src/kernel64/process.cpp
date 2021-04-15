@@ -2,6 +2,8 @@
 #include "paging.h"
 #include "memory.h"
 #include "bucket_array_kernel.h"
+#include "threading_kernel.h"
+#include "multiprocessing.h"
 
 #define bits_to_mask(bits) ((1 << (bits)) - 1)
 
@@ -78,77 +80,6 @@ struct ELFRelocationAddend {
     intptr_t addend;
 };
 
-static bool map_and_maybe_allocate_table(
-    size_t *current_parent_index,
-    PageTableEntry **current_table,
-    PageTableEntry *parent_table,
-    size_t parent_index,
-    Array<uint8_t> bitmap,
-    size_t *bitmap_index,
-    size_t *bitmap_sub_bit_index
-) {
-    if(parent_table[parent_index].present) {
-        if(*current_table == nullptr || parent_index != *current_parent_index) {
-            if(*current_table != nullptr) {
-                unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
-
-                *current_table = nullptr;
-            }
-
-            size_t logical_page_index;
-            if(!map_pages(
-                parent_table[parent_index].page_address,
-                1,
-                bitmap,
-                &logical_page_index
-            )) {
-                return false;
-            }
-
-            *current_table = (PageTableEntry*)(logical_page_index * page_size);
-            *current_parent_index = parent_index;
-        }
-    } else {
-        if(*current_table != nullptr) {
-            unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
-
-            *current_table = nullptr;
-        }
-
-        size_t physical_page_index;
-        if(!allocate_next_physical_page(
-            bitmap_index,
-            bitmap_sub_bit_index,
-            bitmap,
-            &physical_page_index
-        )) {
-            return false;
-        }
-
-        size_t logical_page_index;
-        if(!map_pages(
-            physical_page_index,
-            1,
-            bitmap,
-            &logical_page_index
-        )) {
-            return false;
-        }
-
-        *current_table = (PageTableEntry*)(logical_page_index * page_size);
-        *current_parent_index = parent_index;
-
-        memset(*current_table, 0, sizeof(PageTableEntry[page_table_length]));
-
-        parent_table[parent_index].present = true;
-        parent_table[parent_index].write_allowed = true;
-        parent_table[parent_index].user_mode_allowed = true;
-        parent_table[parent_index].page_address = physical_page_index;
-    }
-
-    return true;
-}
-
 size_t next_process_id = 0;
 
 static bool c_string_equal(const char *a, const char *b) {
@@ -168,7 +99,7 @@ static bool c_string_equal(const char *a, const char *b) {
 
 static bool map_and_allocate_pages_in_process_and_kernel(
     size_t page_count,
-    UserPermissions permissions,
+    PagePermissions permissions,
     Process *process,
     Array<uint8_t> bitmap,
     size_t *user_pages_start,
@@ -351,81 +282,55 @@ CreateProcessFromELFResult create_process_from_elf(
 
         memset(pml4_table, 0, sizeof(PageTableEntry[page_table_length]));
 
-        size_t current_pml4_index;
-        PageTableEntry *pdp_table = nullptr;
-
-        size_t current_pdp_index;
-        PageTableEntry *pd_table = nullptr;
-
-        size_t current_pd_index;
-        PageTableEntry *page_table = nullptr;
+        PageWalker walker {};
+        walker.absolute_page_index = kernel_pages_start;
+        walker.pml4_table = pml4_table;
 
         for(size_t absolute_page_index = kernel_pages_start; absolute_page_index < kernel_pages_end; absolute_page_index += 1) {
-            auto page_index = absolute_page_index;
-            auto pd_index = page_index / page_table_length;
-            auto pdp_index = pd_index / page_table_length;
-            auto pml4_index = pdp_index / page_table_length;
+            if(!increment_page_walker(&walker, bitmap)) {
+                unmap_page_walker(&walker);
 
-            page_index %= page_table_length;
-            pd_index %= page_table_length;
-            pdp_index %= page_table_length;
-            pml4_index %= page_table_length;
+                remove_item_from_bucket_array(process_iterator);
 
-            if(
-                !map_and_maybe_allocate_table(
-                    &current_pml4_index,
-                    &pdp_table,
-                    pml4_table,
-                    pml4_index,
-                    bitmap,
-                    &bitmap_index,
-                    &bitmap_sub_bit_index
-                ) ||
-                !map_and_maybe_allocate_table(
-                    &current_pdp_index,
-                    &pd_table,
-                    pdp_table,
-                    pdp_index,
-                    bitmap,
-                    &bitmap_index,
-                    &bitmap_sub_bit_index
-                ) ||
-                !map_and_maybe_allocate_table(
-                    &current_pd_index,
-                    &page_table,
-                    pd_table,
-                    pd_index,
-                    bitmap,
-                    &bitmap_index,
-                    &bitmap_sub_bit_index
-                )
-            ) {
-                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+                return CreateProcessFromELFResult::OutOfMemory;
+            }
 
-                if(pdp_table != nullptr) {
-                    unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
-                }
+            auto page = &walker.page_table[walker.page_index];
 
-                if(pd_table != nullptr) {
-                    unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
-                }
+            page->present = true;
+            page->write_allowed = true;
+            page->user_mode_allowed = false;
+            page->page_address = absolute_page_index;
+        }
 
-                if(page_table != nullptr) {
-                    unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
-                }
+        unmap_page_walker(&walker);
+    }
+
+    { // Reserve pages for processor area
+        PageWalker walker;
+        if(!create_page_walker(process->pml4_table_physical_address, processor_area_pages_start, bitmap, &walker)) {
+            destroy_process(process_iterator, bitmap);
+
+            return CreateProcessFromELFResult::OutOfMemory;
+        }
+
+        for(size_t relative_page_index = 0; relative_page_index < processor_area_page_count; relative_page_index += 1) {
+            if(!increment_page_walker(&walker, bitmap)) {
+                unmap_page_walker(&walker);
 
                 destroy_process(process_iterator, bitmap);
 
                 return CreateProcessFromELFResult::OutOfMemory;
             }
 
-            page_table[page_index].present = true;
-            page_table[page_index].write_allowed = true;
-            page_table[page_index].user_mode_allowed = false;
-            page_table[page_index].page_address = absolute_page_index;
+            auto page = &walker.page_table[walker.page_index];
+
+            page->present = true;
+            page->write_allowed = true;
+            page->user_mode_allowed = false;
         }
 
-        unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+        unmap_page_walker(&walker);
     }
 
     SectionAllocations section_allocations {};
@@ -437,14 +342,14 @@ CreateProcessFromELFResult create_process_from_elf(
             if((section_header->flags & 0b10) != 0) { // SHF_ALLOC
                 auto page_count = divide_round_up(section_header->size, page_size);
 
-                UserPermissions permissions {};
+                PagePermissions permissions {};
 
                 if((section_header->flags & 0b1) != 0) { // SHF_WRITE
-                    permissions = (UserPermissions)(permissions | UserPermissions::Write);
+                    permissions = (PagePermissions)(permissions | PagePermissions::Write);
                 }
 
                 if((section_header->flags & 0b100) != 0) { // SHF_EXECINSTR
-                    permissions = (UserPermissions)(permissions | UserPermissions::Execute);
+                    permissions = (PagePermissions)(permissions | PagePermissions::Execute);
                 }
 
                 size_t user_pages_start;
@@ -688,7 +593,7 @@ CreateProcessFromELFResult create_process_from_elf(
     size_t stack_kernel_pages_start;
     if(!map_and_allocate_pages_in_process_and_kernel(
         stack_page_count,
-        UserPermissions::Write,
+        PagePermissions::Write,
         process,
         bitmap,
         &stack_user_pages_start,
@@ -713,7 +618,7 @@ CreateProcessFromELFResult create_process_from_elf(
     } else {
         if(!map_and_allocate_pages_in_process_and_kernel(
             data_page_count,
-            UserPermissions::Write,
+            PagePermissions::Write,
             process,
             bitmap,
             &data_user_pages_start,

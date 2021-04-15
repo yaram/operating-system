@@ -9,10 +9,12 @@ extern "C" {
 #include "process.h"
 #include "memory.h"
 #include "bucket_array.h"
+#include "bucket_array_kernel.h"
 #include "syscalls.h"
 #include "pcie.h"
 #include "halt.h"
 #include "array.h"
+#include "multiprocessing.h"
 
 #define do_ranges_intersect(a_start, a_end, b_start, b_end) (!((a_end) <= (b_start) || (b_end) <= (a_start)))
 
@@ -44,161 +46,9 @@ struct MADTTable {
     ACPI_SUBTABLE_HEADER entries[0];
 };
 
-struct __attribute__((packed)) TSSEntry {
-    uint32_t reserved_1;
-    uint64_t rsp0;
-    uint64_t rsp1;
-    uint64_t rsp2;
-    uint64_t reserved_2;
-    uint64_t ist1;
-    uint64_t ist2;
-    uint64_t ist3;
-    uint64_t ist4;
-    uint64_t ist5;
-    uint64_t ist6;
-    uint64_t ist7;
-    uint64_t reserved_3;
-    uint16_t reserved_4;
-    uint16_t iopb_offset;
-};
-
-extern uint8_t stack_top[];
-
-TSSEntry tss_entry {
-    0,
-    (uint64_t)&stack_top,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    0,
-    (uint16_t)sizeof(TSSEntry)
-};
-
-struct __attribute__((packed)) GDTEntry {
-    uint16_t limit_low;
-    uint32_t base_low: 24;
-    bool accessed: 1;
-    bool read_write: 1;
-    bool direction_conforming: 1;
-    bool executable: 1;
-    bool type: 1;
-    uint8_t privilege: 2;
-    bool present: 1;
-    uint8_t limit_high: 4;
-    bool task_available: 1;
-    bool long_mode: 1;
-    bool size: 1;
-    bool granularity: 1;
-    uint8_t base_high;
-};
-
 struct __attribute__((packed)) GDTDescriptor {
     uint16_t limit;
-    uint32_t base;
-};
-
-const size_t gdt_size = 7;
-
-GDTEntry gdt_entries[gdt_size] {
-    {},
-    { // Kernel code segment
-        0xFFFF,
-        0,
-        false,
-        true,
-        false,
-        true,
-        true,
-        0,
-        true,
-        0b1111,
-        false,
-        true,
-        false,
-        true,
-        0,
-    },
-    { // Kernel data segment
-        0,
-        0,
-        false,
-        true,
-        false,
-        false,
-        true,
-        0,
-        true,
-        0,
-        false,
-        false,
-        false,
-        false,
-        0,
-    },
-    { // User data segment
-        0,
-        0,
-        false,
-        true,
-        false,
-        false,
-        true,
-        3,
-        true,
-        0,
-        false,
-        false,
-        false,
-        false,
-        0,
-    },
-    { // User code segment
-        0xFFFF,
-        0,
-        false,
-        true,
-        false,
-        true,
-        true,
-        3,
-        true,
-        0b1111,
-        false,
-        true,
-        false,
-        true,
-        0,
-    },
-    { // Task State Segment
-        (uint16_t)sizeof(TSSEntry),
-        (uint32_t)(size_t)&tss_entry,
-        true,
-        false,
-        false,
-        true,
-        false,
-        3,
-        true,
-        (uint8_t)(sizeof(TSSEntry) >> 16),
-        false,
-        false,
-        false,
-        false,
-        (uint8_t)((size_t)&tss_entry >> 24),
-    }
-};
-
-GDTDescriptor gdt_descriptor {
-    (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
-    (uint32_t)(size_t)&gdt_entries
+    uint64_t base;
 };
 
 struct __attribute__((packed)) IDTEntry {
@@ -219,15 +69,13 @@ struct __attribute__((packed)) IDTDescriptor {
     uint64_t base;
 };
 
-volatile uint32_t *global_apic_registers;
+using ProcessorAreas = BucketArray<ProcessorArea*, 4>;
 
-extern "C" [[noreturn]] void  preempt_timer_thunk();
+ProcessorAreas processor_areas {};
 
-extern "C" [[noreturn]] void user_enter_thunk(const ProcessStackFrame *frame);
+extern "C" [[noreturn]] void preempt_timer_thunk();
 
 const uint32_t preempt_time = 0x100000;
-
-Processes::Iterator current_process_iterator;
 
 const auto kernel_pd_start = kernel_pages_start / page_table_length;
 const auto kernel_pd_end = divide_round_up(kernel_pages_end, page_table_length);
@@ -259,83 +107,348 @@ extern uint8_t multiprocessor_binary_end[];
 extern uint8_t embedded_init_binary[];
 extern uint8_t embedded_init_binary_end[];
 
-volatile bool additional_processor_initialized_flag = false;
+static volatile bool additional_processor_initialized_flag = false;
 
 Array<uint8_t> global_bitmap;
 
+volatile bool global_processes_lock = false;
 Processes global_processes {};
 
-[[noreturn]] static void enter_next_process() {
-    ++current_process_iterator;
+[[noreturn]] static inline void unreachable() {
+    printf("UNREACHABLE CODE EXECUTED!\n");
 
-    if(current_process_iterator.current_bucket == nullptr) {
-        current_process_iterator = begin(global_processes);
+    halt();
+}
+
+[[noreturn]] static void enter_next_process(
+    ProcessorArea *processor_area,
+    Array<uint8_t> bitmap,
+    Processes *processes
+) {
+    ++processor_area->current_process_iterator;
+
+    Process *process;
+    // First iteration from current process iterator onwards, to give the next processes priority for round-robin
+    while(true) {
+        if(processor_area->current_process_iterator.current_bucket == nullptr) {
+            break;
+        }
+
+        process = *processor_area->current_process_iterator;
+
+        if(compare_and_swap(&process->is_resident, false, true)) {
+            break;
+        }
+
+        ++processor_area->current_process_iterator;
     }
 
-    if(current_process_iterator.current_bucket == nullptr) {
-        printf("No processes left\n");
+    /// Second iteration from start of process list
+    if(processor_area->current_process_iterator.current_bucket == nullptr) {
+        processor_area->current_process_iterator = begin(*processes);
 
-        halt();
+        while(true) {
+            if(processor_area->current_process_iterator.current_bucket == nullptr) {
+                // Set timer value
+                processor_area->apic_registers[0x380 / 4] = preempt_time;
+
+                // Send the End of Interrupt signal
+                processor_area->apic_registers[0x0B0 / 4] = 0;
+
+                // Halt current processor until next timer interval, also reset stack to top to prevent stack overflow
+                asm volatile(
+                    "mov %0, %%rsp\n"
+                    "sti\n"
+                    "hlt"
+                    :
+                    : "r"((size_t)&processor_area->stack + processor_stack_size)
+                );
+
+                unreachable();
+            }
+
+            process = *processor_area->current_process_iterator;
+
+            if(compare_and_swap(&process->is_resident, false, true)) {
+                break;
+            }
+
+            ++processor_area->current_process_iterator;
+        }
     }
 
-    auto process = *current_process_iterator;
+    auto processor_area_physical_pages_start = processor_area->physical_address / page_size;
+
+    { // Map pages for processor area
+        PageWalker walker;
+        if(!create_page_walker(process->pml4_table_physical_address, processor_area_pages_start, bitmap, &walker)) {
+            printf("Error: Out of memory\n");
+
+            halt();
+        }
+
+        for(size_t relative_page_index = 0; relative_page_index < processor_area_page_count; relative_page_index += 1) {
+            if(!increment_page_walker(&walker, bitmap)) {
+                printf("Error: Out of memory\n");
+
+                halt();
+            }
+
+            auto page = &walker.page_table[walker.page_index];
+
+            page->page_address = processor_area_physical_pages_start + relative_page_index;
+        }
+
+        unmap_page_walker(&walker);
+    }
+
+    GDTDescriptor gdt_descriptor {
+        (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
+        processor_area_memory_start + offsetof(ProcessorArea, gdt_entries)
+    };
+
+    process->resident_processor_id = processor_area->processor_id;
 
     auto stack_frame_copy = process->frame;
 
+    auto stack_frame_copy_kernel_address = (size_t)&stack_frame_copy;
+
+    auto stack_frame_copy_relative_address = stack_frame_copy_kernel_address - (size_t)&processor_area->stack;
+
+    auto stack_frame_copy_user_address = processor_area_memory_start + stack_frame_copy_relative_address;
+
     // Set timer value
-    global_apic_registers[0x380 / 4] = preempt_time;
+    processor_area->apic_registers[0x380 / 4] = preempt_time;
 
     // Send the End of Interrupt signal
-    global_apic_registers[0x0B0 / 4] = 0;
+    processor_area->apic_registers[0x0B0 / 4] = 0;
 
     asm volatile(
-        "mov %0, %%cr3"
+        // Load GDT
+        "lgdtq (%0)\n"
+
+        "mov %1, %%cr3\n"
+        "jmp user_enter_thunk"
         :
-        : "D"(process->pml4_table_physical_address)
+        : "r"(&gdt_descriptor), "r"(process->pml4_table_physical_address), "D"(stack_frame_copy_user_address)
     );
 
-    user_enter_thunk(&stack_frame_copy);
+    unreachable();
 }
 
-extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackFrame *frame) {
+static inline uint8_t get_processor_id() {
+    uint8_t processor_id;
+    asm volatile(
+        "mov $1, %%eax\n"
+        "cpuid\n"
+        "shrl $24, %%ebx\n"
+        : "=b"(processor_id)
+        :
+        : "eax", "ecx", "edx"
+    );
+
+    return processor_id;
+}
+
+static ProcessorArea *get_processor_area() {
+    auto processor_id = get_processor_id();
+
+    for(auto processor_area_pointer : processor_areas) {
+        auto processor_area = *processor_area_pointer;
+
+        if(processor_area->processor_id == processor_id) {
+            return processor_area;
+        }
+    }
+
+    halt();
+}
+
+// Basically using always_inline as a type-safe macro
+static __attribute__((always_inline)) void continue_in_function_return(ProcessStackFrame *stack_frame, void (*function_continued)(ProcessStackFrame*)) {
+    size_t current_pml4_table;
+    asm volatile(
+        "mov %%cr3, %0"
+        : "=r"(current_pml4_table)
+    );
+
+    if(current_pml4_table == (size_t)&kernel_pml4_table) {
+        function_continued(stack_frame);
+    } else {
+        auto stack_offset = offsetof(ProcessorArea, stack);
+
+        auto stack_user_address = processor_area_memory_start + stack_offset;
+
+        auto user_processor_area = (ProcessorArea*)processor_area_memory_start;
+        auto stack_kernel_address = (size_t)user_processor_area->kernel_address + stack_offset;
+
+        auto frame_user_address = (size_t)stack_frame;
+
+        GDTDescriptor kernel_gdt_descriptor {
+            (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
+            (size_t)user_processor_area->kernel_address + offsetof(ProcessorArea, gdt_entries)
+        };
+
+        auto kernel_gdt_descriptor_user_address = (size_t)&kernel_gdt_descriptor;
+
+        GDTDescriptor user_gdt_descriptor {
+            (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
+            processor_area_memory_start + offsetof(ProcessorArea, gdt_entries)
+        };
+
+        auto user_gdt_descriptor_user_address = (size_t)&user_gdt_descriptor;
+
+        auto kernel_pml4_table_address = (size_t)&kernel_pml4_table;
+
+        auto function_continued_address = (size_t)function_continued;
+
+        asm volatile(
+            // Save needed info to stack
+            "push %0\n"
+            "push %1\n"
+            "mov %%cr3, %%rax\n"
+            "push %%rax\n"
+            "push %5\n"
+
+            // Switch to kernel-mapped processor stack
+            "sub %0, %%rsp\n"
+            "add %1, %%rsp\n"
+
+            // Load kernel-space GDT address into the GDTR
+            "lgdt (%4)\n"
+
+            // Switch to kernel page table
+            "mov %2, %%cr3\n"
+
+            // Calculate kernel stack frame address
+            "sub %0, %%rdi\n"
+            "add %1, %%rdi\n"
+
+            // Call continued function
+            "call *%3\n"
+
+            // Restore saved info
+            "pop %5\n"
+            "pop %%rax\n"
+            "pop %1\n"
+            "pop %0\n"
+
+            // Switch back to user page table
+            "mov %%rax, %%cr3\n"
+
+            // Load user-space GDT address into the GDTR
+            "lgdt (%5)\n"
+
+            // Switch back to user-mapped processor stack
+            "sub %1, %%rsp\n"
+            "add %0, %%rsp"
+
+            // Crazy register binding stuff with clobbers correctly specified
+            : "=r"(stack_user_address), "=r"(stack_kernel_address), "=r"(kernel_pml4_table_address), "=r"(function_continued_address), "=r"(kernel_gdt_descriptor_user_address), "=r"(user_gdt_descriptor_user_address), "=D"(frame_user_address)
+            : "0"(stack_user_address), "1"(stack_kernel_address), "2"(kernel_pml4_table_address), "3"(function_continued_address), "4"(kernel_gdt_descriptor_user_address), "5"(user_gdt_descriptor_user_address), "D"(frame_user_address)
+            : "rax", "r10", "r11"
+        );
+    }
+}
+
+[[noreturn]] static __attribute__((always_inline)) void continue_in_function(ProcessStackFrame *stack_frame, void (*function_continued)(ProcessStackFrame*)) {
+    size_t current_pml4_table;
+    asm volatile(
+        "mov %%cr3, %0"
+        : "=r"(current_pml4_table)
+    );
+
+    if(current_pml4_table == (size_t)&kernel_pml4_table) {
+        function_continued(stack_frame);
+    } else {
+        auto stack_offset = offsetof(ProcessorArea, stack);
+
+        auto stack_user_address = processor_area_memory_start + stack_offset;
+
+        auto user_processor_area = (ProcessorArea*)processor_area_memory_start;
+        auto stack_kernel_address = (size_t)user_processor_area->kernel_address + stack_offset;
+
+        GDTDescriptor gdt_descriptor {
+            (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
+            (size_t)user_processor_area->kernel_address + offsetof(ProcessorArea, gdt_entries)
+        };
+
+        asm volatile(
+            // Switch to kernel-mapped processor stack
+            "sub %0, %%rsp\n"
+            "add %1, %%rsp\n"
+
+            // Calculate kernel stack frame address
+            "sub %0, %%rdi\n"
+            "add %1, %%rdi\n"
+
+            // Load kernel-space GDT address into the GDTR
+            "lgdt (%4)\n"
+
+            // Switch to kernel page table
+            "mov %2, %%cr3\n"
+
+            // Call continued function
+            "call *%3"
+
+            :
+            : "r"(stack_user_address), "r"(stack_kernel_address), "r"(&kernel_pml4_table), "r"(function_continued), "r"(&gdt_descriptor), "D"(stack_frame)
+        );
+    }
+
+    // In case the continued function returns
+    unreachable();
+}
+
+[[noreturn]] void user_exception_handler_continued(ProcessStackFrame *frame) {
+    auto processor_area = get_processor_area();
+
+    if(processor_area->current_process_iterator.current_bucket != nullptr) {
+        auto process = *processor_area->current_process_iterator;
+
+        printf(" in process %zu (processor %u)\n", process->id, get_processor_id());
+
+        destroy_process(processor_area->current_process_iterator, global_bitmap);
+
+        enter_next_process(processor_area, global_bitmap, &global_processes);
+    } else {
+        printf(" in kernel (processor %u)\n", get_processor_id());
+
+        halt();
+    }
+}
+
+extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *frame) {
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
     if(
         (size_t)frame->interrupt_frame.instruction_pointer < kernel_memory_start ||
         (size_t)frame->interrupt_frame.instruction_pointer >= kernel_memory_end
     ) {
-        asm volatile(
-            "mov %0, %%cr3"
-            :
-            : "D"(&kernel_pml4_table)
-        );
-
-        auto process = *current_process_iterator;
-
-        printf(" in process %zu\n", process->id);
-
-        destroy_process(current_process_iterator, global_bitmap);
-
-        enter_next_process();
+        continue_in_function(frame, &user_exception_handler_continued);
     } else {
-        printf(" in kernel\n");
+        printf(" in kernel (processor %u)\n", get_processor_id());
 
         halt();
     }
 }
 
-extern "C" [[noreturn]] void preempt_timer_handler(const ProcessStackFrame *frame) {
-    asm volatile(
-        "mov %0, %%cr3"
-        :
-        : "D"(&kernel_pml4_table)
-    );
+[[noreturn]] void preempt_timer_handler_continued(ProcessStackFrame *frame) {
+    auto processor_area = get_processor_area();
 
-    auto old_process = *current_process_iterator;
+    if(processor_area->current_process_iterator.current_bucket != nullptr) {
+        auto old_process = *processor_area->current_process_iterator;
 
-    old_process->frame = *frame;
+        old_process->frame = *frame;
 
-    enter_next_process();
+        old_process->is_resident = false;
+    }
+
+    enter_next_process(processor_area, global_bitmap, &global_processes);
+}
+
+extern "C" [[noreturn]] void preempt_timer_handler(ProcessStackFrame *frame) {
+    continue_in_function(frame, &preempt_timer_handler_continued);
 }
 
 __attribute((interrupt))
@@ -373,9 +486,9 @@ const size_t idt_length = 48;
     0, \
     0, \
     0xF, \
+    false, \
     0, \
-    0, \
-    1, \
+    true, \
     (uint64_t)(size_t)&exception_handler_thunk_##index >> 16, \
     0 \
 }
@@ -489,14 +602,10 @@ static MapProcessMemoryResult map_process_memory_into_kernel(Process *process, s
     return MapProcessMemoryResult::Success;
 }
 
-extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
-    asm volatile(
-        "mov %0, %%cr3"
-        :
-        : "D"(&kernel_pml4_table)
-    );
+void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
+    auto processor_area = get_processor_area();
 
-    auto process = *current_process_iterator;
+    auto process = *processor_area->current_process_iterator;
 
     auto syscall_index = stack_frame->rbx;
     auto parameter_1 = stack_frame->rdx;
@@ -509,15 +618,17 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
     switch((SyscallType)syscall_index) {
         case SyscallType::Exit: {
-            destroy_process(current_process_iterator, global_bitmap);
+            destroy_process(processor_area->current_process_iterator, global_bitmap);
 
-            enter_next_process();
+            enter_next_process(processor_area, global_bitmap, &global_processes);
         } break;
 
         case SyscallType::RelinquishTime: {
             process->frame = *stack_frame;
 
-            enter_next_process();
+            process->is_resident = false;
+
+            enter_next_process(processor_area, global_bitmap, &global_processes);
         } break;
 
         case SyscallType::DebugPrint: {
@@ -538,7 +649,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             if(!map_pages_from_kernel(
                 kernel_pages_start,
                 page_count,
-                UserPermissions::Write,
+                PagePermissions::Write,
                 process->pml4_table_physical_address,
                 global_bitmap,
                 &user_pages_start
@@ -586,7 +697,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             if(!map_pages(
                 physical_pages_start,
                 page_count,
-                UserPermissions::Write,
+                PagePermissions::Write,
                 process->pml4_table_physical_address,
                 global_bitmap,
                 &user_pages_start
@@ -627,7 +738,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
             if(!map_pages_from_kernel(
                 kernel_pages_start,
                 page_count,
-                UserPermissions::Write,
+                PagePermissions::Write,
                 process->pml4_table_physical_address,
                 global_bitmap,
                 &user_pages_start
@@ -675,7 +786,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                                     if(!map_pages_between_user(
                                         target_logical_pages_start,
                                         page_count,
-                                        UserPermissions::Write,
+                                        PagePermissions::Write,
                                         target_process->pml4_table_physical_address,
                                         process->pml4_table_physical_address,
                                         global_bitmap,
@@ -933,7 +1044,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
 
                     AcpiPutTable(&mcfg_table->preamble.Header);
 
-                    unmap_memory((void*)parameters, sizeof(FindPCIEDeviceParameters));       
+                    unmap_memory((void*)parameters, sizeof(FindPCIEDeviceParameters));   
                 } break;
 
                 case MapProcessMemoryResult::OutOfMemory: {
@@ -974,7 +1085,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                             device * function_count +
                             function,
                         1,
-                        UserPermissions::Write,
+                        PagePermissions::Write,
                         process->pml4_table_physical_address,
                         global_bitmap,
                         &logical_pages_start
@@ -1098,7 +1209,7 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
                     if(!map_pages(
                         physical_pages_start,
                         page_count,
-                        UserPermissions::Write,
+                        PagePermissions::Write,
                         process->pml4_table_physical_address,
                         global_bitmap,
                         &logical_pages_start
@@ -1120,17 +1231,15 @@ extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
         default: { // unknown syscall
             printf("Unknown syscall from process %zu at %p\n", process->id, stack_frame->interrupt_frame.instruction_pointer);
 
-            destroy_process(current_process_iterator, global_bitmap);
+            destroy_process(processor_area->current_process_iterator, global_bitmap);
 
-            enter_next_process();
+            enter_next_process(processor_area, global_bitmap, &global_processes);
         } break;
     }
+}
 
-    asm volatile(
-        "mov %0, %%cr3"
-        :
-        : "D"(process->pml4_table_physical_address)
-    );
+extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
+    continue_in_function_return(stack_frame, &syscall_entrance_continued);
 }
 
 struct BootstrapMemoryMapEntry {
@@ -1188,6 +1297,305 @@ volatile uint32_t* global_io_apic_registers;
 extern void (*init_array_start[])();
 extern void (*init_array_end[])();
 
+static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable *madt_table, Array<uint8_t> bitmap) {
+    size_t processor_area_physical_address;
+    auto processor_area = (ProcessorArea*)map_and_allocate_consecutive_memory(sizeof(ProcessorArea), bitmap, &processor_area_physical_address, false);
+    if(processor_area == nullptr) {
+        printf("Error: Out of memory\n");
+
+        halt();
+    }
+
+    memset(processor_area, 0, sizeof(ProcessorArea));
+
+    auto processor_area_pointer = allocate_from_bucket_array(processor_areas, bitmap);
+    if(processor_area_pointer == nullptr) {
+        printf("Error: Out of memory\n");
+
+        halt();
+    }
+
+    *processor_area_pointer = processor_area;
+
+    processor_area->processor_id = get_processor_id();
+    processor_area->physical_address = processor_area_physical_address;
+    processor_area->kernel_address = processor_area;
+
+    // Processor area is mapped into each process at the same position, so processor stack is always in the same position
+    auto stack_user_address = processor_area_memory_start + offsetof(ProcessorArea, stack);
+
+    processor_area->tss_entry.iopb_offset = (uint16_t)sizeof(TSSEntry);
+    processor_area->tss_entry.rsp0 = stack_user_address + processor_stack_size;
+
+    auto tss_entry_user_address = processor_area_memory_start + offsetof(ProcessorArea, tss_entry);
+
+    processor_area->gdt_entries[1].normal_segment.present = true;
+    processor_area->gdt_entries[1].normal_segment.type = true;
+    processor_area->gdt_entries[1].normal_segment.read_write = true;
+    processor_area->gdt_entries[1].normal_segment.executable = true;
+    processor_area->gdt_entries[1].normal_segment.long_mode = true;
+
+    processor_area->gdt_entries[2].normal_segment.present = true;
+    processor_area->gdt_entries[2].normal_segment.type = true;
+    processor_area->gdt_entries[2].normal_segment.read_write = true;
+
+    processor_area->gdt_entries[3].normal_segment.present = true;
+    processor_area->gdt_entries[3].normal_segment.type = true;
+    processor_area->gdt_entries[3].normal_segment.read_write = true;
+    processor_area->gdt_entries[3].normal_segment.privilege = 3;
+
+    processor_area->gdt_entries[4].normal_segment.present = true;
+    processor_area->gdt_entries[4].normal_segment.type = true;
+    processor_area->gdt_entries[4].normal_segment.read_write = true;
+    processor_area->gdt_entries[4].normal_segment.executable = true;
+    processor_area->gdt_entries[4].normal_segment.long_mode = true;
+    processor_area->gdt_entries[4].normal_segment.privilege = 3;
+
+    processor_area->gdt_entries[5].task_state_segment_low.present = true;
+    processor_area->gdt_entries[5].task_state_segment_low.type = 0b01001;
+    processor_area->gdt_entries[5].task_state_segment_low.base_low = (uint32_t)tss_entry_user_address;
+    processor_area->gdt_entries[5].task_state_segment_low.base_mid = (uint8_t)(tss_entry_user_address >> 24);
+    processor_area->gdt_entries[5].task_state_segment_low.limit_low = (uint16_t)sizeof(TSSEntry);
+    processor_area->gdt_entries[5].task_state_segment_low.limit_high = (uint8_t)(sizeof(TSSEntry) >> 16);
+
+    processor_area->gdt_entries[6].task_state_segment_high.base_high = (uint32_t)(tss_entry_user_address >> 32);
+
+    GDTDescriptor gdt_descriptor {
+        (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
+        (size_t)&processor_area->gdt_entries
+    };
+
+    asm volatile(
+        // Load GDT
+        "lgdtq (%0)\n"
+
+        // Load data segments
+        "mov $0x10, %%ax\n"
+        "mov %%ax, %%ds\n"
+        "mov %%ax, %%ss\n"
+        "mov %%ax, %%es\n"
+        "mov %%ax, %%fs\n"
+        "mov %%ax, %%gs\n"
+
+        // Load code segment
+        "pushq $0x08\n"
+        "pushq $.long_jump_target\n"
+        "lretq\n"
+        ".long_jump_target:\n"
+
+        // Load task state register
+        "mov $0x2B, %%ax\n"
+        "ltr %%ax"
+
+        :
+        : "r"(&gdt_descriptor)
+        : "ax"
+    );
+
+    auto apic_physical_address = (size_t)madt_table->preamble.Address;
+
+    size_t current_madt_index = 0;
+    while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
+        auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
+
+        if(header->Type == ACPI_MADT_TYPE_LOCAL_APIC_OVERRIDE) {
+            auto subtable = (ACPI_MADT_LOCAL_APIC_OVERRIDE*)header;
+
+            apic_physical_address = (size_t)subtable->Address;
+
+            break;
+        }
+
+        current_madt_index += (size_t)header->Length;
+    }
+
+    auto apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap);
+    if(apic_registers == nullptr) {
+        printf("Error: Out of memory\n");
+
+        halt();
+    }
+
+    // Globally enable APICs
+    asm volatile(
+        "mov $0x1B, %%ecx\n" // IA32_APIC_BASE MSR
+        "rdmsr\n"
+        "or $(1 << 11), %%eax\n"
+        "wrmsr\n"
+        :
+        :
+        : "edx"
+    );
+
+    // Set APIC to known state
+    apic_registers[0x2F0 / 4] |= 1 << 16;
+    apic_registers[0x320 / 4] |= 1 << 16;
+    apic_registers[0x330 / 4] |= 1 << 16;
+    apic_registers[0x340 / 4] |= 1 << 16;
+    apic_registers[0x350 / 4] |= 1 << 16;
+    apic_registers[0x360 / 4] |= 1 << 16;
+    apic_registers[0x370 / 4] |= 1 << 16;
+
+    // Enable local APIC / set spurious interrupt vector to 0x2F
+    apic_registers[0xF0 / 4] = 0x2F | 0x100;
+
+    // Enable timer / set timer interrupt vector vector
+    apic_registers[0x320 / 4] = 0x20;
+
+    // Set timer divider to 16
+    apic_registers[0x3E0 / 4] = 3;
+
+    processor_area->apic_registers = apic_registers;
+
+    return processor_area;
+}
+
+[[noreturn]] static void bootstrap_processor_entry_continued() {
+    auto processor_area = get_processor_area();
+
+    MADTTable *madt_table;
+    {
+        auto status = AcpiGetTable((char*)ACPI_SIG_MADT, 1, (ACPI_TABLE_HEADER**)&madt_table);
+        if(status != AE_OK) {
+            printf("Error: Unable to get MADT ACPI table (0x%X)\n", status);
+
+            halt();
+        }
+    }
+
+    size_t current_madt_index = 0;
+    size_t io_apic_physical_address;
+    auto io_apic_found = false;
+    while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
+        auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
+
+        if(header->Type == ACPI_MADT_TYPE_IO_APIC) {
+            auto subtable = (ACPI_MADT_IO_APIC*)header;
+
+            io_apic_found = true;
+
+            io_apic_physical_address = (size_t)subtable->Address;
+
+            break;
+        }
+
+        current_madt_index += (size_t)header->Length;
+    }
+
+    if(!io_apic_found) {
+        printf("Error: No IO APIC found\n");
+
+        halt();
+    }
+
+    global_io_apic_registers = (volatile uint32_t*)map_memory(io_apic_physical_address, 32, global_bitmap);
+    if(global_io_apic_registers == nullptr) {
+        printf("Error: Out of memory\n");
+
+        halt();
+    }
+
+    const size_t multiprocessor_binary_load_location = 0x1000;
+    static_assert(multiprocessor_binary_load_location % 0x1000 == 0, "Multiprocessor binary load location not page-aligned");
+    static_assert(multiprocessor_binary_load_location < 0x100000, "Multiprocessor binary load location not within first 1M");
+
+    auto multiprocessor_binary_size = (size_t)multiprocessor_binary_end - (size_t)multiprocessor_binary;
+
+    memcpy((void*)multiprocessor_binary_load_location, multiprocessor_binary, multiprocessor_binary_size);
+
+    auto bootstrap_processor_id = get_processor_id();
+
+    // MAKE SURE the processor area for the bootstrap processor is initalized BEFORE this point
+    current_madt_index = 0;
+    while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
+        auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
+
+        switch(header->Type) {
+            case ACPI_MADT_TYPE_LOCAL_APIC: {
+                auto subtable = (ACPI_MADT_LOCAL_APIC*)header;
+
+                if(subtable->ProcessorId != bootstrap_processor_id) {
+                    asm volatile("mfence");
+
+                    // Reset error status register
+                    processor_area->apic_registers[0x280 / 4] = 0;
+
+                    // Set target processor APIC ID
+                    processor_area->apic_registers[0x310 / 4] = (uint32_t)subtable->Id << 24;
+
+                    // Set vector number to 0, set delivery mode to INIT, set destination mode to physical,
+                    // set level assert, set edge trigger, set no shorthand
+                    processor_area->apic_registers[0x300 / 4] = 5 << 8 | 1 << 14;
+
+                    // Wait for delivery of the INIT IPI
+                    while((processor_area->apic_registers[0x300 / 4] & (1 << 12)) != 0) {
+                        asm volatile("pause");
+                    }
+
+                    // TODO: Need to wait 10ms for a real physical CPU to reset
+
+                    // Set entry page number to 1 (address 0x1000), set delivery mode to STARTUP, set destination mode to physical,
+                    // set level assert, set edge trigger, set no shorthand
+                    processor_area->apic_registers[0x300 / 4] = 1 | 6 << 8 | 1 << 14;
+
+                    // Wait for delivery of the STARTUP IPI
+                    while((processor_area->apic_registers[0x300 / 4] & (1 << 12)) != 0) {
+                        asm volatile("pause");
+                    }
+
+                    // No need to wait 200us for a real physical cpu to start executing, as we wait for the flag to be set anyway
+
+                    // Wait for additional processor to set flag
+                    while(!additional_processor_initialized_flag) {
+                        asm volatile("pause");
+                    }
+
+                    additional_processor_initialized_flag = false;
+                }
+            } break;
+        }
+
+        current_madt_index += (size_t)header->Length;
+    }
+
+    AcpiPutTable(&madt_table->preamble.Header);
+
+    printf("Loading init process...\n");
+
+    auto embedded_init_binary_size = (size_t)embedded_init_binary_end - (size_t)embedded_init_binary;
+
+    Process *init_process;
+    Processes::Iterator init_process_iterator;
+    switch(create_process_from_elf(
+        embedded_init_binary,
+        embedded_init_binary_size,
+        nullptr,
+        0,
+        global_bitmap,
+        &global_processes,
+        &init_process,
+        &init_process_iterator
+    )) {
+        case CreateProcessFromELFResult::Success: break;
+
+        case CreateProcessFromELFResult::OutOfMemory: {
+            printf("Error: Out of memory\n");
+
+            halt();
+        } break;
+
+        case CreateProcessFromELFResult::InvalidELF: {
+            printf("Error: Init process ELF file is invalid\n");
+
+            halt();
+        } break;
+
+        default: halt();
+    }
+
+    enter_next_process(processor_area, global_bitmap, &global_processes);
+}
+
 [[noreturn]] static void bootstrap_processor_entry(const BootstrapMemoryMapEntry *bootstrap_memory_map_entries, size_t bootstrap_memory_map_length) {
     ConstArray<BootstrapMemoryMapEntry> bootstrap_memory_map {
         bootstrap_memory_map_entries,
@@ -1216,30 +1624,6 @@ extern void (*init_array_end[])();
     }
 
     clear_console();
-
-    asm volatile(
-        // Load GDT
-        "lgdt (%0)\n"
-        // Load data segments
-        "mov $0x10, %%ax\n"
-        "mov %%ax, %%ds\n"
-        "mov %%ax, %%ss\n"
-        "mov %%ax, %%es\n"
-        "mov %%ax, %%fs\n"
-        "mov %%ax, %%gs\n"
-        // Load code segment
-        "sub $16, %%rsp\n"
-        "movq $.long_jump_target, (%%rsp)\n"
-        "movq $0x08, 8(%%rsp)\n"
-        "lretq\n"
-        ".long_jump_target:\n"
-        // Load task state register
-        "mov $0x2B, %%ax\n"
-        "ltr %%ax"
-        :
-        : "D"(&gdt_descriptor)
-        : "ax"
-    );
 
     asm volatile(
         // Load IDT
@@ -1503,6 +1887,37 @@ extern void (*init_array_end[])();
 
     AcpiInitializeTables(nullptr, 8, TRUE);
 
+    // Set up syscall/sysret instructions
+
+    asm volatile(
+        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
+        "rdmsr\n"
+        "or $1, %%eax\n"
+        "wrmsr\n"
+        :
+        :
+        : "edx"
+    );
+
+    asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)-1), "d"((uint32_t)-1), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
+    );
+
+    asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)(size_t)syscall_thunk), "d"((uint32_t)((size_t)syscall_thunk >> 32)), "c"((uint32_t)0xC0000082) // IA32_LSTAR MSR
+    );
+
+    asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)0), "d"((uint32_t)0x10 << 16 | (uint32_t)0x08), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
+        // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
+    );
+
     MADTTable *madt_table;
     {
         auto status = AcpiGetTable((char*)ACPI_SIG_MADT, 1, (ACPI_TABLE_HEADER**)&madt_table);
@@ -1513,76 +1928,66 @@ extern void (*init_array_end[])();
         }
     }
 
-    auto apic_physical_address = (size_t)madt_table->preamble.Address;
+    auto processor_area = setup_processor(&processor_areas, madt_table, global_bitmap);
 
-    size_t current_madt_index = 0;
-    size_t io_apic_physical_address;
-    auto io_apic_found = false;
-    while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
-        auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
+    AcpiPutTable(&madt_table->preamble.Header);
 
-        switch(header->Type) {
-            case ACPI_MADT_TYPE_LOCAL_APIC_OVERRIDE: {
-                auto subtable = (ACPI_MADT_LOCAL_APIC_OVERRIDE*)header;
-
-                apic_physical_address = (size_t)subtable->Address;
-            } break;
-
-            case ACPI_MADT_TYPE_IO_APIC: {
-                if(!io_apic_found) {
-                    auto subtable = (ACPI_MADT_IO_APIC*)header;
-
-                    io_apic_found = true;
-
-                    io_apic_physical_address = (size_t)subtable->Address;
-                }
-            } break;
-        }
-
-        current_madt_index += (size_t)header->Length;
-    }
-
-    if(!io_apic_found) {
-        printf("Error: No IO APIC found\n");
-
-        halt();
-    }
-
-    global_apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap);
-    if(global_apic_registers == nullptr) {
-        printf("Error: Out of memory\n");
-
-        halt();
-    }
-
-    // Set APIC to known state
-    global_apic_registers[0x2F0 / 4] |= 1 << 16;
-    global_apic_registers[0x320 / 4] |= 1 << 16;
-    global_apic_registers[0x330 / 4] |= 1 << 16;
-    global_apic_registers[0x340 / 4] |= 1 << 16;
-    global_apic_registers[0x350 / 4] |= 1 << 16;
-    global_apic_registers[0x360 / 4] |= 1 << 16;
-    global_apic_registers[0x370 / 4] |= 1 << 16;
-
-    // Globally enable APICs
+    // Change to new stack
     asm volatile(
-        "mov $0x1B, %%ecx\n" // IA32_APIC_BASE MSR
-        "rdmsr\n"
-        "or $(1 << 11), %%eax\n"
-        "wrmsr\n"
+        "mov %0, %%rsp\n"
+        "call *%1"
         :
-        :
-        : "edx"
+        : "r"(processor_area->stack + processor_stack_size), "r"(bootstrap_processor_entry_continued)
     );
 
-    // Enable local APIC / set spurious interrupt vector to 0x2F
-    global_apic_registers[0xF0 / 4] = 0x2F | 0x100;
+    unreachable();
+}
 
-    // Enable timer / set timer interrupt vector vector
-    global_apic_registers[0x320 / 4] = 0x20;
+[[noreturn]] static void additional_processor_entry_continued() {
+    // MAKE SURE the processor area for this additional processor is initalized BEFORE this point
+    asm volatile("mfence");
+    additional_processor_initialized_flag = true;
 
-    // Set timer divider to 16
-    global_apic_registers[0x3E0 / 4] = 3;
+    auto processor_area = get_processor_area();
+
+    enter_next_process(processor_area, global_bitmap, &global_processes);
+}
+
+[[noreturn]] static void additional_processor_entry() {
+    // Enable sse
+    asm volatile(
+        "mov %%cr0, %%rax\n"
+        "or $(1 << 1), %%rax\n"
+        "and $~(1 << 2), %%rax\n"
+        "mov %%rax, %%cr0\n"
+        "mov %%cr4, %%rax\n"
+        "or $(1 << 9), %%rax\n"
+        "or $(1 << 10), %%rax\n"
+        "mov %%rax, %%cr4"
+        :
+        :
+        : "rax"
+    );
+
+    asm volatile(
+        // Load IDT
+        "lidt (%0)\n"
+        // Disable PIC
+        "mov $0xff, %%al\n"
+        "out %%al, $0xA1\n"
+        "out %%al, $0x21\n"
+        // Enable interupts
+        "sti"
+        :
+        : "D"(&idt_descriptor)
+        : "al"
+    );
+
+    asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "D"(&kernel_pml4_table)
+    );
 
     // Set up syscall/sysret instructions
 
@@ -1615,141 +2020,29 @@ extern void (*init_array_end[])();
         // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
     );
 
-    global_io_apic_registers = (volatile uint32_t*)map_memory(io_apic_physical_address, 32, bitmap);
-    if(global_io_apic_registers == nullptr) {
-        printf("Error: Out of memory\n");
+    MADTTable *madt_table;
+    {
+        auto status = AcpiGetTable((char*)ACPI_SIG_MADT, 1, (ACPI_TABLE_HEADER**)&madt_table);
+        if(status != AE_OK) {
+            printf("Error: Unable to get MADT ACPI table (0x%X)\n", status);
 
-        halt();
-    }
-
-    const size_t multiprocessor_binary_load_location = 0x1000;
-    static_assert(multiprocessor_binary_load_location % 0x1000 == 0, "Multiprocessor binary load location not page-aligned");
-    static_assert(multiprocessor_binary_load_location < 0x100000, "Multiprocessor binary load location not within first 1M");
-
-    auto multiprocessor_binary_size = (size_t)multiprocessor_binary_end - (size_t)multiprocessor_binary;
-
-    memcpy((void*)multiprocessor_binary_load_location, multiprocessor_binary, multiprocessor_binary_size);
-
-    uint8_t bootstrap_processor_id;
-    asm volatile(
-        "mov $1, %%eax\n"
-        "cpuid\n"
-        "shrl $24, %%ebx\n"
-        : "=b"(bootstrap_processor_id)
-        :
-        : "eax", "ecx", "edx"
-    );
-
-    current_madt_index = 0;
-    while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
-        auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
-
-        switch(header->Type) {
-            case ACPI_MADT_TYPE_LOCAL_APIC: {
-                auto subtable = (ACPI_MADT_LOCAL_APIC*)header;
-
-                if(subtable->ProcessorId != bootstrap_processor_id) {
-                    // Reset error status register
-                    global_apic_registers[0x280 / 4] = 0;
-
-                    // Set target processor APIC ID
-                    global_apic_registers[0x310 / 4] = (uint32_t)subtable->Id << 24;
-
-                    // Set vector number to 0, set delivery mode to INIT, set destination mode to physical,
-                    // set level assert, set edge trigger, set no shorthand
-                    global_apic_registers[0x300 / 4] = 5 << 8 | 1 << 14;
-
-                    // Wait for delivery of the INIT IPI
-                    while((global_apic_registers[0x300 / 4] & (1 << 12)) != 0) {
-                        asm volatile("pause");
-                    }
-
-                    // TODO: Need to wait 10ms for a real physical CPU to reset
-
-                    // Set entry page number to 1 (address 0x1000), set delivery mode to STARTUP, set destination mode to physical,
-                    // set level assert, set edge trigger, set no shorthand
-                    global_apic_registers[0x300 / 4] = 1 | 6 << 8 | 1 << 14;
-
-                    // Wait for delivery of the STARTUP IPI
-                    while((global_apic_registers[0x300 / 4] & (1 << 12)) != 0) {
-                        asm volatile("pause");
-                    }
-
-                    // No need to wait 200us for a real physical cpu to start executing, as we wait for the flag to be set anyway
-
-                    // Wait for additional processor to set flag
-                    while(!additional_processor_initialized_flag) {
-                        asm volatile("pause");
-                    }
-
-                    additional_processor_initialized_flag = false;
-                }
-            } break;
+            halt();
         }
-
-        current_madt_index += (size_t)header->Length;
     }
+
+    auto processor_area = setup_processor(&processor_areas, madt_table, global_bitmap);
 
     AcpiPutTable(&madt_table->preamble.Header);
 
-    printf("Loading init process...\n");
-
-    auto embedded_init_binary_size = (size_t)embedded_init_binary_end - (size_t)embedded_init_binary;
-
-    Process *init_process;
-    switch(create_process_from_elf(
-        embedded_init_binary,
-        embedded_init_binary_size,
-        nullptr,
-        0,
-        bitmap,
-        &global_processes,
-        &init_process,
-        &current_process_iterator
-    )) {
-        case CreateProcessFromELFResult::Success: break;
-
-        case CreateProcessFromELFResult::OutOfMemory: {
-            printf("Error: Out of memory\n");
-
-            halt();
-        } break;
-
-        case CreateProcessFromELFResult::InvalidELF: {
-            printf("Error: Init process ELF file is invalid\n");
-
-            halt();
-        } break;
-
-        default: halt();
-    }
-
-    auto stack_frame_copy = init_process->frame;
-
-    // Set timer value
-    global_apic_registers[0x380 / 4] = preempt_time;
-
+    // Change to new stack
     asm volatile(
-        "mov %0, %%cr3"
+        "mov %0, %%rsp\n"
+        "call *%1"
         :
-        : "D"(init_process->pml4_table_physical_address)
+        : "r"(processor_area->stack + processor_stack_size), "r"(additional_processor_entry_continued)
     );
 
-    user_enter_thunk(&stack_frame_copy);
-}
-
-[[noreturn]] static void additional_processor_entry() {
-    asm volatile(
-        "mov %0, %%cr3"
-        :
-        : "D"(&kernel_pml4_table)
-    );
-
-    printf("Additional processor entry\n");
-
-    additional_processor_initialized_flag = true;
-
-    halt();
+    unreachable();
 }
 
 extern "C" [[noreturn]] void main(bool is_first_entry, const BootstrapMemoryMapEntry *bootstrap_memory_map_entries, size_t bootstrap_memory_map_length) {

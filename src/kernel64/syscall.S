@@ -1,11 +1,16 @@
-.extern stack_top
+.set PROCESSOR_STACK_SIZE, 1024 * 16
+
+.set USER_PROCESSOR_AREA_ADDRESS, 0x800000
+
+.set STACK_OFFSET, 0
+
 .extern syscall_entrance
 
 .globl syscall_thunk
 syscall_thunk:
     mov %rsp, %rax
 
-    mov $stack_top, %rsp
+    mov $(USER_PROCESSOR_AREA_ADDRESS + STACK_OFFSET + PROCESSOR_STACK_SIZE), %rsp
 
     pushq $0x1b
     push %rax

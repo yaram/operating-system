@@ -55,6 +55,9 @@ struct Process {
     ProcessPageMappings mappings;
 
     ProcessStackFrame frame;
+
+    bool is_resident;
+    uint8_t resident_processor_id;
 };
 
 using Processes = BucketArray<Process, 4>;

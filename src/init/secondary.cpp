@@ -7,6 +7,7 @@
 #include "HandmadeMath.h"
 #include "bucket_array.h"
 #include "bucket_array_user.h"
+#include "threading_user.h"
 
 extern "C" void *memset(void *destination, int value, size_t count) {
     auto temp_destination = destination;
@@ -83,15 +84,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
         }
     }
 
-    // Lock compositor connection mailbox using single-instruction compare-and-exchange, other wise
-    while(true) {
-        auto false_value = false; // Must be re-set every loop, __atomic_compare_exchange_n overwrites it!
-        if(__atomic_compare_exchange_n(&compositor_connection_mailbox->locked, &false_value, true, true, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-            break;
-        }
-
-        syscall(SyscallType::RelinquishTime, 0, 0);
-    }
+    acquire_lock(&compositor_connection_mailbox->locked);
 
     compositor_connection_mailbox->process_id = process_id;
 

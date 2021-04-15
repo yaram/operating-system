@@ -77,24 +77,72 @@ inline PageTableEntry *get_page_table_pointer(size_t pml4_index, size_t pdp_inde
     ));
 }
 
-size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, size_t page_count);
+
+struct ConstPageWalker {
+    const PageTableEntry *pml4_table;
+
+    size_t pml4_index;
+    const PageTableEntry *pdp_table;
+
+    size_t pdp_index;
+    const PageTableEntry *pd_table;
+
+    size_t pd_index;
+    const PageTableEntry *page_table;
+
+    size_t page_index;
+
+    size_t absolute_page_index;
+};
+
+bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_index, Array<uint8_t> bitmap, ConstPageWalker *result_walker);
+void unmap_page_walker(const ConstPageWalker *walker);
+bool increment_page_walker(ConstPageWalker *walker, Array<uint8_t> bitmap);
+
+struct PageWalker {
+    size_t bitmap_index;
+    size_t bitmap_sub_bit_index;
+
+    PageTableEntry *pml4_table;
+
+    size_t pml4_index;
+    PageTableEntry *pdp_table;
+
+    size_t pdp_index;
+    PageTableEntry *pd_table;
+
+    size_t pd_index;
+    PageTableEntry *page_table;
+
+    size_t page_index;
+
+    size_t absolute_page_index;
+};
+
+bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_index, Array<uint8_t> bitmap, PageWalker *result_walker);
+void unmap_page_walker(const PageWalker *walker);
+bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap);
+
+size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, size_t page_count, bool lock = true);
 
 bool allocate_next_physical_page(
     size_t *bitmap_index,
     size_t *bitmap_sub_bit_index,
     Array<uint8_t> bitmap,
-    size_t *physical_page_index
+    size_t *physical_page_index,
+    bool lock = true
 );
 
 bool allocate_consecutive_physical_pages(
     size_t page_count,
     Array<uint8_t> bitmap,
-    size_t *physical_pages_start
+    size_t *physical_pages_start,
+    bool lock = true
 );
 
-void allocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count);
+void allocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count, bool lock = true);
 
-void deallocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count);
+void deallocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count, bool lock = true);
 
 // Kernel table-specific functions
 
@@ -102,51 +150,74 @@ bool map_pages(
     size_t physical_pages_start,
     size_t page_count,
     Array<uint8_t> bitmap,
-    size_t *logical_pages_start
+    size_t *logical_pages_start,
+    bool lock = true
 );
 
 void unmap_pages(
     size_t logical_pages_start,
-    size_t page_count
+    size_t page_count,
+    bool lock = true
 );
 
 bool map_and_allocate_pages(
     size_t page_count,
     Array<uint8_t> bitmap,
-    size_t *logical_pages_start
+    size_t *logical_pages_start,
+    bool lock = true
+);
+
+bool map_and_allocate_consecutive_pages(
+    size_t page_count,
+    Array<uint8_t> bitmap,
+    size_t *logical_pages_start,
+    size_t *physical_pages_start,
+    bool lock = true
 );
 
 void unmap_and_deallocate_pages(
     size_t logical_pages_start,
     size_t page_count,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock = true
 );
 
 void *map_memory(
     size_t physical_memory_start,
     size_t size,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock = true
 );
 
 void unmap_memory(
     void *logical_memory_start,
-    size_t size
+    size_t size,
+    bool lock = true
 );
 
 void *map_and_allocate_memory(
     size_t size,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock = true
+);
+
+void *map_and_allocate_consecutive_memory(
+    size_t size,
+    Array<uint8_t> bitmap,
+    size_t *physical_memory_start,
+    bool lock = true
 );
 
 void unmap_and_deallocate_memory(
     void *logical_memory_start,
     size_t size,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock = true
 );
 
 // non-kernel (process/user) page table functions
 
-enum UserPermissions {
+enum PagePermissions {
     Write = 1 << 0,
     Execute = 1 << 1
 };
@@ -154,19 +225,21 @@ enum UserPermissions {
 bool map_pages(
     size_t physical_pages_start,
     size_t page_count,
-    UserPermissions permissions,
+    PagePermissions permissions,
     size_t pml4_table_physical_address,
     Array<uint8_t> bitmap,
-    size_t *logical_pages_start
+    size_t *logical_pages_start,
+    bool lock = true
 );
 
 bool map_pages_from_kernel(
     size_t kernel_logical_pages_start,
     size_t page_count,
-    UserPermissions permissions,
+    PagePermissions permissions,
     size_t user_pml4_table_physical_address,
     Array<uint8_t> bitmap,
-    size_t *user_logical_pages_start
+    size_t *user_logical_pages_start,
+    bool lock = true
 );
 
 bool map_pages_from_user(
@@ -174,17 +247,19 @@ bool map_pages_from_user(
     size_t page_count,
     size_t user_pml4_table_physical_address,
     Array<uint8_t> bitmap,
-    size_t *kernel_logical_pages_start
+    size_t *kernel_logical_pages_start,
+    bool lock = true
 );
 
 bool map_pages_between_user(
     size_t from_logical_pages_start,
     size_t page_count,
-    UserPermissions permissions,
+    PagePermissions permissions,
     size_t from_pml4_table_physical_address,
     size_t to_pml4_table_physical_address,
     Array<uint8_t> bitmap,
-    size_t *to_logical_pages_start
+    size_t *to_logical_pages_start,
+    bool lock = true
 );
 
 bool unmap_pages(
@@ -192,5 +267,6 @@ bool unmap_pages(
     size_t page_count,
     size_t pml4_table_physical_address,
     bool deallocate,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock = true
 );

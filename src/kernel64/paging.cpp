@@ -1,6 +1,279 @@
 #include "paging.h"
 #include <stdint.h>
 #include "memory.h"
+#include "threading_kernel.h"
+
+static volatile bool combined_paging_lock = false;
+
+bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_index, Array<uint8_t> bitmap, ConstPageWalker *result_walker) {
+    *result_walker = {};
+    result_walker->absolute_page_index = start_page_index;
+
+    result_walker->pml4_table = (PageTableEntry*)map_memory(
+        pml4_table_physical_address,
+        sizeof(PageTableEntry[page_table_length]),
+        bitmap,
+        false
+    );
+    if(result_walker->pml4_table == nullptr) {
+        return false;
+    }
+
+    return true;
+}
+
+void unmap_page_walker(const ConstPageWalker *walker) {
+    unmap_memory((void*)walker->pml4_table, sizeof(PageTableEntry[page_table_length]), false);
+
+    if(walker->pdp_table != nullptr) {
+        unmap_memory((void*)walker->pdp_table, sizeof(PageTableEntry[page_table_length]), false);
+    }
+
+    if(walker->pd_table != nullptr) {
+        unmap_memory((void*)walker->pd_table, sizeof(PageTableEntry[page_table_length]), false);
+    }
+
+    if(walker->page_table != nullptr) {
+        unmap_memory((void*)walker->page_table, sizeof(PageTableEntry[page_table_length]), false);
+    }
+}
+
+static bool map_table(
+    size_t *current_parent_index,
+    const PageTableEntry **current_table,
+    const PageTableEntry *parent_table,
+    size_t parent_index,
+    Array<uint8_t> bitmap
+) {
+    if(*current_table == nullptr || parent_index != *current_parent_index) {
+        if(*current_table != nullptr) {
+            unmap_memory((void*)*current_table, sizeof(PageTableEntry[page_table_length]), false);
+
+            *current_table = nullptr;
+        }
+
+        size_t logical_page_index;
+        if(!map_pages(
+            parent_table[parent_index].page_address,
+            1,
+            bitmap,
+            &logical_page_index,
+            false
+        )) {
+            return false;
+        }
+
+        *current_table = (PageTableEntry*)(logical_page_index * page_size);
+        *current_parent_index = parent_index;
+    }
+
+    return true;
+}
+
+bool increment_page_walker(ConstPageWalker *walker, Array<uint8_t> bitmap) {
+    auto page_index = walker->absolute_page_index;
+    auto pd_index = page_index / page_table_length;
+    auto pdp_index = pd_index / page_table_length;
+    auto pml4_index = pdp_index / page_table_length;
+
+    page_index %= page_table_length;
+    pd_index %= page_table_length;
+    pdp_index %= page_table_length;
+    pml4_index %= page_table_length;
+
+    if(
+        !map_table(
+            &walker->pml4_index,
+            &walker->pdp_table,
+            walker->pml4_table,
+            pml4_index,
+            bitmap
+        ) ||
+        !map_table(
+            &walker->pdp_index,
+            &walker->pd_table,
+            walker->pdp_table,
+            pdp_index,
+            bitmap
+        ) ||
+        !map_table(
+            &walker->pd_index,
+            &walker->page_table,
+            walker->pd_table,
+            pd_index,
+            bitmap
+        )
+    ) {
+        unmap_page_walker(walker);
+
+        return false;
+    }
+
+    walker->page_index = page_index;
+
+    walker->absolute_page_index += 1;
+
+    return true;
+}
+
+bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_index, Array<uint8_t> bitmap, PageWalker *result_walker) {
+    *result_walker = {};
+    result_walker->absolute_page_index = start_page_index;
+
+    result_walker->pml4_table = (PageTableEntry*)map_memory(
+        pml4_table_physical_address,
+        sizeof(PageTableEntry[page_table_length]),
+        bitmap,
+        false
+    );
+    if(result_walker->pml4_table == nullptr) {
+        return false;
+    }
+
+    return true;
+}
+
+void unmap_page_walker(const PageWalker *walker) {
+    unmap_memory((void*)walker->pml4_table, sizeof(PageTableEntry[page_table_length]), false);
+
+    if(walker->pdp_table != nullptr) {
+        unmap_memory((void*)walker->pdp_table, sizeof(PageTableEntry[page_table_length]), false);
+    }
+
+    if(walker->pd_table != nullptr) {
+        unmap_memory((void*)walker->pd_table, sizeof(PageTableEntry[page_table_length]), false);
+    }
+
+    if(walker->page_table != nullptr) {
+        unmap_memory((void*)walker->page_table, sizeof(PageTableEntry[page_table_length]), false);
+    }
+}
+
+static bool map_and_maybe_allocate_table(
+    size_t *current_parent_index,
+    PageTableEntry **current_table,
+    PageTableEntry *parent_table,
+    size_t parent_index,
+    Array<uint8_t> bitmap,
+    size_t *bitmap_index,
+    size_t *bitmap_sub_bit_index
+) {
+    if(parent_table[parent_index].present) {
+        if(*current_table == nullptr || parent_index != *current_parent_index) {
+            if(*current_table != nullptr) {
+                unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]), false);
+
+                *current_table = nullptr;
+            }
+
+            size_t logical_page_index;
+            if(!map_pages(
+                parent_table[parent_index].page_address,
+                1,
+                bitmap,
+                &logical_page_index,
+                false
+            )) {
+                return false;
+            }
+
+            *current_table = (PageTableEntry*)(logical_page_index * page_size);
+            *current_parent_index = parent_index;
+        }
+    } else {
+        if(*current_table != nullptr) {
+            unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]), false);
+
+            *current_table = nullptr;
+        }
+
+        size_t physical_page_index;
+        if(!allocate_next_physical_page(
+            bitmap_index,
+            bitmap_sub_bit_index,
+            bitmap,
+            &physical_page_index,
+            false
+        )) {
+            return false;
+        }
+
+        size_t logical_page_index;
+        if(!map_pages(
+            physical_page_index,
+            1,
+            bitmap,
+            &logical_page_index,
+            false
+        )) {
+            return false;
+        }
+
+        *current_table = (PageTableEntry*)(logical_page_index * page_size);
+        *current_parent_index = parent_index;
+
+        memset(*current_table, 0, sizeof(PageTableEntry[page_table_length]));
+
+        parent_table[parent_index].present = true;
+        parent_table[parent_index].write_allowed = true;
+        parent_table[parent_index].user_mode_allowed = true;
+        parent_table[parent_index].page_address = physical_page_index;
+    }
+
+    return true;
+}
+
+bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap) {
+    auto page_index = walker->absolute_page_index;
+    auto pd_index = page_index / page_table_length;
+    auto pdp_index = pd_index / page_table_length;
+    auto pml4_index = pdp_index / page_table_length;
+
+    page_index %= page_table_length;
+    pd_index %= page_table_length;
+    pdp_index %= page_table_length;
+    pml4_index %= page_table_length;
+
+    if(
+        !map_and_maybe_allocate_table(
+            &walker->pml4_index,
+            &walker->pdp_table,
+            walker->pml4_table,
+            pml4_index,
+            bitmap,
+            &walker->bitmap_index,
+            &walker->bitmap_sub_bit_index
+        ) ||
+        !map_and_maybe_allocate_table(
+            &walker->pdp_index,
+            &walker->pd_table,
+            walker->pdp_table,
+            pdp_index,
+            bitmap,
+            &walker->bitmap_index,
+            &walker->bitmap_sub_bit_index
+        ) ||
+        !map_and_maybe_allocate_table(
+            &walker->pd_index,
+            &walker->page_table,
+            walker->pd_table,
+            pd_index,
+            bitmap,
+            &walker->bitmap_index,
+            &walker->bitmap_sub_bit_index
+        )
+    ) {
+        unmap_page_walker(walker);
+
+        return false;
+    }
+
+    walker->page_index = page_index;
+
+    walker->absolute_page_index += 1;
+
+    return true;
+}
 
 static bool find_free_logical_pages(size_t page_count, size_t *logical_pages_start) {
     auto last_full = true;
@@ -116,7 +389,11 @@ static bool find_free_logical_pages(size_t page_count, size_t *logical_pages_sta
     return true;
 }
 
-size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, size_t page_count) {
+size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, size_t page_count, bool lock) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     size_t new_page_table_count = 0;
 
     auto initial_page_index = logical_pages_start;
@@ -212,6 +489,10 @@ size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, si
         }
     }
 
+    if(lock) {
+        combined_paging_lock = false;
+    }
+
     return new_page_table_count;
 }
 
@@ -219,14 +500,23 @@ bool allocate_next_physical_page(
     size_t *bitmap_index,
     size_t *bitmap_sub_bit_index,
     Array<uint8_t> bitmap,
-    size_t *physical_page_index
+    size_t *physical_page_index,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     auto byte = &bitmap[*bitmap_index];
 
     if(*byte != 0xFF) {
         for(; *bitmap_sub_bit_index < 8; *bitmap_sub_bit_index += 1) {
             if((*byte & (1 << *bitmap_sub_bit_index)) == 0) {
                 *byte |= 1 << *bitmap_sub_bit_index;
+
+                if(lock) {
+                    combined_paging_lock = false;
+                }
 
                 *physical_page_index = *bitmap_index * 8 + *bitmap_sub_bit_index;
                 return true;
@@ -244,11 +534,19 @@ bool allocate_next_physical_page(
                 if((*byte & (1 << *bitmap_sub_bit_index)) == 0) {
                     *byte |= 1 << *bitmap_sub_bit_index;
 
+                    if(lock) {
+                        combined_paging_lock = false;
+                    }
+
                     *physical_page_index = *bitmap_index * 8 + *bitmap_sub_bit_index;
                     return true;
                 }
             }
         }
+    }
+
+    if(lock) {
+        combined_paging_lock = false;
     }
 
     return false;
@@ -257,8 +555,13 @@ bool allocate_next_physical_page(
 bool allocate_consecutive_physical_pages(
     size_t page_count,
     Array<uint8_t> bitmap,
-    size_t *physical_pages_start
+    size_t *physical_pages_start,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     size_t free_pages_start;
     auto in_free_pages = false;
     auto found = false;
@@ -292,16 +595,28 @@ bool allocate_consecutive_physical_pages(
     }
 
     if(!found) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
 
-    allocate_bitmap_range(bitmap, free_pages_start, page_count);
+    allocate_bitmap_range(bitmap, free_pages_start, page_count, false);
+
+    if(lock) {
+        combined_paging_lock = false;
+    }
 
     *physical_pages_start = free_pages_start;
     return true;
 }
 
-void allocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count) {
+void allocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count, bool lock) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     auto start_bit = start;
     auto end_bit = start + count;
 
@@ -332,9 +647,17 @@ void allocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count) {
             bitmap[end_byte - 1] |= 1 << i;
         }
     }
+
+    if(lock) {
+        combined_paging_lock = false;
+    }
 }
 
-void deallocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count) {
+void deallocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count, bool lock) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     auto start_bit = start;
     auto end_bit = start + count;
 
@@ -365,15 +688,28 @@ void deallocate_bitmap_range(Array<uint8_t> bitmap, size_t start, size_t count) 
             bitmap[end_byte - 1] &= ~(1 << i);
         }
     }
+
+    if(lock) {
+        combined_paging_lock = false;
+    }
 }
 
 bool map_pages(
     size_t physical_pages_start,
     size_t page_count,
     Array<uint8_t> bitmap,
-    size_t *logical_pages_start
+    size_t *logical_pages_start,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     if(!find_free_logical_pages(page_count, logical_pages_start)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
 
@@ -401,8 +737,13 @@ bool map_pages(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
                 bitmap,
-                &physical_page_index
+                &physical_page_index,
+                false
             )) {
+                if(lock) {
+                    combined_paging_lock = false;
+                }
+
                 return false;
             }
 
@@ -428,8 +769,13 @@ bool map_pages(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
                 bitmap,
-                &physical_page_index
+                &physical_page_index,
+                false
             )) {
+                if(lock) {
+                    combined_paging_lock = false;
+                }
+
                 return false;
             }
 
@@ -455,8 +801,13 @@ bool map_pages(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
                 bitmap,
-                &physical_page_index
+                &physical_page_index,
+                false
             )) {
+                if(lock) {
+                    combined_paging_lock = false;
+                }
+
                 return false;
             }
 
@@ -485,13 +836,22 @@ bool map_pages(
         );
     }
 
+    if(lock) {
+        combined_paging_lock = false;
+    }
+
     return true;
 }
 
 void unmap_pages(
     size_t logical_pages_start,
-    size_t page_count
+    size_t page_count,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
         auto page_index = logical_pages_start + relative_page_index;
         auto pd_index = page_index / page_table_length;
@@ -513,14 +873,27 @@ void unmap_pages(
             : "D"((logical_pages_start + relative_page_index) * page_size)
         );
     }
+
+    if(lock) {
+        combined_paging_lock = false;
+    }
 }
 
 bool map_and_allocate_pages(
     size_t page_count,
     Array<uint8_t> bitmap,
-    size_t *logical_pages_start
+    size_t *logical_pages_start,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     if(!find_free_logical_pages(page_count, logical_pages_start)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
 
@@ -548,8 +921,13 @@ bool map_and_allocate_pages(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
                 bitmap,
-                &physical_page_index
+                &physical_page_index,
+                false
             )) {
+                if(lock) {
+                    combined_paging_lock = false;
+                }
+
                 return false;
             }
 
@@ -575,8 +953,13 @@ bool map_and_allocate_pages(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
                 bitmap,
-                &physical_page_index
+                &physical_page_index,
+                false
             )) {
+                if(lock) {
+                    combined_paging_lock = false;
+                }
+
                 return false;
             }
 
@@ -602,8 +985,13 @@ bool map_and_allocate_pages(
                 &bitmap_index,
                 &bitmap_sub_bit_index,
                 bitmap,
-                &physical_page_index
+                &physical_page_index,
+                false
             )) {
+                if(lock) {
+                    combined_paging_lock = false;
+                }
+
                 return false;
             }
 
@@ -626,8 +1014,13 @@ bool map_and_allocate_pages(
             &bitmap_index,
             &bitmap_sub_bit_index,
             bitmap,
-            &physical_page_index
+            &physical_page_index,
+            false
         )) {
+            if(lock) {
+                combined_paging_lock = false;
+            }
+
             return false;
         }
 
@@ -642,14 +1035,68 @@ bool map_and_allocate_pages(
         );
     }
 
+    if(lock) {
+        combined_paging_lock = false;
+    }
+
+    return true;
+}
+
+bool map_and_allocate_consecutive_pages(
+    size_t page_count,
+    Array<uint8_t> bitmap,
+    size_t *logical_pages_start,
+    size_t *physical_pages_start,
+    bool lock
+) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
+    if(!allocate_consecutive_physical_pages(
+        page_count,
+        bitmap,
+        physical_pages_start,
+        false
+    )) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
+        return false;
+    }
+
+    if(!map_pages(
+        *physical_pages_start,
+        page_count,
+        bitmap,
+        logical_pages_start,
+        false
+    )) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
+        return false;
+    }
+
+    if(lock) {
+        combined_paging_lock = false;
+    }
+
     return true;
 }
 
 void unmap_and_deallocate_pages(
     size_t logical_pages_start,
     size_t page_count,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
         auto page_index = logical_pages_start + relative_page_index;
         auto pd_index = page_index / page_table_length;
@@ -678,12 +1125,17 @@ void unmap_and_deallocate_pages(
             : "D"((logical_pages_start + relative_page_index) * page_size)
         );
     }
+
+    if(lock) {
+        combined_paging_lock = false;
+    }
 }
 
 void *map_memory(
     size_t physical_memory_start,
     size_t size,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock
 ) {
     auto physical_pages_start = physical_memory_start / page_size;
     auto physical_pages_end = divide_round_up(physical_memory_start + size, page_size);
@@ -693,7 +1145,7 @@ void *map_memory(
     auto offset = physical_memory_start - physical_pages_start * page_size;
 
     size_t logical_pages_start;
-    if(!map_pages(physical_pages_start, page_count, bitmap, &logical_pages_start)) {
+    if(!map_pages(physical_pages_start, page_count, bitmap, &logical_pages_start, lock)) {
         return nullptr;
     }
 
@@ -702,19 +1154,21 @@ void *map_memory(
 
 void unmap_memory(
     void *logical_memory_start,
-    size_t size
+    size_t size,
+    bool lock
 ) {
     auto logical_pages_start = (size_t)logical_memory_start / page_size;
     auto logical_pages_end = divide_round_up((size_t)logical_memory_start + size, page_size);
 
     auto page_count = logical_pages_end - logical_pages_start;
 
-    return unmap_pages(logical_pages_start, page_count);
+    return unmap_pages(logical_pages_start, page_count, lock);
 }
 
 void *map_and_allocate_memory(
     size_t size,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock
 ) {
     auto page_count = divide_round_up(size, page_size);
 
@@ -722,7 +1176,8 @@ void *map_and_allocate_memory(
     if(!map_and_allocate_pages(
         page_count,
         bitmap,
-        &logical_pages_start
+        &logical_pages_start,
+        lock
     )) {
         return nullptr;
     }
@@ -730,17 +1185,42 @@ void *map_and_allocate_memory(
     return (void*)(logical_pages_start * page_size);
 }
 
+void *map_and_allocate_consecutive_memory(
+    size_t size,
+    Array<uint8_t> bitmap,
+    size_t *physical_memory_start,
+    bool lock
+) {
+    auto page_count = divide_round_up(size, page_size);
+
+    size_t logical_pages_start;
+    size_t physical_pages_start;
+    if(!map_and_allocate_consecutive_pages(
+        page_count,
+        bitmap,
+        &logical_pages_start,
+        &physical_pages_start,
+        lock
+    )) {
+        return nullptr;
+    }
+
+    *physical_memory_start = physical_pages_start * page_size;
+    return (void*)(logical_pages_start * page_size);
+}
+
 void unmap_and_deallocate_memory(
     void *logical_memory_start,
     size_t size,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock
 ) {
     auto logical_pages_start = (size_t)logical_memory_start / page_size;
     auto logical_pages_end = divide_round_up((size_t)logical_memory_start + size, page_size);
 
     auto page_count = logical_pages_end - logical_pages_start;
 
-    unmap_and_deallocate_pages(logical_pages_start, page_count, bitmap);
+    unmap_and_deallocate_pages(logical_pages_start, page_count, bitmap, lock);
 }
 
 static bool find_free_logical_pages(
@@ -756,7 +1236,8 @@ static bool find_free_logical_pages(
     auto pml4_table = (PageTableEntry*)map_memory(
         pml4_table_physical_address,
         sizeof(PageTableEntry[page_table_length]),
-        bitmap
+        bitmap,
+        false
     );
     if(pml4_table == nullptr) {
         return false;
@@ -784,10 +1265,11 @@ static bool find_free_logical_pages(
             auto pdp_table = (PageTableEntry*)map_memory(
                 pml4_table[pml4_index].page_address * page_size,
                 sizeof(PageTableEntry[page_table_length]),
-                bitmap
+                bitmap,
+                false
             );
             if(pdp_table == nullptr) {
-                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]), false);
 
                 return false;
             }
@@ -813,11 +1295,12 @@ static bool find_free_logical_pages(
                     auto pd_table = (PageTableEntry*)map_memory(
                         pdp_table[pdp_index].page_address * page_size,
                         sizeof(PageTableEntry[page_table_length]),
-                        bitmap
+                        bitmap,
+                        false
                     );
                     if(pd_table == nullptr) {
-                        unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
-                        unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
+                        unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]), false);
+                        unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), false);
 
                         return false;
                     }
@@ -843,12 +1326,13 @@ static bool find_free_logical_pages(
                             auto page_table = (PageTableEntry*)map_memory(
                                 pd_table[pd_index].page_address * page_size,
                                 sizeof(PageTableEntry[page_table_length]),
-                                bitmap
+                                bitmap,
+                                false
                             );
                             if(page_table == nullptr) {
-                                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
-                                unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
-                                unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
+                                unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]), false);
+                                unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), false);
+                                unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]), false);
 
                                 return false;
                             }
@@ -873,7 +1357,7 @@ static bool find_free_logical_pages(
                                 total_page_index += 1;
                             }
 
-                            unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
+                            unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]), false);
                         }
 
                         if(found) {
@@ -881,7 +1365,7 @@ static bool find_free_logical_pages(
                         }
                     }
 
-                    unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
+                    unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]), false);
                 }
 
                 if(found) {
@@ -889,7 +1373,7 @@ static bool find_free_logical_pages(
                 }
             }
 
-            unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
+            unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), false);
         }
 
         if(found) {
@@ -897,7 +1381,7 @@ static bool find_free_logical_pages(
         }
     }
 
-    unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+    unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]), false);
 
     if(!found) {
         return false;
@@ -907,190 +1391,64 @@ static bool find_free_logical_pages(
     return true;
 }
 
-static bool map_and_maybe_allocate_table(
-    size_t *current_parent_index,
-    PageTableEntry **current_table,
-    PageTableEntry *parent_table,
-    size_t parent_index,
-    Array<uint8_t> bitmap,
-    size_t *bitmap_index,
-    size_t *bitmap_sub_bit_index
-) {
-    if(parent_table[parent_index].present) {
-        if(*current_table == nullptr || parent_index != *current_parent_index) {
-            if(*current_table != nullptr) {
-                unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
-
-                *current_table = nullptr;
-            }
-
-            size_t logical_page_index;
-            if(!map_pages(
-                parent_table[parent_index].page_address,
-                1,
-                bitmap,
-                &logical_page_index
-            )) {
-                return false;
-            }
-
-            *current_table = (PageTableEntry*)(logical_page_index * page_size);
-            *current_parent_index = parent_index;
-        }
-    } else {
-        if(*current_table != nullptr) {
-            unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
-
-            *current_table = nullptr;
-        }
-
-        size_t physical_page_index;
-        if(!allocate_next_physical_page(
-            bitmap_index,
-            bitmap_sub_bit_index,
-            bitmap,
-            &physical_page_index
-        )) {
-            return false;
-        }
-
-        size_t logical_page_index;
-        if(!map_pages(
-            physical_page_index,
-            1,
-            bitmap,
-            &logical_page_index
-        )) {
-            return false;
-        }
-
-        *current_table = (PageTableEntry*)(logical_page_index * page_size);
-        *current_parent_index = parent_index;
-
-        memset(*current_table, 0, sizeof(PageTableEntry[page_table_length]));
-
-        parent_table[parent_index].present = true;
-        parent_table[parent_index].write_allowed = true;
-        parent_table[parent_index].user_mode_allowed = true;
-        parent_table[parent_index].page_address = physical_page_index;
-    }
-
-    return true;
-}
-
 bool map_pages(
     size_t physical_pages_start,
     size_t page_count,
-    UserPermissions permissions,
+    PagePermissions permissions,
     size_t pml4_table_physical_address,
     Array<uint8_t> bitmap,
-    size_t *logical_pages_start
+    size_t *logical_pages_start,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     if(!find_free_logical_pages(page_count, pml4_table_physical_address, bitmap, logical_pages_start)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
 
-    auto pml4_table = (PageTableEntry*)map_memory(
-        pml4_table_physical_address,
-        sizeof(PageTableEntry[page_table_length]),
-        bitmap
-    );
-    if(pml4_table == nullptr) {
+    PageWalker walker;
+    if(!create_page_walker(pml4_table_physical_address, *logical_pages_start, bitmap, &walker)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
-
-    size_t current_pml4_index;
-    PageTableEntry *pdp_table = nullptr;
-
-    size_t current_pdp_index;
-    PageTableEntry *pd_table = nullptr;
-
-    size_t current_pd_index;
-    PageTableEntry *page_table = nullptr;
-
-    size_t bitmap_index = 0;
-    size_t bitmap_sub_bit_index = 0;
 
     for(
         size_t relative_page_index = 0;
         relative_page_index < page_count;
         relative_page_index += 1
     ) {
-        auto page_index = *logical_pages_start + relative_page_index;
-        auto pd_index = page_index / page_table_length;
-        auto pdp_index = pd_index / page_table_length;
-        auto pml4_index = pdp_index / page_table_length;
+        if(!increment_page_walker(&walker, bitmap)) {
+            unmap_page_walker(&walker);
 
-        page_index %= page_table_length;
-        pd_index %= page_table_length;
-        pdp_index %= page_table_length;
-        pml4_index %= page_table_length;
-
-        if(
-            !map_and_maybe_allocate_table(
-                &current_pml4_index,
-                &pdp_table,
-                pml4_table,
-                pml4_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            ) ||
-            !map_and_maybe_allocate_table(
-                &current_pdp_index,
-                &pd_table,
-                pdp_table,
-                pdp_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            ) ||
-            !map_and_maybe_allocate_table(
-                &current_pd_index,
-                &page_table,
-                pd_table,
-                pd_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            )
-        ) {
-            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
-
-            if(pdp_table != nullptr) {
-                unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(pd_table != nullptr) {
-                unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(page_table != nullptr) {
-                unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
+            if(lock) {
+                combined_paging_lock = false;
             }
 
             return false;
         }
 
-        page_table[page_index].present = true;
-        page_table[page_index].write_allowed = permissions & UserPermissions::Write;
-        page_table[page_index].execute_disable = !(permissions & UserPermissions::Execute);
-        page_table[page_index].user_mode_allowed = true;
-        page_table[page_index].page_address = physical_pages_start + relative_page_index;
+        auto page = &walker.page_table[walker.page_index];
+
+        page->present = true;
+        page->write_allowed = permissions & PagePermissions::Write;
+        page->execute_disable = !(permissions & PagePermissions::Execute);
+        page->user_mode_allowed = true;
+        page->page_address = physical_pages_start + relative_page_index;
     }
 
-    unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+    unmap_page_walker(&walker);
 
-    if(pdp_table != nullptr) {
-        unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(pd_table != nullptr) {
-        unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(page_table != nullptr) {
-        unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
+    if(lock) {
+        combined_paging_lock = false;
     }
 
     return true;
@@ -1099,35 +1457,32 @@ bool map_pages(
 bool map_pages_from_kernel(
     size_t kernel_logical_pages_start,
     size_t page_count,
-    UserPermissions permissions,
+    PagePermissions permissions,
     size_t user_pml4_table_physical_address,
     Array<uint8_t> bitmap,
-    size_t *user_logical_pages_start
+    size_t *user_logical_pages_start,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     if(!find_free_logical_pages(page_count, user_pml4_table_physical_address, bitmap, user_logical_pages_start)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
 
-    auto user_pml4_table = (PageTableEntry*)map_memory(
-        user_pml4_table_physical_address,
-        sizeof(PageTableEntry[page_table_length]),
-        bitmap
-    );
-    if(user_pml4_table == nullptr) {
+    PageWalker walker;
+    if(!create_page_walker(user_pml4_table_physical_address, *user_logical_pages_start, bitmap, &walker)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
-
-    size_t current_user_pml4_index;
-    PageTableEntry *user_pdp_table = nullptr;
-
-    size_t current_user_pdp_index;
-    PageTableEntry *user_pd_table = nullptr;
-
-    size_t current_user_pd_index;
-    PageTableEntry *user_page_table = nullptr;
-
-    size_t bitmap_index = 0;
-    size_t bitmap_sub_bit_index = 0;
 
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
         auto kernel_page_index = kernel_logical_pages_start + relative_page_index;
@@ -1140,57 +1495,11 @@ bool map_pages_from_kernel(
         kernel_pdp_index %= page_table_length;
         kernel_pml4_index %= page_table_length;
 
-        auto user_page_index = *user_logical_pages_start + relative_page_index;
-        auto user_pd_index = user_page_index / page_table_length;
-        auto user_pdp_index = user_pd_index / page_table_length;
-        auto user_pml4_index = user_pdp_index / page_table_length;
+        if(!increment_page_walker(&walker, bitmap)) {
+            unmap_page_walker(&walker);
 
-        user_page_index %= page_table_length;
-        user_pd_index %= page_table_length;
-        user_pdp_index %= page_table_length;
-        user_pml4_index %= page_table_length;
-
-        if(
-            !map_and_maybe_allocate_table(
-                &current_user_pml4_index,
-                &user_pdp_table,
-                user_pml4_table,
-                user_pml4_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            ) ||
-            !map_and_maybe_allocate_table(
-                &current_user_pdp_index,
-                &user_pd_table,
-                user_pdp_table,
-                user_pdp_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            ) ||
-            !map_and_maybe_allocate_table(
-                &current_user_pd_index,
-                &user_page_table,
-                user_pd_table,
-                user_pd_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            )
-        ) {
-            unmap_memory(user_pml4_table, sizeof(PageTableEntry[page_table_length]));
-
-            if(user_pdp_table != nullptr) {
-                unmap_memory(user_pdp_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(user_pd_table != nullptr) {
-                unmap_memory(user_pd_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(user_page_table != nullptr) {
-                unmap_memory(user_page_table, sizeof(PageTableEntry[page_table_length]));
+            if(lock) {
+                combined_paging_lock = false;
             }
 
             return false;
@@ -1198,56 +1507,19 @@ bool map_pages_from_kernel(
 
         auto kernel_page_table = get_page_table_pointer(kernel_pml4_index, kernel_pdp_index, kernel_pd_index);
 
-        user_page_table[user_page_index].present = true;
-        user_page_table[user_page_index].write_allowed = permissions & UserPermissions::Write;
-        user_page_table[user_page_index].execute_disable = !(permissions & UserPermissions::Execute);
-        user_page_table[user_page_index].user_mode_allowed = true;
-        user_page_table[user_page_index].page_address = kernel_page_table[kernel_page_index].page_address;
+        auto user_page = &walker.page_table[walker.page_index];
+
+        user_page->present = true;
+        user_page->write_allowed = permissions & PagePermissions::Write;
+        user_page->execute_disable = !(permissions & PagePermissions::Execute);
+        user_page->user_mode_allowed = true;
+        user_page->page_address = kernel_page_table[kernel_page_index].page_address;
     }
 
-    unmap_memory(user_pml4_table, sizeof(PageTableEntry[page_table_length]));
+    unmap_page_walker(&walker);
 
-    if(user_pdp_table != nullptr) {
-        unmap_memory(user_pdp_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(user_pd_table != nullptr) {
-        unmap_memory(user_pd_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(user_page_table != nullptr) {
-        unmap_memory(user_page_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    return true;
-}
-
-static bool map_table(
-    size_t *current_parent_index,
-    PageTableEntry **current_table,
-    PageTableEntry *parent_table,
-    size_t parent_index,
-    Array<uint8_t> bitmap
-) {
-    if(*current_table == nullptr || parent_index != *current_parent_index) {
-        if(*current_table != nullptr) {
-            unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]));
-
-            *current_table = nullptr;
-        }
-
-        size_t logical_page_index;
-        if(!map_pages(
-            parent_table[parent_index].page_address,
-            1,
-            bitmap,
-            &logical_page_index
-        )) {
-            return false;
-        }
-
-        *current_table = (PageTableEntry*)(logical_page_index * page_size);
-        *current_parent_index = parent_index;
+    if(lock) {
+        combined_paging_lock = false;
     }
 
     return true;
@@ -1258,9 +1530,18 @@ bool map_pages_from_user(
     size_t page_count,
     size_t user_pml4_table_physical_address,
     Array<uint8_t> bitmap,
-    size_t *kernel_logical_pages_start
+    size_t *kernel_logical_pages_start,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     if(!find_free_logical_pages(page_count, kernel_logical_pages_start)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
 
@@ -1285,23 +1566,14 @@ bool map_pages_from_user(
         page_table[page_index].present = true;
     }
 
-    auto user_pml4_table = (PageTableEntry*)map_memory(
-        user_pml4_table_physical_address,
-        sizeof(PageTableEntry[page_table_length]),
-        bitmap
-    );
-    if(user_pml4_table == nullptr) {
+    ConstPageWalker walker;
+    if(!create_page_walker(user_pml4_table_physical_address, user_logical_pages_start, bitmap, &walker)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
-
-    size_t current_user_pml4_index;
-    PageTableEntry *user_pdp_table = nullptr;
-
-    size_t current_user_pdp_index;
-    PageTableEntry *user_pd_table = nullptr;
-
-    size_t current_user_pd_index;
-    PageTableEntry *user_page_table = nullptr;
 
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
         auto kernel_page_index = *kernel_logical_pages_start + relative_page_index;
@@ -1314,51 +1586,9 @@ bool map_pages_from_user(
         kernel_pdp_index %= page_table_length;
         kernel_pml4_index %= page_table_length;
 
-        auto user_page_index = user_logical_pages_start + relative_page_index;
-        auto user_pd_index = user_page_index / page_table_length;
-        auto user_pdp_index = user_pd_index / page_table_length;
-        auto user_pml4_index = user_pdp_index / page_table_length;
-
-        user_page_index %= page_table_length;
-        user_pd_index %= page_table_length;
-        user_pdp_index %= page_table_length;
-        user_pml4_index %= page_table_length;
-
-        if(
-            !map_table(
-                &current_user_pml4_index,
-                &user_pdp_table,
-                user_pml4_table,
-                user_pml4_index,
-                bitmap
-            ) ||
-            !map_table(
-                &current_user_pdp_index,
-                &user_pd_table,
-                user_pdp_table,
-                user_pdp_index,
-                bitmap
-            ) ||
-            !map_table(
-                &current_user_pd_index,
-                &user_page_table,
-                user_pd_table,
-                user_pd_index,
-                bitmap
-            )
-        ) {
-            unmap_memory(user_pml4_table, sizeof(PageTableEntry[page_table_length]));
-
-            if(user_pdp_table != nullptr) {
-                unmap_memory(user_pdp_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(user_pd_table != nullptr) {
-                unmap_memory(user_pd_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(user_page_table != nullptr) {
-                unmap_memory(user_page_table, sizeof(PageTableEntry[page_table_length]));
+        if(!increment_page_walker(&walker, bitmap)) {
+            if(lock) {
+                combined_paging_lock = false;
             }
 
             return false;
@@ -1368,21 +1598,13 @@ bool map_pages_from_user(
 
         kernel_page_table[kernel_page_index].write_allowed = true;
         kernel_page_table[kernel_page_index].user_mode_allowed = false;
-        kernel_page_table[kernel_page_index].page_address = user_page_table[user_page_index].page_address;
+        kernel_page_table[kernel_page_index].page_address = walker.page_table[walker.page_index].page_address;
     }
 
-    unmap_memory(user_pml4_table, sizeof(PageTableEntry[page_table_length]));
+    unmap_page_walker(&walker);
 
-    if(user_pdp_table != nullptr) {
-        unmap_memory(user_pdp_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(user_pd_table != nullptr) {
-        unmap_memory(user_pd_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(user_page_table != nullptr) {
-        unmap_memory(user_page_table, sizeof(PageTableEntry[page_table_length]));
+    if(lock) {
+        combined_paging_lock = false;
     }
 
     return true;
@@ -1391,190 +1613,70 @@ bool map_pages_from_user(
 bool map_pages_between_user(
     size_t from_logical_pages_start,
     size_t page_count,
-    UserPermissions permissions,
+    PagePermissions permissions,
     size_t from_pml4_table_physical_address,
     size_t to_pml4_table_physical_address,
     Array<uint8_t> bitmap,
-    size_t *to_logical_pages_start
+    size_t *to_logical_pages_start,
+    bool lock
 ) {
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
+    }
+
     if(!find_free_logical_pages(page_count, to_pml4_table_physical_address, bitmap, to_logical_pages_start)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
 
-    auto from_pml4_table = (PageTableEntry*)map_memory(
-        from_pml4_table_physical_address,
-        sizeof(PageTableEntry[page_table_length]),
-        bitmap
-    );
-    if(from_pml4_table == nullptr) {
+    ConstPageWalker from_walker;
+    if(!create_page_walker(from_pml4_table_physical_address, from_logical_pages_start, bitmap, &from_walker)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
+
         return false;
     }
 
-    size_t current_from_pml4_index;
-    PageTableEntry *from_pdp_table = nullptr;
+    PageWalker to_walker;
+    if(!create_page_walker(to_pml4_table_physical_address, *to_logical_pages_start, bitmap, &to_walker)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
 
-    size_t current_from_pdp_index;
-    PageTableEntry *from_pd_table = nullptr;
-
-    size_t current_from_pd_index;
-    PageTableEntry *from_page_table = nullptr;
-
-    auto to_pml4_table = (PageTableEntry*)map_memory(
-        to_pml4_table_physical_address,
-        sizeof(PageTableEntry[page_table_length]),
-        bitmap
-    );
-    if(to_pml4_table == nullptr) {
         return false;
     }
-
-    size_t current_to_pml4_index;
-    PageTableEntry *to_pdp_table = nullptr;
-
-    size_t current_to_pdp_index;
-    PageTableEntry *to_pd_table = nullptr;
-
-    size_t current_to_pd_index;
-    PageTableEntry *to_page_table = nullptr;
-
-    size_t bitmap_index = 0;
-    size_t bitmap_sub_bit_index = 0;
 
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
-        auto from_page_index = from_logical_pages_start + relative_page_index;
-        auto from_pd_index = from_page_index / page_table_length;
-        auto from_pdp_index = from_pd_index / page_table_length;
-        auto from_pml4_index = from_pdp_index / page_table_length;
+        if(!increment_page_walker(&from_walker, bitmap) || !increment_page_walker(&to_walker, bitmap)) {
+            unmap_page_walker(&from_walker);
+            unmap_page_walker(&to_walker);
 
-        from_page_index %= page_table_length;
-        from_pd_index %= page_table_length;
-        from_pdp_index %= page_table_length;
-        from_pml4_index %= page_table_length;
-
-        auto to_page_index = *to_logical_pages_start + relative_page_index;
-        auto to_pd_index = to_page_index / page_table_length;
-        auto to_pdp_index = to_pd_index / page_table_length;
-        auto to_pml4_index = to_pdp_index / page_table_length;
-
-        to_page_index %= page_table_length;
-        to_pd_index %= page_table_length;
-        to_pdp_index %= page_table_length;
-        to_pml4_index %= page_table_length;
-
-        if(
-            !map_table(
-                &current_from_pml4_index,
-                &from_pdp_table,
-                from_pml4_table,
-                from_pml4_index,
-                bitmap
-            ) ||
-            !map_table(
-                &current_from_pdp_index,
-                &from_pd_table,
-                from_pdp_table,
-                from_pdp_index,
-                bitmap
-            ) ||
-            !map_table(
-                &current_from_pd_index,
-                &from_page_table,
-                from_pd_table,
-                from_pd_index,
-                bitmap
-            ) ||
-            !map_and_maybe_allocate_table(
-                &current_to_pml4_index,
-                &to_pdp_table,
-                to_pml4_table,
-                to_pml4_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            ) ||
-            !map_and_maybe_allocate_table(
-                &current_to_pdp_index,
-                &to_pd_table,
-                to_pdp_table,
-                to_pdp_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            ) ||
-            !map_and_maybe_allocate_table(
-                &current_to_pd_index,
-                &to_page_table,
-                to_pd_table,
-                to_pd_index,
-                bitmap,
-                &bitmap_index,
-                &bitmap_sub_bit_index
-            )
-        ) {
-            unmap_memory(from_pml4_table, sizeof(PageTableEntry[page_table_length]));
-
-            if(from_pdp_table != nullptr) {
-                unmap_memory(from_pdp_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(from_pd_table != nullptr) {
-                unmap_memory(from_pd_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(from_page_table != nullptr) {
-                unmap_memory(from_page_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            unmap_memory(to_pml4_table, sizeof(PageTableEntry[page_table_length]));
-
-            if(to_pdp_table != nullptr) {
-                unmap_memory(to_pdp_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(to_pd_table != nullptr) {
-                unmap_memory(to_pd_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(to_page_table != nullptr) {
-                unmap_memory(to_page_table, sizeof(PageTableEntry[page_table_length]));
+            if(lock) {
+                combined_paging_lock = false;
             }
 
             return false;
         }
 
-        to_page_table[to_page_index].present = true;
-        to_page_table[to_page_index].write_allowed = permissions & UserPermissions::Write;
-        to_page_table[to_page_index].execute_disable = !(permissions & UserPermissions::Execute);
-        to_page_table[to_page_index].user_mode_allowed = true;
-        to_page_table[to_page_index].page_address = from_page_table[from_page_index].page_address;
+        auto from_page = &from_walker.page_table[from_walker.page_index];
+        auto to_page = &to_walker.page_table[to_walker.page_index];
+
+        to_page->present = true;
+        to_page->write_allowed = permissions & PagePermissions::Write;
+        to_page->execute_disable = !(permissions & PagePermissions::Execute);
+        to_page->user_mode_allowed = true;
+        to_page->page_address = from_page->page_address;
     }
 
-    unmap_memory(from_pml4_table, sizeof(PageTableEntry[page_table_length]));
+    unmap_page_walker(&from_walker);
+    unmap_page_walker(&to_walker);
 
-    if(from_pdp_table != nullptr) {
-        unmap_memory(from_pdp_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(from_pd_table != nullptr) {
-        unmap_memory(from_pd_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(from_page_table != nullptr) {
-        unmap_memory(from_page_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    unmap_memory(to_pml4_table, sizeof(PageTableEntry[page_table_length]));
-
-    if(to_pdp_table != nullptr) {
-        unmap_memory(to_pdp_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(to_pd_table != nullptr) {
-        unmap_memory(to_pd_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(to_page_table != nullptr) {
-        unmap_memory(to_page_table, sizeof(PageTableEntry[page_table_length]));
+    if(lock) {
+        combined_paging_lock = false;
     }
 
     return true;
@@ -1585,85 +1687,43 @@ bool unmap_pages(
     size_t page_count,
     size_t pml4_table_physical_address,
     bool deallocate,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool lock
 ) {
-    auto pml4_table = (PageTableEntry*)map_memory(
-        pml4_table_physical_address,
-        sizeof(PageTableEntry[page_table_length]),
-        bitmap
-    );
-    if(pml4_table == nullptr) {
-        return false;
+    if(lock) {
+        acquire_lock(&combined_paging_lock);
     }
 
-    size_t current_pml4_index;
-    PageTableEntry *pdp_table = nullptr;
+    PageWalker walker;
+    if(!create_page_walker(pml4_table_physical_address, logical_pages_start, bitmap, &walker)) {
+        if(lock) {
+            combined_paging_lock = false;
+        }
 
-    size_t current_pdp_index;
-    PageTableEntry *pd_table = nullptr;
-
-    size_t current_pd_index;
-    PageTableEntry *page_table = nullptr;
+        return false;
+    }
 
     for(
         size_t absolute_page_index = logical_pages_start;
         absolute_page_index < logical_pages_start + page_count;
         absolute_page_index += 1
     ) {
-        auto page_index = absolute_page_index;
-        auto pd_index = page_index / page_table_length;
-        auto pdp_index = pd_index / page_table_length;
-        auto pml4_index = pdp_index / page_table_length;
+        if(!increment_page_walker(&walker, bitmap)) {
+            unmap_page_walker(&walker);
 
-        page_index %= page_table_length;
-        pd_index %= page_table_length;
-        pdp_index %= page_table_length;
-        pml4_index %= page_table_length;
-
-        if(
-            !map_table(
-                &current_pml4_index,
-                &pdp_table,
-                pml4_table,
-                pml4_index,
-                bitmap
-            ) ||
-            !map_table(
-                &current_pdp_index,
-                &pd_table,
-                pdp_table,
-                pdp_index,
-                bitmap
-            ) ||
-            !map_table(
-                &current_pd_index,
-                &page_table,
-                pd_table,
-                pd_index,
-                bitmap
-            )
-        ) {
-            unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
-
-            if(pdp_table != nullptr) {
-                unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(pd_table != nullptr) {
-                unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
-            }
-
-            if(page_table != nullptr) {
-                unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
+            if(lock) {
+                combined_paging_lock = false;
             }
 
             return false;
         }
 
-        page_table[page_index].present = false;
+        auto page = &walker.page_table[walker.page_index];
+
+        page->present = false;
 
         if(deallocate) {
-            auto physical_page_index = page_table[page_index].page_address;
+            auto physical_page_index = page->page_address;
 
             auto byte_index = physical_page_index / 8;
             auto sub_byte_index = physical_page_index % 8;
@@ -1672,18 +1732,10 @@ bool unmap_pages(
         }
     }
 
-    unmap_memory(pml4_table, sizeof(PageTableEntry[page_table_length]));
+    unmap_page_walker(&walker);
 
-    if(pdp_table != nullptr) {
-        unmap_memory(pdp_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(pd_table != nullptr) {
-        unmap_memory(pd_table, sizeof(PageTableEntry[page_table_length]));
-    }
-
-    if(page_table != nullptr) {
-        unmap_memory(page_table, sizeof(PageTableEntry[page_table_length]));
+    if(lock) {
+        combined_paging_lock = false;
     }
 
     return true;
