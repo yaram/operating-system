@@ -37,6 +37,17 @@ struct __attribute__((aligned(16))) ProcessStackFrame {
     InterruptStackFrame interrupt_frame;
 };
 
+struct DebugCodeSection {
+    size_t memory_start;
+    size_t size;
+
+    const static size_t name_buffer_length = 32;
+    char name_buffer[name_buffer_length];
+    size_t name_length;
+};
+
+using DebugCodeSections = BucketArray<DebugCodeSection, 16>;
+
 struct ProcessPageMapping {
     size_t logical_pages_start;
     size_t page_count;
@@ -53,6 +64,8 @@ struct Process {
     size_t id;
 
     ProcessPageMappings mappings;
+
+    DebugCodeSections debug_code_sections;
 
     ProcessStackFrame frame;
 

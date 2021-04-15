@@ -381,6 +381,31 @@ CreateProcessFromELFResult create_process_from_elf(
                     kernel_pages_start,
                     page_count
                 };
+
+                if((section_header->flags & 0b100) != 0) { // SHF_EXECINSTR
+                    auto debug_code_section = allocate_from_bucket_array(&process->debug_code_sections, bitmap);
+                    if(section_allocation == nullptr) {
+                        destroy_process(process_iterator, bitmap);
+                        unmap_and_deallocate_bucket_array(&section_allocations, bitmap);
+
+                        return CreateProcessFromELFResult::OutOfMemory;
+                    }
+
+                    debug_code_section->memory_start = user_pages_start * page_size;
+                    debug_code_section->size = page_count * page_size;
+
+                    for(size_t i = 0; i < DebugCodeSection::name_buffer_length; i += 1) {
+                        auto character = section_names[section_header->name_offset + i];
+
+                        if(character == 0) {
+                            break;
+                        }
+
+                        debug_code_section->name_buffer[i] = character;
+
+                        debug_code_section->name_length += 1;
+                    }
+                }
             }
         }
     }
@@ -689,8 +714,10 @@ bool destroy_process(Processes::Iterator iterator, Array<uint8_t> bitmap) {
     }
 
     // Deallocate the memory mappings bucket array
-
     unmap_and_deallocate_bucket_array(&process->mappings, bitmap);
+
+    // Deallocate the debug sections
+    unmap_and_deallocate_bucket_array(&process->debug_code_sections, bitmap);
 
     // Deallocate the page tables themselves
 

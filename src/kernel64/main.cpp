@@ -408,6 +408,16 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
 
         printf(" in process %zu (processor %u)\n", process->id, get_processor_id());
 
+        auto instruction_pointer = (size_t)frame->interrupt_frame.instruction_pointer;
+
+        for(auto section : process->debug_code_sections) {
+            if(instruction_pointer >= section->memory_start && instruction_pointer < section->memory_start + section->size) {
+                printf("Section %.*s, offset %zX\n", (int)section->name_length, section->name_buffer, instruction_pointer - section->memory_start);
+
+                break;
+            }
+        }
+
         destroy_process(processor_area->current_process_iterator, global_bitmap);
 
         enter_next_process(processor_area, global_bitmap, &global_processes);
