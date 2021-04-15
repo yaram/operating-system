@@ -7,6 +7,7 @@ extern "C" {
 #include "console.h"
 #include "heap.h"
 #include "paging.h"
+#include "threading_kernel.h"
 
 extern "C" ACPI_STATUS AcpiOsInitialize(void) {
     return AE_OK;
@@ -39,24 +40,35 @@ extern "C" ACPI_STATUS AcpiOsPhysicalTableOverride(ACPI_TABLE_HEADER *ExistingTa
     return AE_NOT_IMPLEMENTED;
 }
 
+extern Array<uint8_t> global_bitmap;
 
 /*
  * Spinlock primitives
  */
 extern "C" ACPI_STATUS AcpiOsCreateLock(ACPI_SPINLOCK *OutHandle) {
-    return AE_NOT_IMPLEMENTED;
+    auto lock = (volatile bool*)map_and_allocate_memory(sizeof(bool), global_bitmap);
+
+    if(lock == nullptr) {
+        return AE_ERROR;
+    }
+
+    *OutHandle = lock;
+
+    return AE_OK;
 }
 
 extern "C" void AcpiOsDeleteLock(ACPI_SPINLOCK Handle) {
-
+    unmap_and_deallocate_memory((void*)Handle, sizeof(bool), global_bitmap);
 }
 
 extern "C" ACPI_CPU_FLAGS AcpiOsAcquireLock(ACPI_SPINLOCK Handle) {
+    acquire_lock(Handle);
+
     return 0;
 }
 
 extern "C" void AcpiOsReleaseLock(ACPI_SPINLOCK Handle, ACPI_CPU_FLAGS Flags) {
-
+    *Handle = false;
 }
 
 
@@ -64,18 +76,54 @@ extern "C" void AcpiOsReleaseLock(ACPI_SPINLOCK Handle, ACPI_CPU_FLAGS Flags) {
  * Semaphore primitives
  */
 extern "C" ACPI_STATUS AcpiOsCreateSemaphore(UINT32 MaxUnits, UINT32 InitialUnits, ACPI_SEMAPHORE *OutHandle) {
+    auto semaphore = (volatile UINT32*)map_and_allocate_memory(sizeof(UINT32), global_bitmap);
+
+    if(semaphore == nullptr) {
+        return AE_ERROR;
+    }
+
+    *semaphore = InitialUnits;
+
+    *OutHandle = semaphore;
+
     return AE_OK;
 }
 
 extern "C" ACPI_STATUS AcpiOsDeleteSemaphore(ACPI_SEMAPHORE Handle) {
+    unmap_and_deallocate_memory((void*)Handle, sizeof(UINT32), global_bitmap);
+
     return AE_OK;
 }
 
 extern "C" ACPI_STATUS AcpiOsWaitSemaphore(ACPI_SEMAPHORE Handle, UINT32 Units, UINT16 Timeout) {
+    while(true) {
+        auto current_value = *Handle;
+
+        if(current_value < Units) {
+            continue;
+        }
+
+        if(!compare_and_swap(Handle, current_value, current_value - Units)) {
+            continue;
+        }
+
+        break;
+    }
+
     return AE_OK;
 }
 
 extern "C" ACPI_STATUS AcpiOsSignalSemaphore(ACPI_SEMAPHORE Handle, UINT32 Units) {
+    while(true) {
+        auto current_value = *Handle;
+
+        if(!compare_and_swap(Handle, current_value, current_value + Units)) {
+            continue;
+        }
+
+        break;
+    }
+
     return AE_OK;
 }
 
@@ -90,7 +138,6 @@ extern "C" void AcpiOsFree(void *Memory) {
     deallocate(Memory);
 }
 
-extern Array<uint8_t> global_bitmap;
 
 extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
     return map_memory((size_t)Where, (size_t)Length, global_bitmap);

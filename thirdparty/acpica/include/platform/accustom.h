@@ -45,6 +45,7 @@
 #define __ACCUSTOM_H__
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #define ACPI_USE_NATIVE_DIVIDE
 #define ACPI_USE_NATIVE_MATH64
@@ -55,6 +56,10 @@
 #define ACPI_MACHINE_WIDTH          64
 
 #define ACPI_USE_LOCAL_CACHE
+
+#define ACPI_SPINLOCK volatile bool*
+
+#define ACPI_SEMAPHORE volatile UINT32*
 
 #define ACPI_FLUSH_CPU_CACHE() __asm __volatile("wbinvd");
 
