@@ -77,7 +77,6 @@ inline PageTableEntry *get_page_table_pointer(size_t pml4_index, size_t pdp_inde
     ));
 }
 
-
 struct ConstPageWalker {
     const PageTableEntry *pml4_table;
 
@@ -95,9 +94,15 @@ struct ConstPageWalker {
     size_t absolute_page_index;
 };
 
-bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_index, Array<uint8_t> bitmap, ConstPageWalker *result_walker);
-void unmap_page_walker(const ConstPageWalker *walker);
-bool increment_page_walker(ConstPageWalker *walker, Array<uint8_t> bitmap);
+bool create_page_walker(
+    size_t pml4_table_physical_address,
+    size_t start_page_index,
+    Array<uint8_t> bitmap,
+    ConstPageWalker *result_walker,
+    bool not_locked = true
+);
+void unmap_page_walker(const ConstPageWalker *walker, bool not_locked = true);
+bool increment_page_walker(ConstPageWalker *walker, Array<uint8_t> bitmap, bool not_locked = true);
 
 struct PageWalker {
     size_t bitmap_index;
@@ -119,9 +124,15 @@ struct PageWalker {
     size_t absolute_page_index;
 };
 
-bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_index, Array<uint8_t> bitmap, PageWalker *result_walker);
-void unmap_page_walker(const PageWalker *walker);
-bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap);
+bool create_page_walker(
+    size_t pml4_table_physical_address,
+    size_t start_page_index,
+    Array<uint8_t> bitmap,
+    PageWalker *result_walker,
+    bool not_locked = true
+);
+void unmap_page_walker(const PageWalker *walker, bool not_locked = true);
+bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap, bool not_locked = true);
 
 size_t count_page_tables_needed_for_logical_pages(size_t logical_pages_start, size_t page_count, bool lock = true);
 

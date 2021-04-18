@@ -5,7 +5,13 @@
 
 static volatile bool combined_paging_lock = false;
 
-bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_index, Array<uint8_t> bitmap, ConstPageWalker *result_walker) {
+bool create_page_walker(
+    size_t pml4_table_physical_address,
+    size_t start_page_index,
+    Array<uint8_t> bitmap,
+    ConstPageWalker *result_walker,
+    bool not_locked
+) {
     *result_walker = {};
     result_walker->absolute_page_index = start_page_index;
 
@@ -13,7 +19,7 @@ bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_in
         pml4_table_physical_address,
         sizeof(PageTableEntry[page_table_length]),
         bitmap,
-        false
+        not_locked
     );
     if(result_walker->pml4_table == nullptr) {
         return false;
@@ -22,19 +28,19 @@ bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_in
     return true;
 }
 
-void unmap_page_walker(const ConstPageWalker *walker) {
-    unmap_memory((void*)walker->pml4_table, sizeof(PageTableEntry[page_table_length]), false);
+void unmap_page_walker(const ConstPageWalker *walker, bool not_locked) {
+    unmap_memory((void*)walker->pml4_table, sizeof(PageTableEntry[page_table_length]), not_locked);
 
     if(walker->pdp_table != nullptr) {
-        unmap_memory((void*)walker->pdp_table, sizeof(PageTableEntry[page_table_length]), false);
+        unmap_memory((void*)walker->pdp_table, sizeof(PageTableEntry[page_table_length]), not_locked);
     }
 
     if(walker->pd_table != nullptr) {
-        unmap_memory((void*)walker->pd_table, sizeof(PageTableEntry[page_table_length]), false);
+        unmap_memory((void*)walker->pd_table, sizeof(PageTableEntry[page_table_length]), not_locked);
     }
 
     if(walker->page_table != nullptr) {
-        unmap_memory((void*)walker->page_table, sizeof(PageTableEntry[page_table_length]), false);
+        unmap_memory((void*)walker->page_table, sizeof(PageTableEntry[page_table_length]), not_locked);
     }
 }
 
@@ -43,7 +49,8 @@ static bool map_table(
     const PageTableEntry **current_table,
     const PageTableEntry *parent_table,
     size_t parent_index,
-    Array<uint8_t> bitmap
+    Array<uint8_t> bitmap,
+    bool not_locked
 ) {
     if(*current_table == nullptr || parent_index != *current_parent_index) {
         if(*current_table != nullptr) {
@@ -58,7 +65,7 @@ static bool map_table(
             1,
             bitmap,
             &logical_page_index,
-            false
+            not_locked
         )) {
             return false;
         }
@@ -70,7 +77,7 @@ static bool map_table(
     return true;
 }
 
-bool increment_page_walker(ConstPageWalker *walker, Array<uint8_t> bitmap) {
+bool increment_page_walker(ConstPageWalker *walker, Array<uint8_t> bitmap, bool not_locked) {
     auto page_index = walker->absolute_page_index;
     auto pd_index = page_index / page_table_length;
     auto pdp_index = pd_index / page_table_length;
@@ -87,24 +94,27 @@ bool increment_page_walker(ConstPageWalker *walker, Array<uint8_t> bitmap) {
             &walker->pdp_table,
             walker->pml4_table,
             pml4_index,
-            bitmap
+            bitmap,
+            not_locked
         ) ||
         !map_table(
             &walker->pdp_index,
             &walker->pd_table,
             walker->pdp_table,
             pdp_index,
-            bitmap
+            bitmap,
+            not_locked
         ) ||
         !map_table(
             &walker->pd_index,
             &walker->page_table,
             walker->pd_table,
             pd_index,
-            bitmap
+            bitmap,
+            not_locked
         )
     ) {
-        unmap_page_walker(walker);
+        unmap_page_walker(walker, not_locked);
 
         return false;
     }
@@ -116,7 +126,13 @@ bool increment_page_walker(ConstPageWalker *walker, Array<uint8_t> bitmap) {
     return true;
 }
 
-bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_index, Array<uint8_t> bitmap, PageWalker *result_walker) {
+bool create_page_walker(
+    size_t pml4_table_physical_address,
+    size_t start_page_index,
+    Array<uint8_t> bitmap,
+    PageWalker *result_walker,
+    bool not_locked
+) {
     *result_walker = {};
     result_walker->absolute_page_index = start_page_index;
 
@@ -124,7 +140,7 @@ bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_in
         pml4_table_physical_address,
         sizeof(PageTableEntry[page_table_length]),
         bitmap,
-        false
+        not_locked
     );
     if(result_walker->pml4_table == nullptr) {
         return false;
@@ -133,19 +149,19 @@ bool create_page_walker(size_t pml4_table_physical_address, size_t start_page_in
     return true;
 }
 
-void unmap_page_walker(const PageWalker *walker) {
-    unmap_memory((void*)walker->pml4_table, sizeof(PageTableEntry[page_table_length]), false);
+void unmap_page_walker(const PageWalker *walker, bool not_locked) {
+    unmap_memory((void*)walker->pml4_table, sizeof(PageTableEntry[page_table_length]), not_locked);
 
     if(walker->pdp_table != nullptr) {
-        unmap_memory((void*)walker->pdp_table, sizeof(PageTableEntry[page_table_length]), false);
+        unmap_memory((void*)walker->pdp_table, sizeof(PageTableEntry[page_table_length]), not_locked);
     }
 
     if(walker->pd_table != nullptr) {
-        unmap_memory((void*)walker->pd_table, sizeof(PageTableEntry[page_table_length]), false);
+        unmap_memory((void*)walker->pd_table, sizeof(PageTableEntry[page_table_length]), not_locked);
     }
 
     if(walker->page_table != nullptr) {
-        unmap_memory((void*)walker->page_table, sizeof(PageTableEntry[page_table_length]), false);
+        unmap_memory((void*)walker->page_table, sizeof(PageTableEntry[page_table_length]), not_locked);
     }
 }
 
@@ -156,12 +172,13 @@ static bool map_and_maybe_allocate_table(
     size_t parent_index,
     Array<uint8_t> bitmap,
     size_t *bitmap_index,
-    size_t *bitmap_sub_bit_index
+    size_t *bitmap_sub_bit_index,
+    bool not_locked
 ) {
     if(parent_table[parent_index].present) {
         if(*current_table == nullptr || parent_index != *current_parent_index) {
             if(*current_table != nullptr) {
-                unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]), false);
+                unmap_memory(*current_table, sizeof(PageTableEntry[page_table_length]), not_locked);
 
                 *current_table = nullptr;
             }
@@ -172,7 +189,7 @@ static bool map_and_maybe_allocate_table(
                 1,
                 bitmap,
                 &logical_page_index,
-                false
+                not_locked
             )) {
                 return false;
             }
@@ -193,7 +210,7 @@ static bool map_and_maybe_allocate_table(
             bitmap_sub_bit_index,
             bitmap,
             &physical_page_index,
-            false
+            not_locked
         )) {
             return false;
         }
@@ -204,7 +221,7 @@ static bool map_and_maybe_allocate_table(
             1,
             bitmap,
             &logical_page_index,
-            false
+            not_locked
         )) {
             return false;
         }
@@ -223,7 +240,7 @@ static bool map_and_maybe_allocate_table(
     return true;
 }
 
-bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap) {
+bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap, bool not_locked) {
     auto page_index = walker->absolute_page_index;
     auto pd_index = page_index / page_table_length;
     auto pdp_index = pd_index / page_table_length;
@@ -242,7 +259,8 @@ bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap) {
             pml4_index,
             bitmap,
             &walker->bitmap_index,
-            &walker->bitmap_sub_bit_index
+            &walker->bitmap_sub_bit_index,
+            not_locked
         ) ||
         !map_and_maybe_allocate_table(
             &walker->pdp_index,
@@ -251,7 +269,8 @@ bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap) {
             pdp_index,
             bitmap,
             &walker->bitmap_index,
-            &walker->bitmap_sub_bit_index
+            &walker->bitmap_sub_bit_index,
+            not_locked
         ) ||
         !map_and_maybe_allocate_table(
             &walker->pd_index,
@@ -260,10 +279,11 @@ bool increment_page_walker(PageWalker *walker, Array<uint8_t> bitmap) {
             pd_index,
             bitmap,
             &walker->bitmap_index,
-            &walker->bitmap_sub_bit_index
+            &walker->bitmap_sub_bit_index,
+            not_locked
         )
     ) {
-        unmap_page_walker(walker);
+        unmap_page_walker(walker, not_locked);
 
         return false;
     }
@@ -1333,7 +1353,7 @@ bool map_pages(
     }
 
     PageWalker walker;
-    if(!create_page_walker(pml4_table_physical_address, *logical_pages_start, bitmap, &walker)) {
+    if(!create_page_walker(pml4_table_physical_address, *logical_pages_start, bitmap, &walker, !lock)) {
         if(lock) {
             combined_paging_lock = false;
         }
@@ -1346,8 +1366,8 @@ bool map_pages(
         relative_page_index < page_count;
         relative_page_index += 1
     ) {
-        if(!increment_page_walker(&walker, bitmap)) {
-            unmap_page_walker(&walker);
+        if(!increment_page_walker(&walker, bitmap, !lock)) {
+            unmap_page_walker(&walker, !lock);
 
             if(lock) {
                 combined_paging_lock = false;
@@ -1365,7 +1385,7 @@ bool map_pages(
         page->page_address = physical_pages_start + relative_page_index;
     }
 
-    unmap_page_walker(&walker);
+    unmap_page_walker(&walker, !lock);
 
     if(lock) {
         combined_paging_lock = false;
@@ -1396,7 +1416,7 @@ bool map_pages_from_kernel(
     }
 
     PageWalker walker;
-    if(!create_page_walker(user_pml4_table_physical_address, *user_logical_pages_start, bitmap, &walker)) {
+    if(!create_page_walker(user_pml4_table_physical_address, *user_logical_pages_start, bitmap, &walker, !lock)) {
         if(lock) {
             combined_paging_lock = false;
         }
@@ -1415,8 +1435,8 @@ bool map_pages_from_kernel(
         kernel_pdp_index %= page_table_length;
         kernel_pml4_index %= page_table_length;
 
-        if(!increment_page_walker(&walker, bitmap)) {
-            unmap_page_walker(&walker);
+        if(!increment_page_walker(&walker, bitmap, !lock)) {
+            unmap_page_walker(&walker, !lock);
 
             if(lock) {
                 combined_paging_lock = false;
@@ -1436,7 +1456,7 @@ bool map_pages_from_kernel(
         user_page->page_address = kernel_page_table[kernel_page_index].page_address;
     }
 
-    unmap_page_walker(&walker);
+    unmap_page_walker(&walker, !lock);
 
     if(lock) {
         combined_paging_lock = false;
@@ -1495,7 +1515,7 @@ bool map_pages_from_user(
     }
 
     ConstPageWalker walker;
-    if(!create_page_walker(user_pml4_table_physical_address, user_logical_pages_start, bitmap, &walker)) {
+    if(!create_page_walker(user_pml4_table_physical_address, user_logical_pages_start, bitmap, &walker, !lock)) {
         if(lock) {
             combined_paging_lock = false;
         }
@@ -1514,7 +1534,7 @@ bool map_pages_from_user(
         kernel_pdp_index %= page_table_length;
         kernel_pml4_index %= page_table_length;
 
-        if(!increment_page_walker(&walker, bitmap)) {
+        if(!increment_page_walker(&walker, bitmap, !lock)) {
             if(lock) {
                 combined_paging_lock = false;
             }
@@ -1529,7 +1549,7 @@ bool map_pages_from_user(
         kernel_page_table[kernel_page_index].page_address = walker.page_table[walker.page_index].page_address;
     }
 
-    unmap_page_walker(&walker);
+    unmap_page_walker(&walker, !lock);
 
     if(lock) {
         combined_paging_lock = false;
@@ -1561,7 +1581,7 @@ bool map_pages_between_user(
     }
 
     ConstPageWalker from_walker;
-    if(!create_page_walker(from_pml4_table_physical_address, from_logical_pages_start, bitmap, &from_walker)) {
+    if(!create_page_walker(from_pml4_table_physical_address, from_logical_pages_start, bitmap, &from_walker, !lock)) {
         if(lock) {
             combined_paging_lock = false;
         }
@@ -1570,7 +1590,7 @@ bool map_pages_between_user(
     }
 
     PageWalker to_walker;
-    if(!create_page_walker(to_pml4_table_physical_address, *to_logical_pages_start, bitmap, &to_walker)) {
+    if(!create_page_walker(to_pml4_table_physical_address, *to_logical_pages_start, bitmap, &to_walker, !lock)) {
         if(lock) {
             combined_paging_lock = false;
         }
@@ -1579,9 +1599,9 @@ bool map_pages_between_user(
     }
 
     for(size_t relative_page_index = 0; relative_page_index < page_count; relative_page_index += 1) {
-        if(!increment_page_walker(&from_walker, bitmap) || !increment_page_walker(&to_walker, bitmap)) {
-            unmap_page_walker(&from_walker);
-            unmap_page_walker(&to_walker);
+        if(!increment_page_walker(&from_walker, bitmap, !lock) || !increment_page_walker(&to_walker, bitmap, !lock)) {
+            unmap_page_walker(&from_walker, !lock);
+            unmap_page_walker(&to_walker, !lock);
 
             if(lock) {
                 combined_paging_lock = false;
@@ -1600,8 +1620,8 @@ bool map_pages_between_user(
         to_page->page_address = from_page->page_address;
     }
 
-    unmap_page_walker(&from_walker);
-    unmap_page_walker(&to_walker);
+    unmap_page_walker(&from_walker, !lock);
+    unmap_page_walker(&to_walker, !lock);
 
     if(lock) {
         combined_paging_lock = false;
@@ -1623,7 +1643,7 @@ bool unmap_pages(
     }
 
     PageWalker walker;
-    if(!create_page_walker(pml4_table_physical_address, logical_pages_start, bitmap, &walker)) {
+    if(!create_page_walker(pml4_table_physical_address, logical_pages_start, bitmap, &walker, !lock)) {
         if(lock) {
             combined_paging_lock = false;
         }
@@ -1636,8 +1656,8 @@ bool unmap_pages(
         absolute_page_index < logical_pages_start + page_count;
         absolute_page_index += 1
     ) {
-        if(!increment_page_walker(&walker, bitmap)) {
-            unmap_page_walker(&walker);
+        if(!increment_page_walker(&walker, bitmap, !lock)) {
+            unmap_page_walker(&walker, !lock);
 
             if(lock) {
                 combined_paging_lock = false;
@@ -1660,7 +1680,7 @@ bool unmap_pages(
         }
     }
 
-    unmap_page_walker(&walker);
+    unmap_page_walker(&walker, !lock);
 
     if(lock) {
         combined_paging_lock = false;
