@@ -12,11 +12,16 @@ parent_directory = os.path.dirname(os.path.realpath(__file__))
 
 build_directory = os.path.join(parent_directory, 'build')
 
+cpu_count = os.cpu_count()
+
+if cpu_count == None:
+    cpu_count = 2
+
 run_command(
     shutil.which('qemu-system-x86_64'),
     '-monitor', 'stdio',
     '-machine', 'q35',
-    '-smp', '2',
+    '-smp', str(cpu_count),
     '-m', '4G',
     '-vga', 'virtio',
     '-device', 'virtio-keyboard',
