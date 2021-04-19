@@ -306,6 +306,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
         auto function_continued_address = (size_t)function_continued;
 
         asm volatile(
+            // Align the stack to 16 bytes
+            "and $~0xF, %%rsp\n"
+
             // Save needed info to stack
             "push %0\n"
             "push %1\n"
@@ -377,6 +380,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
         };
 
         asm volatile(
+            // Align the stack to 16 bytes
+            "and $~0xF, %%rsp\n"
+
             // Switch to kernel-mapped processor stack
             "sub %0, %%rsp\n"
             "add %1, %%rsp\n"
