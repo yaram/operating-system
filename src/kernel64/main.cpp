@@ -306,6 +306,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
         auto function_continued_address = (size_t)function_continued;
 
         asm volatile(
+            // Save original stack location
+            "push %%rsp\n"
+
             // Align the stack to 16 bytes
             "and $~0xF, %%rsp\n"
 
@@ -347,7 +350,10 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
 
             // Switch back to user-mapped processor stack
             "sub %1, %%rsp\n"
-            "add %0, %%rsp"
+            "add %0, %%rsp\n"
+
+            // Restore original stack location
+            "pop %%rsp"
 
             // Crazy register binding stuff with clobbers correctly specified
             : "=r"(stack_user_address), "=r"(stack_kernel_address), "=r"(kernel_pml4_table_address), "=r"(function_continued_address), "=r"(kernel_gdt_descriptor_user_address), "=r"(user_gdt_descriptor_user_address), "=D"(frame_user_address)
