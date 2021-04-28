@@ -14,13 +14,16 @@ SECTIONS {
     }
 
     .rodata : {
-        *(.eh_frame)
         *(.rodata)
         *(.rodata.*)
 
         *(.init_array_start)
         *(.init_array)
         *(.init_array_end)
+    }
+
+    .eh_frame : {
+        *(.eh_frame)
     }
 
     .data : {

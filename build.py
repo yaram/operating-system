@@ -400,6 +400,7 @@ run_command(
     '--only-section', '.text',
     '--only-section', '.data',
     '--only-section', '.rodata',
+    '--only-section', '.eh_frame',
     os.path.join(build_directory, 'kernel64.elf'),
     os.path.join(build_directory, 'kernel64.bin')
 )
