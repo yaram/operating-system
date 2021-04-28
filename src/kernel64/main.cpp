@@ -448,10 +448,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
 extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *frame) {
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
-    if(
-        (size_t)frame->interrupt_frame.instruction_pointer < kernel_memory_start ||
-        (size_t)frame->interrupt_frame.instruction_pointer >= kernel_memory_end
-    ) {
+    if(frame->interrupt_frame.code_segment != 0x08) {
         continue_in_function(frame, &user_exception_handler_continued);
     } else {
         printf(" in kernel (processor %u)\n", get_processor_id());
