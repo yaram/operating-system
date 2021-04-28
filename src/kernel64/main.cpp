@@ -308,6 +308,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
         asm volatile(
             // Save original stack location
             "push %%rsp\n"
+            "push %%rbp\n"
 
             // Align the stack to 16 bytes
             "and $~0xF, %%rsp\n"
@@ -353,6 +354,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "add %0, %%rsp\n"
 
             // Restore original stack location
+            "pop %%rbp\n"
             "pop %%rsp"
 
             // Crazy register binding stuff with clobbers correctly specified
