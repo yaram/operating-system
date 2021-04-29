@@ -857,7 +857,7 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
                 auto mapping = *iterator;
 
                 if(mapping->logical_pages_start == logical_pages_start) {
-                    iterator.current_bucket->occupied[iterator.current_sub_index] = false;
+                    remove_item_from_bucket_array(iterator);
 
                     unmap_pages(
                         mapping->logical_pages_start,
