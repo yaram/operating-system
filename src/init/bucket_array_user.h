@@ -29,7 +29,7 @@ static T *allocate_from_bucket_array(
             0
         };
     } else {
-        memset(*iterator, 0, sizeof(T));
+        **iterator = {};
     }
 
     iterator.current_bucket->unavailable[iterator.current_sub_index] = true;

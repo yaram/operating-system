@@ -41,7 +41,7 @@ static T *allocate_from_bucket_array(
             continue;
         }
 
-        memset(*iterator, 0, sizeof(T));
+        **iterator = {};
 
         iterator.current_bucket->occupied[iterator.current_sub_index] = true;
 
