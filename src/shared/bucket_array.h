@@ -121,7 +121,7 @@ static BucketArrayIterator<T, N> find_available_bucket_slot(BucketArray<T, N> *b
     };
 
     while(true) {
-        if(iterator.current_bucket->unavailable[iterator.current_sub_index]) {
+        if(!iterator.current_bucket->unavailable[iterator.current_sub_index]) {
             break;
         }
 
