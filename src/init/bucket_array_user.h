@@ -7,7 +7,7 @@ static T *allocate_from_bucket_array(
     BucketArray<T, N> *bucket_array,
     BucketArrayIterator<T, N> *result_iterator = nullptr
 ) {
-    auto iterator = find_unoccupied_bucket_slot(bucket_array);
+    auto iterator = find_available_bucket_slot(bucket_array);
 
     if(iterator.current_bucket == nullptr) {
         auto new_bucket = (Bucket<T, N>*)syscall(SyscallType::MapFreeMemory, sizeof(Bucket<T, N>), 0);
@@ -32,6 +32,7 @@ static T *allocate_from_bucket_array(
         memset(*iterator, 0, sizeof(T));
     }
 
+    iterator.current_bucket->unavailable[iterator.current_sub_index] = true;
     iterator.current_bucket->occupied[iterator.current_sub_index] = true;
 
     if(result_iterator != nullptr) {

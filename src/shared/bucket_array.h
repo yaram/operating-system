@@ -6,6 +6,7 @@ template <typename T, size_t N>
 struct Bucket {
     T entries[N];
 
+    bool unavailable[N];
     bool occupied[N];
 
     Bucket<T, N> *next;
@@ -55,6 +56,7 @@ static bool operator !=(const BucketArrayIterator<T, N> &a, const BucketArrayIte
 template <typename T, size_t N>
 inline void remove_item_from_bucket_array(BucketArrayIterator<T, N> iterator) {
     iterator.current_bucket->occupied[iterator.current_sub_index] = false;
+    iterator.current_bucket->unavailable[iterator.current_sub_index] = false;
 }
 
 template <typename T, size_t N>
@@ -112,14 +114,14 @@ struct BucketArray {
 };
 
 template <typename T, size_t N>
-static BucketArrayIterator<T, N> find_unoccupied_bucket_slot(BucketArray<T, N> *bucket_array) {
+static BucketArrayIterator<T, N> find_available_bucket_slot(BucketArray<T, N> *bucket_array) {
     BucketArrayIterator<T, N> iterator {
         &bucket_array->first_bucket,
         0
     };
 
     while(true) {
-        if(!iterator.current_bucket->occupied[iterator.current_sub_index]) {
+        if(iterator.current_bucket->unavailable[iterator.current_sub_index]) {
             break;
         }
 

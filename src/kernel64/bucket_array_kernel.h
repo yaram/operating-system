@@ -12,7 +12,7 @@ static T *allocate_from_bucket_array(
     BucketArrayIterator<T, N> *result_iterator = nullptr
 ) {
     while(true) {
-        auto iterator = find_unoccupied_bucket_slot(bucket_array);
+        auto iterator = find_available_bucket_slot(bucket_array);
 
         if(iterator.current_bucket == nullptr) {
             auto new_bucket = (Bucket<T, N>*)map_and_allocate_memory(sizeof(Bucket<T, N>), bitmap);
@@ -37,11 +37,13 @@ static T *allocate_from_bucket_array(
             };
         }
 
-        if(!compare_and_swap(&iterator.current_bucket->occupied[iterator.current_sub_index], false, true)) {
+        if(!compare_and_swap(&iterator.current_bucket->unavailable[iterator.current_sub_index], false, true)) {
             continue;
         }
 
         memset(*iterator, 0, sizeof(T));
+
+        iterator.current_bucket->occupied[iterator.current_sub_index] = true;
 
         if(result_iterator != nullptr) {
             *result_iterator = iterator;
