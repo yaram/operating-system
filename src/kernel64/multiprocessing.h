@@ -84,6 +84,9 @@ struct ProcessorArea {
     volatile uint32_t *apic_registers;
 
     Processes::Iterator current_process_iterator;
+
+    bool in_syscall;
+    bool preempt_during_syscall;
 };
 
 static_assert(processor_stack_size % 16 == 0, "Processor stack size of not 16-byte aligned");

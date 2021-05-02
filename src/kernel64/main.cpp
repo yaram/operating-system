@@ -73,7 +73,7 @@ using ProcessorAreas = BucketArray<ProcessorArea*, 4>;
 
 ProcessorAreas processor_areas {};
 
-extern "C" [[noreturn]] void preempt_timer_thunk();
+extern "C" uint8_t preempt_timer_handler_thunk[];
 
 const uint32_t preempt_time = 0x100000;
 
@@ -114,11 +114,13 @@ Array<uint8_t> global_bitmap;
 volatile bool global_processes_lock = false;
 Processes global_processes {};
 
-[[noreturn]] static inline void unreachable() {
-    printf("UNREACHABLE CODE EXECUTED!\n");
+[[noreturn]] static inline void unreachable_implementation(const char *file, unsigned int line) {
+    printf("UNREACHABLE CODE EXECUTED at %s:%u\n", file, line);
 
     halt();
 }
+
+#define unreachable() unreachable_implementation(__FILE__, __LINE__)
 
 [[noreturn]] static void enter_next_process(
     ProcessorArea *processor_area,
@@ -149,11 +151,19 @@ Processes global_processes {};
 
         while(true) {
             if(processor_area->current_process_iterator.current_bucket == nullptr) {
+                // Disable interrupts until stack is correctly setup for interrupt safety
+                asm volatile(
+                    "cli"
+                );
+
                 // Set timer value
                 processor_area->apic_registers[0x380 / 4] = preempt_time;
 
                 // Send the End of Interrupt signal
                 processor_area->apic_registers[0x0B0 / 4] = 0;
+
+                // Enable APIC timer
+                processor_area->apic_registers[0x320 / 4] &= ~(1 << 16);
 
                 // Halt current processor until next timer interval, also reset stack to top to prevent stack overflow
                 asm volatile(
@@ -217,11 +227,19 @@ Processes global_processes {};
 
     auto stack_frame_copy_user_address = processor_area_memory_start + stack_frame_copy_relative_address;
 
+    // Disable interrupts until process entry for interrupt safety
+    asm volatile(
+        "cli"
+    );
+
     // Set timer value
     processor_area->apic_registers[0x380 / 4] = preempt_time;
 
     // Send the End of Interrupt signal
     processor_area->apic_registers[0x0B0 / 4] = 0;
+
+    // Enable APIC timer
+    processor_area->apic_registers[0x320 / 4] &= ~(1 << 16);
 
     asm volatile(
         // Load GDT
@@ -320,6 +338,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "push %%rax\n"
             "push %5\n"
 
+            // Disable interrupts for interrupt safety / atomicity
+            "cli\n"
+
             // Switch to kernel-mapped processor stack
             "sub %0, %%rsp\n"
             "add %1, %%rsp\n"
@@ -329,6 +350,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
 
             // Switch to kernel page table
             "mov %2, %%cr3\n"
+
+            // Re-enable interrupts
+            "sti\n"
 
             // Calculate kernel stack frame address
             "sub %0, %%rdi\n"
@@ -343,6 +367,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "pop %1\n"
             "pop %0\n"
 
+            // Disable interrupts for interrupt safety / atomicity
+            "cli\n"
+
             // Switch back to user page table
             "mov %%rax, %%cr3\n"
 
@@ -352,6 +379,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             // Switch back to user-mapped processor stack
             "sub %1, %%rsp\n"
             "add %0, %%rsp\n"
+
+            // Re-enable interrupts
+            "sti\n"
 
             // Restore original stack location
             "pop %%rbp\n"
@@ -391,6 +421,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             // Align the stack to 16 bytes
             "and $~0xF, %%rsp\n"
 
+            // Disable interrupts for interrupt safety / atomicity
+            "cli\n"
+
             // Switch to kernel-mapped processor stack
             "sub %0, %%rsp\n"
             "add %1, %%rsp\n"
@@ -404,6 +437,9 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
 
             // Switch to kernel page table
             "mov %2, %%cr3\n"
+
+            // Re-enable interrupts
+            "sti\n"
 
             // Call continued function
             "call *%3"
@@ -449,6 +485,16 @@ extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
     if(frame->interrupt_frame.code_segment != 0x08) {
+        auto user_processor_area = (ProcessorArea*)processor_area_memory_start;
+
+        // Disable APIC timer
+        user_processor_area->apic_registers[0x320 / 4] |= 1 << 16;
+
+        // Re-enable interrupts (they are disabled in the exception handler thunk)
+        asm volatile(
+            "sti"
+        );
+
         continue_in_function(frame, &user_exception_handler_continued);
     } else {
         printf(" in kernel (processor %u)\n", get_processor_id());
@@ -459,6 +505,10 @@ extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *
 
 [[noreturn]] void preempt_timer_handler_continued(ProcessStackFrame *frame) {
     auto processor_area = get_processor_area();
+
+    if(processor_area->in_syscall) {
+        processor_area->preempt_during_syscall = true;
+    }
 
     if(processor_area->current_process_iterator.current_bucket != nullptr) {
         auto old_process = *processor_area->current_process_iterator;
@@ -471,36 +521,25 @@ extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *
     enter_next_process(processor_area, global_bitmap, &global_processes);
 }
 
-extern "C" [[noreturn]] void preempt_timer_handler(ProcessStackFrame *frame) {
-    continue_in_function(frame, &preempt_timer_handler_continued);
+extern "C" void preempt_timer_handler(ProcessStackFrame *frame) {
+    if(frame->interrupt_frame.code_segment == 0x08) {
+        auto processor_area = get_processor_area();
+
+        if(processor_area->in_syscall) {
+            processor_area->preempt_during_syscall = true;
+        } else {
+            continue_in_function(frame, &preempt_timer_handler_continued);
+        }
+    } else {
+        continue_in_function(frame, &preempt_timer_handler_continued);
+    }
 }
 
-__attribute((interrupt))
-static void local_apic_spurious_interrupt(const InterruptStackFrame *interrupt_frame) {
-    printf("Spurious interrupt at %p\n", interrupt_frame->instruction_pointer);
+extern "C" void spurious_interrupt_handler(const ProcessStackFrame *frame) {
+    printf("Spurious interrupt at %p\n", frame->interrupt_frame.instruction_pointer);
 }
 
-extern "C" void exception_handler_thunk_0();
-extern "C" void exception_handler_thunk_1();
-extern "C" void exception_handler_thunk_2();
-extern "C" void exception_handler_thunk_3();
-extern "C" void exception_handler_thunk_4();
-extern "C" void exception_handler_thunk_5();
-extern "C" void exception_handler_thunk_6();
-extern "C" void exception_handler_thunk_7();
-extern "C" void exception_handler_thunk_8();
-extern "C" void exception_handler_thunk_10();
-extern "C" void exception_handler_thunk_11();
-extern "C" void exception_handler_thunk_12();
-extern "C" void exception_handler_thunk_13();
-extern "C" void exception_handler_thunk_14();
-extern "C" void exception_handler_thunk_15();
-extern "C" void exception_handler_thunk_16();
-extern "C" void exception_handler_thunk_17();
-extern "C" void exception_handler_thunk_18();
-extern "C" void exception_handler_thunk_19();
-extern "C" void exception_handler_thunk_20();
-extern "C" void exception_handler_thunk_30();
+extern "C" uint8_t page_tables_changed_thunk[];
 
 const size_t idt_length = 48;
 
@@ -514,6 +553,19 @@ const size_t idt_length = 48;
     0, \
     true, \
     (uint64_t)(size_t)&exception_handler_thunk_##index >> 16, \
+    0 \
+}
+
+#define idt_entry_general(thunk) {\
+    (uint16_t)(size_t)&thunk, \
+    0x08, \
+    0, \
+    0, \
+    0xE, \
+    false, \
+    0, \
+    true, \
+    (uint64_t)(size_t)&thunk >> 16, \
     0 \
 }
 
@@ -542,31 +594,9 @@ IDTEntry idt_entries[idt_length] {
     {}, {}, {}, {}, {}, {}, {}, {}, {},
     idt_entry_exception(30),
     {},
-    {
-       (uint16_t)(size_t)&preempt_timer_thunk,
-        0x08,
-        0,
-        0,
-        0xE,
-        0,
-        0,
-        1,
-        (uint64_t)(size_t)&preempt_timer_thunk >> 16,
-        0 
-    },
+    idt_entry_general(preempt_timer_handler_thunk),
     {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-    {
-       (uint16_t)(size_t)&local_apic_spurious_interrupt,
-        0x08,
-        0,
-        0,
-        0xE,
-        0,
-        0,
-        1,
-        (uint64_t)(size_t)&local_apic_spurious_interrupt >> 16,
-        0 
-    }
+    idt_entry_general(spurious_interrupt_handler_thunk)
 };
 
 IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt_entries };
@@ -628,6 +658,12 @@ static MapProcessMemoryResult map_process_memory_into_kernel(Process *process, s
 
 void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
     auto processor_area = get_processor_area();
+
+    processor_area->in_syscall = true;
+
+    asm volatile(
+        "sti"
+    );
 
     auto process = *processor_area->current_process_iterator;
 
@@ -1260,6 +1296,28 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
             enter_next_process(processor_area, global_bitmap, &global_processes);
         } break;
     }
+
+    // Check for preempt during syscall
+
+    asm volatile(
+        "cli"
+    );
+
+    if(processor_area->preempt_during_syscall) {
+        asm volatile(
+            "sti"
+        );
+
+        processor_area->preempt_during_syscall = false;
+
+        process->frame = *stack_frame;
+
+        process->is_resident = false;
+
+        enter_next_process(processor_area, global_bitmap, &global_processes);
+    }
+
+    processor_area->in_syscall = false;
 }
 
 extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
@@ -1330,7 +1388,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         halt();
     }
 
-    memset(processor_area, 0, sizeof(ProcessorArea));
+    *processor_area = {};
 
     auto processor_area_pointer = allocate_from_bucket_array(processor_areas, bitmap);
     if(processor_area_pointer == nullptr) {
@@ -1460,16 +1518,47 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
     apic_registers[0x360 / 4] |= 1 << 16;
     apic_registers[0x370 / 4] |= 1 << 16;
 
-    // Enable local APIC / set spurious interrupt vector to 0x2F
+    // Enable local APIC / set spurious interrupt vector
     apic_registers[0xF0 / 4] = 0x2F | 0x100;
 
-    // Enable timer / set timer interrupt vector vector
-    apic_registers[0x320 / 4] = 0x20;
+    // Set timer interrupt vector / keep timer disabled
+    apic_registers[0x320 / 4] = 1 << 16 | 0x20;
 
     // Set timer divider to 16
     apic_registers[0x3E0 / 4] = 3;
 
     processor_area->apic_registers = apic_registers;
+
+    // Set up syscall/sysret instructions
+
+    asm volatile(
+        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
+        "rdmsr\n"
+        "or $1, %%eax\n"
+        "wrmsr\n"
+        :
+        :
+        : "eax", "ecx", "edx"
+    );
+
+    asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)-1), "d"((uint32_t)-1), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
+    );
+
+    asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)(size_t)syscall_thunk), "d"((uint32_t)((size_t)syscall_thunk >> 32)), "c"((uint32_t)0xC0000082) // IA32_LSTAR MSR
+    );
+
+    asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)0), "d"((uint32_t)0x10 << 16 | (uint32_t)0x08), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
+        // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
+    );
 
     return processor_area;
 }
@@ -1584,6 +1673,10 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
     AcpiPutTable(&madt_table->preamble.Header);
 
+    asm volatile(
+        "sti"
+    );
+
     printf("Loading init process...\n");
 
     auto embedded_init_binary_size = (size_t)embedded_init_binary_end - (size_t)embedded_init_binary;
@@ -1656,8 +1749,6 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "mov $0xff, %%al\n"
         "out %%al, $0xA1\n"
         "out %%al, $0x21\n"
-        // Enable interupts
-        "sti"
         :
         : "D"(&idt_descriptor)
         : "al"
@@ -1911,37 +2002,6 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
     AcpiInitializeTables(nullptr, 8, TRUE);
 
-    // Set up syscall/sysret instructions
-
-    asm volatile(
-        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
-        "rdmsr\n"
-        "or $1, %%eax\n"
-        "wrmsr\n"
-        :
-        :
-        : "eax", "ecx", "edx"
-    );
-
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)-1), "d"((uint32_t)-1), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
-    );
-
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)(size_t)syscall_thunk), "d"((uint32_t)((size_t)syscall_thunk >> 32)), "c"((uint32_t)0xC0000082) // IA32_LSTAR MSR
-    );
-
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)0), "d"((uint32_t)0x10 << 16 | (uint32_t)0x08), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
-        // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
-    );
-
     MADTTable *madt_table;
     {
         auto status = AcpiGetTable((char*)ACPI_SIG_MADT, 1, (ACPI_TABLE_HEADER**)&madt_table);
@@ -1972,6 +2032,10 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
     asm volatile("mfence");
     additional_processor_initialized_flag = true;
 
+    asm volatile(
+        "sti"
+    );
+
     auto processor_area = get_processor_area();
 
     enter_next_process(processor_area, global_bitmap, &global_processes);
@@ -2000,8 +2064,6 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "mov $0xff, %%al\n"
         "out %%al, $0xA1\n"
         "out %%al, $0x21\n"
-        // Enable interupts
-        "sti"
         :
         : "D"(&idt_descriptor)
         : "al"
@@ -2022,37 +2084,6 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "mov %0, %%cr3"
         :
         : "D"(&kernel_pml4_table)
-    );
-
-    // Set up syscall/sysret instructions
-
-    asm volatile(
-        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
-        "rdmsr\n"
-        "or $1, %%eax\n"
-        "wrmsr\n"
-        :
-        :
-        : "eax", "ecx", "edx"
-    );
-
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)-1), "d"((uint32_t)-1), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
-    );
-
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)(size_t)syscall_thunk), "d"((uint32_t)((size_t)syscall_thunk >> 32)), "c"((uint32_t)0xC0000082) // IA32_LSTAR MSR
-    );
-
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)0), "d"((uint32_t)0x10 << 16 | (uint32_t)0x08), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
-        // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
     );
 
     MADTTable *madt_table;
