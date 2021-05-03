@@ -324,13 +324,6 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
         auto function_continued_address = (size_t)function_continued;
 
         asm volatile(
-            // Save original stack location
-            "push %%rsp\n"
-            "push %%rbp\n"
-
-            // Align the stack to 16 bytes
-            "and $~0xF, %%rsp\n"
-
             // Save needed info to stack
             "push %0\n"
             "push %1\n"
@@ -358,8 +351,20 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "sub %0, %%rdi\n"
             "add %1, %%rdi\n"
 
+            // Align the stack to 16 bytes, push alignment offset to stack
+            "mov %%rsp, %%rax\n"
+            "and $0xF, %%rax\n"
+            "and $~0xF, %%rsp\n"
+            "push %%rax\n"
+            "sub $8, %%rsp\n"
+
             // Call continued function
             "call *%3\n"
+
+            // Restore original stack by adding back alignment offset
+            "add $8, %%rsp\n"
+            "pop %%rax\n"
+            "add %%rax, %%rsp\n"
 
             // Restore saved info
             "pop %5\n"
@@ -381,11 +386,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "add %0, %%rsp\n"
 
             // Re-enable interrupts
-            "sti\n"
-
-            // Restore original stack location
-            "pop %%rbp\n"
-            "pop %%rsp"
+            "sti"
 
             // Crazy register binding stuff with clobbers correctly specified
             : "=r"(stack_user_address), "=r"(stack_kernel_address), "=r"(kernel_pml4_table_address), "=r"(function_continued_address), "=r"(kernel_gdt_descriptor_user_address), "=r"(user_gdt_descriptor_user_address), "=D"(frame_user_address)
