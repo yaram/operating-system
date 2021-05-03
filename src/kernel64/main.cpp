@@ -169,7 +169,9 @@ Processes global_processes {};
                 asm volatile(
                     "mov %0, %%rsp\n"
                     "sti\n"
-                    "hlt"
+                    ".loop:\n"
+                    "hlt\n"
+                    "jmp .loop"
                     :
                     : "r"((size_t)&processor_area->stack + processor_stack_size)
                 );
