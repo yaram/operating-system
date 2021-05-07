@@ -3,8 +3,6 @@
 #define exception_thunk(index) ;\
 .globl exception_handler_thunk_##index ;\
 exception_handler_thunk_##index: ;\
-    cli ;\
-;\
     pushq $0 ;\
 ;\
     sub $512, %rsp ;\
@@ -144,3 +142,4 @@ name##_handler_thunk: ;\
 
 general_thunk(preempt_timer)
 general_thunk(spurious_interrupt)
+general_thunk(kernel_page_tables_update)

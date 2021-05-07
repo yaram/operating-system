@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "memory.h"
 #include "threading_kernel.h"
+#include "multiprocessing.h"
 
 static volatile bool combined_paging_lock = false;
 
@@ -752,6 +753,8 @@ static bool maybe_allocate_kernel_tables(
         );
 
         memset((void*)pdp_table, 0, sizeof(PageTableEntry[page_table_length]));
+
+        send_kernel_page_tables_update((size_t)pdp_table / page_size, 1);
     }
 
     auto pd_table = get_pd_table_pointer(pml4_index, pdp_index);
@@ -780,6 +783,8 @@ static bool maybe_allocate_kernel_tables(
         );
 
         memset((void*)pd_table, 0, sizeof(PageTableEntry[page_table_length]));
+
+        send_kernel_page_tables_update((size_t)pd_table / page_size, 1);
     }
 
     auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
@@ -808,6 +813,8 @@ static bool maybe_allocate_kernel_tables(
         );
 
         memset((void*)page_table, 0, sizeof(PageTableEntry[page_table_length]));
+
+        send_kernel_page_tables_update((size_t)page_table / page_size, 1);
     }
 
     return true;

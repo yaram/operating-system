@@ -73,8 +73,6 @@ using ProcessorAreas = BucketArray<ProcessorArea*, 4>;
 
 ProcessorAreas processor_areas {};
 
-extern "C" uint8_t preempt_timer_handler_thunk[];
-
 const uint32_t preempt_time = 0x100000;
 
 const auto kernel_pd_start = kernel_pages_start / page_table_length;
@@ -108,10 +106,10 @@ extern uint8_t embedded_init_binary[];
 extern uint8_t embedded_init_binary_end[];
 
 static volatile bool additional_processor_initialized_flag = false;
+volatile bool all_processors_initialized = false;
 
 Array<uint8_t> global_bitmap;
 
-volatile bool global_processes_lock = false;
 Processes global_processes {};
 
 [[noreturn]] static inline void unreachable_implementation(const char *file, unsigned int line) {
@@ -158,9 +156,6 @@ Processes global_processes {};
 
                 // Set timer value
                 processor_area->apic_registers[0x380 / 4] = preempt_time;
-
-                // Send the End of Interrupt signal
-                processor_area->apic_registers[0x0B0 / 4] = 0;
 
                 // Enable APIC timer
                 processor_area->apic_registers[0x320 / 4] &= ~(1 << 16);
@@ -236,9 +231,6 @@ Processes global_processes {};
 
     // Set timer value
     processor_area->apic_registers[0x380 / 4] = preempt_time;
-
-    // Send the End of Interrupt signal
-    processor_area->apic_registers[0x0B0 / 4] = 0;
 
     // Enable APIC timer
     processor_area->apic_registers[0x320 / 4] &= ~(1 << 16);
@@ -334,6 +326,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "push %5\n"
 
             // Disable interrupts for interrupt safety / atomicity
+            "pushf\n"
             "cli\n"
 
             // Switch to kernel-mapped processor stack
@@ -347,7 +340,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "mov %2, %%cr3\n"
 
             // Re-enable interrupts
-            "sti\n"
+            "popf\n"
 
             // Calculate kernel stack frame address
             "sub %0, %%rdi\n"
@@ -375,6 +368,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "pop %0\n"
 
             // Disable interrupts for interrupt safety / atomicity
+            "pushf\n"
             "cli\n"
 
             // Switch back to user page table
@@ -388,7 +382,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "add %0, %%rsp\n"
 
             // Re-enable interrupts
-            "sti"
+            "popf"
 
             // Crazy register binding stuff with clobbers correctly specified
             : "=r"(stack_user_address), "=r"(stack_kernel_address), "=r"(kernel_pml4_table_address), "=r"(function_continued_address), "=r"(kernel_gdt_descriptor_user_address), "=r"(user_gdt_descriptor_user_address), "=D"(frame_user_address)
@@ -398,7 +392,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
     }
 }
 
-[[noreturn]] static __attribute__((always_inline)) void continue_in_function(ProcessStackFrame *stack_frame, void (*function_continued)(ProcessStackFrame*)) {
+[[noreturn]] static __attribute__((always_inline)) void continue_in_function(const ProcessStackFrame *stack_frame, void (*function_continued)(const ProcessStackFrame*)) {
     size_t current_pml4_table;
     asm volatile(
         "mov %%cr3, %0"
@@ -425,6 +419,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "and $~0xF, %%rsp\n"
 
             // Disable interrupts for interrupt safety / atomicity
+            "pushf\n"
             "cli\n"
 
             // Switch to kernel-mapped processor stack
@@ -442,7 +437,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
             "mov %2, %%cr3\n"
 
             // Re-enable interrupts
-            "sti\n"
+            "popf\n"
 
             // Call continued function
             "call *%3"
@@ -456,7 +451,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
     unreachable();
 }
 
-[[noreturn]] void user_exception_handler_continued(ProcessStackFrame *frame) {
+[[noreturn]] void user_exception_handler_continued(const ProcessStackFrame *frame) {
     auto processor_area = get_processor_area();
 
     if(processor_area->current_process_iterator.current_bucket != nullptr) {
@@ -484,7 +479,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
     }
 }
 
-extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *frame) {
+extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackFrame *frame) {
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
     if(frame->interrupt_frame.code_segment != 0x08) {
@@ -493,7 +488,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *
         // Disable APIC timer
         user_processor_area->apic_registers[0x320 / 4] |= 1 << 16;
 
-        // Re-enable interrupts (they are disabled in the exception handler thunk)
+        // Re-enable interrupts
         asm volatile(
             "sti"
         );
@@ -506,12 +501,11 @@ extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *
     }
 }
 
-[[noreturn]] void preempt_timer_handler_continued(ProcessStackFrame *frame) {
+[[noreturn]] void preempt_timer_handler_continued(const ProcessStackFrame *frame) {
     auto processor_area = get_processor_area();
 
-    if(processor_area->in_syscall) {
-        processor_area->preempt_during_syscall = true;
-    }
+    // Send the End of Interrupt signal
+    processor_area->apic_registers[0x0B0 / 4] = 0;
 
     if(processor_area->current_process_iterator.current_bucket != nullptr) {
         auto old_process = *processor_area->current_process_iterator;
@@ -520,6 +514,11 @@ extern "C" [[noreturn]] void exception_handler(size_t index, ProcessStackFrame *
 
         old_process->is_resident = false;
     }
+
+    // Re-enable interrupts
+    asm volatile(
+        "sti"
+    );
 
     enter_next_process(processor_area, global_bitmap, &global_processes);
 }
@@ -530,10 +529,24 @@ extern "C" void preempt_timer_handler(ProcessStackFrame *frame) {
 
         if(processor_area->in_syscall) {
             processor_area->preempt_during_syscall = true;
+
+            // Send the End of Interrupt signal
+            processor_area->apic_registers[0x0B0 / 4] = 0;
         } else {
+            // Re-enable interrupts
+            asm volatile(
+                "sti"
+            );
+
+            // This path is only taken when the processor is idled in enter_next_process
             continue_in_function(frame, &preempt_timer_handler_continued);
         }
     } else {
+        // Re-enable interrupts
+        asm volatile(
+            "sti"
+        );
+
         continue_in_function(frame, &preempt_timer_handler_continued);
     }
 }
@@ -542,7 +555,45 @@ extern "C" void spurious_interrupt_handler(const ProcessStackFrame *frame) {
     printf("Spurious interrupt at %p\n", frame->interrupt_frame.instruction_pointer);
 }
 
-extern "C" uint8_t page_tables_changed_thunk[];
+volatile size_t processor_count = 0;
+
+volatile bool kernel_tables_update_lock = false;
+volatile size_t kernel_tables_update_pages_start;
+volatile size_t kernel_tables_update_page_count;
+volatile size_t kernel_tables_update_progress;
+
+void kernel_page_tables_update_handler_continued(ProcessStackFrame *frame) {
+    auto processor_area = get_processor_area();
+
+    // Send the End of Interrupt signal
+    processor_area->apic_registers[0x0B0 / 4] = 0;
+}
+
+extern "C" void kernel_page_tables_update_handler(ProcessStackFrame *frame) {
+    size_t current_pml4_table;
+    asm volatile(
+        "mov %%cr3, %0"
+        : "=r"(current_pml4_table)
+    );
+
+    if(current_pml4_table == (size_t)&kernel_pml4_table) {
+        for(
+            size_t absolute_page_index = kernel_tables_update_pages_start;
+            absolute_page_index < kernel_tables_update_pages_start + kernel_tables_update_page_count;
+            absolute_page_index += 1
+        ) {
+            asm volatile(
+                "invlpg (%0)"
+                :
+                : "D"(absolute_page_index * page_size)
+            );
+        }
+    }
+
+    atomic_add(&kernel_tables_update_progress, (size_t)1);
+
+    continue_in_function_return(frame, &kernel_page_tables_update_handler_continued);
+}
 
 const size_t idt_length = 48;
 
@@ -559,8 +610,8 @@ const size_t idt_length = 48;
     0 \
 }
 
-#define idt_entry_general(thunk) {\
-    (uint16_t)(size_t)&thunk, \
+#define idt_entry_general(name) {\
+    (uint16_t)(size_t)&name##_handler_thunk, \
     0x08, \
     0, \
     0, \
@@ -568,9 +619,11 @@ const size_t idt_length = 48;
     false, \
     0, \
     true, \
-    (uint64_t)(size_t)&thunk >> 16, \
+    (uint64_t)(size_t)&name##_handler_thunk >> 16, \
     0 \
 }
+
+const size_t kernel_page_tables_update_vector = 33;
 
 IDTEntry idt_entries[idt_length] {
     idt_entry_exception(0),
@@ -597,10 +650,41 @@ IDTEntry idt_entries[idt_length] {
     {}, {}, {}, {}, {}, {}, {}, {}, {},
     idt_entry_exception(30),
     {},
-    idt_entry_general(preempt_timer_handler_thunk),
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
-    idt_entry_general(spurious_interrupt_handler_thunk)
+    idt_entry_general(preempt_timer),
+    idt_entry_general(kernel_page_tables_update),
+    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+    idt_entry_general(spurious_interrupt)
 };
+
+void send_kernel_page_tables_update(size_t pages_start, size_t page_count) {
+    acquire_lock(&kernel_tables_update_lock);
+
+    kernel_tables_update_pages_start = pages_start;
+    kernel_tables_update_page_count = page_count;
+    kernel_tables_update_progress = 0;
+
+    // Make sure all memory writes are global
+    asm volatile("mfence");
+
+    auto processor_area = get_processor_area();
+
+    // Set vector number, set delivery mode to fixed, set destination mode to physical,
+    // set level assert, set edge trigger, set all-excluding-self shorthand
+    processor_area->apic_registers[0x300 / 4] = kernel_page_tables_update_vector | 1 << 14 | 0b11 << 18;
+
+    // Wait for delivery of the IPI
+    while((processor_area->apic_registers[0x300 / 4] & (1 << 12)) != 0) {
+        asm volatile("pause");
+    }
+
+    auto total_processor_count = processor_count;
+
+    while(kernel_tables_update_progress != total_processor_count - 1) {
+        asm volatile("pause");
+    }
+
+    kernel_tables_update_lock = false;
+}
 
 IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt_entries };
 
@@ -1393,7 +1477,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
     *processor_area = {};
 
-    auto processor_area_pointer = allocate_from_bucket_array(processor_areas, bitmap);
+    auto processor_area_pointer = allocate_from_bucket_array(processor_areas, bitmap, false);
     if(processor_area_pointer == nullptr) {
         printf("Error: Out of memory\n");
 
@@ -1401,6 +1485,8 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
     }
 
     *processor_area_pointer = processor_area;
+
+    processor_count += 1;
 
     processor_area->processor_id = get_processor_id();
     processor_area->physical_address = processor_area_physical_address;
@@ -1676,9 +1762,17 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
     AcpiPutTable(&madt_table->preamble.Header);
 
+    // Reload TLB
+    asm volatile(
+        "mov %0, %%cr3"
+        : : "r"(&kernel_pml4_table)
+    );
+
     asm volatile(
         "sti"
     );
+
+    all_processors_initialized = true;
 
     printf("Loading init process...\n");
 
@@ -2127,6 +2221,10 @@ void *allocate(size_t size) {
 
     if(base_pointer == nullptr) {
         return nullptr;
+    }
+
+    if(all_processors_initialized) {
+        send_kernel_page_tables_update_memory(base_pointer, page_size + size);
     }
 
     *(size_t*)base_pointer = size;

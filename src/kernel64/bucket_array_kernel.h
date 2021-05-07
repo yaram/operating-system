@@ -4,11 +4,13 @@
 #include "paging.h"
 #include "memory.h"
 #include "threading_kernel.h"
+#include "multiprocessing.h"
 
 template <typename T, size_t N>
 static T *allocate_from_bucket_array(
     BucketArray<T, N> *bucket_array,
     Array<uint8_t> bitmap,
+    bool is_global,
     BucketArrayIterator<T, N> *result_iterator = nullptr
 ) {
     while(true) {
@@ -18,6 +20,10 @@ static T *allocate_from_bucket_array(
             auto new_bucket = (Bucket<T, N>*)map_and_allocate_memory(sizeof(Bucket<T, N>), bitmap);
             if(new_bucket == nullptr) {
                 return nullptr;
+            }
+
+            if(is_global) {
+                send_kernel_page_tables_update_memory(new_bucket, sizeof(Bucket<T, N>));
             }
 
             while(true) {

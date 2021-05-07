@@ -166,7 +166,7 @@ CreateProcessFromELFResult create_process_from_elf(
     Processes::Iterator *result_process_iterator
 ) {
     Processes::Iterator process_iterator;
-    auto process = allocate_from_bucket_array(processes, bitmap, &process_iterator);
+    auto process = allocate_from_bucket_array(processes, bitmap, true, &process_iterator);
     if(process == nullptr) {
         return CreateProcessFromELFResult::OutOfMemory;
     }
@@ -368,7 +368,7 @@ CreateProcessFromELFResult create_process_from_elf(
                     return CreateProcessFromELFResult::OutOfMemory;
                 }
 
-                auto section_allocation = allocate_from_bucket_array(&section_allocations, bitmap);
+                auto section_allocation = allocate_from_bucket_array(&section_allocations, bitmap, false);
                 if(section_allocation == nullptr) {
                     destroy_process(process_iterator, bitmap);
                     unmap_and_deallocate_bucket_array(&section_allocations, bitmap);
@@ -383,7 +383,7 @@ CreateProcessFromELFResult create_process_from_elf(
                 };
 
                 if((section_header->flags & 0b100) != 0) { // SHF_EXECINSTR
-                    auto debug_code_section = allocate_from_bucket_array(&process->debug_code_sections, bitmap);
+                    auto debug_code_section = allocate_from_bucket_array(&process->debug_code_sections, bitmap, true);
                     if(section_allocation == nullptr) {
                         destroy_process(process_iterator, bitmap);
                         unmap_and_deallocate_bucket_array(&section_allocations, bitmap);
@@ -789,7 +789,7 @@ bool register_process_mapping(
     bool is_owned,
     Array<uint8_t> bitmap
 ) {
-    auto page_mapping = allocate_from_bucket_array(&process->mappings, bitmap);
+    auto page_mapping = allocate_from_bucket_array(&process->mappings, bitmap, true);
     if(page_mapping == nullptr) {
         return false;
     }

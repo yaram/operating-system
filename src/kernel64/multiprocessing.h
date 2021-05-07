@@ -94,3 +94,14 @@ static_assert(processor_stack_size % 16 == 0, "Processor stack size of not 16-by
 const auto processor_area_size = sizeof(ProcessorArea);
 
 const auto processor_area_page_count = divide_round_up(processor_area_size, page_size);
+
+void send_kernel_page_tables_update(size_t pages_start, size_t page_count);
+
+inline void send_kernel_page_tables_update_memory(void *memory_start, size_t size) {
+    auto pages_start = (size_t)memory_start / page_size;
+    auto pages_end = divide_round_up((size_t)memory_start + size, page_size);
+
+    auto page_count = pages_end - pages_start;
+
+    send_kernel_page_tables_update(pages_start, page_count);
+}

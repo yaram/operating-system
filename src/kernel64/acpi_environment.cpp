@@ -8,6 +8,7 @@ extern "C" {
 #include "heap.h"
 #include "paging.h"
 #include "threading_kernel.h"
+#include "multiprocessing.h"
 
 extern "C" ACPI_STATUS AcpiOsInitialize(void) {
     return AE_OK;
@@ -41,6 +42,7 @@ extern "C" ACPI_STATUS AcpiOsPhysicalTableOverride(ACPI_TABLE_HEADER *ExistingTa
 }
 
 extern Array<uint8_t> global_bitmap;
+extern volatile bool all_processors_initialized;
 
 /*
  * Spinlock primitives
@@ -50,6 +52,10 @@ extern "C" ACPI_STATUS AcpiOsCreateLock(ACPI_SPINLOCK *OutHandle) {
 
     if(lock == nullptr) {
         return AE_ERROR;
+    }
+
+    if(all_processors_initialized) {
+        send_kernel_page_tables_update_memory((void*)lock, sizeof(bool));
     }
 
     *OutHandle = lock;
@@ -80,6 +86,10 @@ extern "C" ACPI_STATUS AcpiOsCreateSemaphore(UINT32 MaxUnits, UINT32 InitialUnit
 
     if(semaphore == nullptr) {
         return AE_ERROR;
+    }
+
+    if(all_processors_initialized) {
+        send_kernel_page_tables_update_memory((void*)semaphore, sizeof(UINT32));
     }
 
     *semaphore = InitialUnits;
@@ -140,7 +150,17 @@ extern "C" void AcpiOsFree(void *Memory) {
 
 
 extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length) {
-    return map_memory((size_t)Where, (size_t)Length, global_bitmap);
+    auto pointer = map_memory((size_t)Where, (size_t)Length, global_bitmap);
+
+    if(pointer == nullptr) {
+        return nullptr;
+    }
+
+    if(all_processors_initialized) {
+        send_kernel_page_tables_update_memory(pointer, (size_t)Length);
+    }
+
+    return pointer;
 }
 
 extern "C" void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) {
