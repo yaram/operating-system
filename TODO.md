@@ -5,7 +5,6 @@
 
 ## Not started / ideas
 
-- multiprocessing
 - processes subscribe to hardware interrupts
 - \[user\] test keyboard input with USB keyboard maybe
 - \[user\] test ahci/sata disk access/loading
@@ -14,3 +13,4 @@
 - \[user\] first-party/reference/example std library / hardware abstraction library
 - custom object/binary format with custom 'linker'
 - use semantic user & kernel memory/page range types for more compile-time checking/type safety & runtime bounds checking
+- multithreading (multiple threads of execution per process)
