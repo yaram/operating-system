@@ -86,6 +86,8 @@ def do_linking(objects, name, *extra_arguments):
         *[os.path.join(object_directory, name, object_name) for _, object_name in objects]
     )
 
+user_source_directory = os.path.join(source_directory, 'user')
+
 acpica_directory = os.path.join(thirdparty_directory, 'acpica')
 printf_directory = os.path.join(thirdparty_directory, 'printf')
 openlibm_directory = os.path.join(thirdparty_directory, 'openlibm')
@@ -266,7 +268,7 @@ if not os.path.exists(user_openlibm_archive):
     build_objects_64bit(
         objects,
         'user_openlibm',
-        '-I{}'.format(os.path.join(source_directory, 'init')),
+        '-I{}'.format(os.path.join(user_source_directory, 'shared')),
         '-I{}'.format(os.path.join(openlibm_directory, 'src')),
         '-I{}'.format(os.path.join(openlibm_directory, 'include')),
         '-I{}'.format(os.path.join(openlibm_directory, 'ld80')),
@@ -281,16 +283,16 @@ if not os.path.exists(user_openlibm_archive):
         *[os.path.join(object_directory, 'user_openlibm', object_name) for _, object_name in objects]
     )
 
-init_secondary_objects = [
-    (os.path.join(source_directory, 'init', 'secondary.cpp'), 'secondary.o'),
+test_app_objects = [
+    (os.path.join(user_source_directory, 'test_app', 'main.cpp'), 'main.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
 ]
 
 build_objects_64bit(
-    init_secondary_objects,
-    'init_secondary',
-    '-I{}'.format(os.path.join(source_directory, 'init')),
+    test_app_objects,
+    'test_app',
     '-I{}'.format(os.path.join(source_directory, 'shared')),
+    '-I{}'.format(os.path.join(user_source_directory, 'shared')),
     '-I{}'.format(os.path.join(printf_directory)),
     '-I{}'.format(os.path.join(openlibm_directory, 'include')),
     '-I{}'.format(os.path.join(thirdparty_directory)),
@@ -298,24 +300,25 @@ build_objects_64bit(
 )
 
 do_linking(
-    init_secondary_objects,
-    'init_secondary',
+    test_app_objects,
+    'test_app',
     '--relocatable',
     user_openlibm_archive
 )
 
 init_objects = [
-    (os.path.join(source_directory, 'init', 'main.cpp'), 'main.o'),
-    (os.path.join(source_directory, 'init', 'virtio.cpp'), 'virtio.o'),
+    (os.path.join(user_source_directory, 'init', 'main.cpp'), 'main.o'),
+    (os.path.join(user_source_directory, 'init', 'virtio.cpp'), 'virtio.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
 ]
 
 build_objects_64bit(
     init_objects,
     'init',
-    '-I{}'.format(os.path.join(source_directory, 'init')),
     '-I{}'.format(os.path.join(source_directory, 'shared')),
+    '-I{}'.format(os.path.join(user_source_directory, 'shared')),
     '-I{}'.format(os.path.join(printf_directory)),
+    '-I{}'.format(os.path.join(user_source_directory, 'test_app')),
     '-D__BSD_VISIBLE=1',
     '-fpie'
 )

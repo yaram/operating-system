@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "compositor.h"
-#include "secondary.h"
+#include "test_app.h"
 #include "printf.h"
 #include "syscall.h"
 #include "HandmadeMath.h"
@@ -38,21 +38,21 @@ void _putchar(char character) {
 }
 
 extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_size) {
-    printf("Secondary process started!\n");
+    printf("Test app started!\n");
 
     if(data == nullptr) {
-        printf("Error: Missing data for secondary process");
+        printf("Error: Missing data for test app");
 
         exit();
     }
 
-    if(data_size != sizeof(SecondaryProcessParameters)) {
-        printf("Error: Invalid data size for secondary process. Expected %zu, got %zu\n", sizeof(SecondaryProcessParameters), data_size);
+    if(data_size != sizeof(TestAppParameters)) {
+        printf("Error: Invalid data size for test app. Expected %zu, got %zu\n", sizeof(TestAppParameters), data_size);
 
         exit();
     }
 
-    auto parameters = (SecondaryProcessParameters*)data;
+    auto parameters = (TestAppParameters*)data;
 
     volatile CompositorConnectionMailbox *compositor_connection_mailbox;
     {

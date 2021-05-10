@@ -3,7 +3,7 @@
 #include "printf.h"
 #include "syscall.h"
 #include "pcie.h"
-#include "secondary.h"
+#include "test_app.h"
 #include "virtio.h"
 #include "bucket_array.h"
 #include "bucket_array_user.h"
@@ -65,8 +65,8 @@ static volatile virtio_gpu_ctrl_hdr *send_command(
     return (volatile virtio_gpu_ctrl_hdr*)(buffers_address + buffer_size);
 }
 
-extern uint8_t secondary_executable[];
-extern uint8_t secondary_executable_end[];
+extern uint8_t test_app_executable[];
+extern uint8_t test_app_executable_end[];
 
 size_t cursor_bitmap_size = 16;
 extern uint32_t cursor_bitmap[];
@@ -539,38 +539,38 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
     auto connection_mailbox = (volatile CompositorConnectionMailbox*)connection_mailbox_address;
 
-    SecondaryProcessParameters secondary_process_parameters {
+    TestAppParameters test_app_parameters {
         process_id,
         connection_mailbox_address
     };
 
-    auto secondary_executable_size = (size_t)&secondary_executable_end - (size_t)&secondary_executable;
+    auto test_app_executable_size = (size_t)&test_app_executable_end - (size_t)&test_app_executable;
 
     for(size_t i = 0; i < 2; i += 1) {
         CreateProcessParameters parameters {
-            &secondary_executable,
-            secondary_executable_size,
-            &secondary_process_parameters,
-            sizeof(SecondaryProcessParameters)
+            &test_app_executable,
+            test_app_executable_size,
+            &test_app_parameters,
+            sizeof(TestAppParameters)
         };
 
         switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0)) {
             case CreateProcessResult::Success: break;
 
             case CreateProcessResult::OutOfMemory: {
-                printf("Error: Unable to create secondary process: Out of memory\n");
+                printf("Error: Unable to create test app process: Out of memory\n");
 
                 exit();
             } break;
 
             case CreateProcessResult::InvalidMemoryRange: {
-                printf("Error: Unable to create secondary process: Invalid memory range for ELF binary or data\n");
+                printf("Error: Unable to create test app process: Invalid memory range for ELF binary or data\n");
 
                 exit();
             } break;
 
             case CreateProcessResult::InvalidELF: {
-                printf("Error: Unable to create secondary process: Invalid ELF binary\n");
+                printf("Error: Unable to create test app process: Invalid ELF binary\n");
 
                 exit();
             } break;
@@ -1511,19 +1511,19 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
 asm(
     ".section .rodata\n"
-    "secondary_executable:\n"
-    ".incbin \"build/init_secondary.elf\"\n"
-    "secondary_executable_end:"
+    "test_app_executable:\n"
+    ".incbin \"build/test_app.elf\"\n"
+    "test_app_executable_end:"
 );
 
 asm(
     ".section .rodata\n"
     "cursor_bitmap:\n"
-    ".incbin \"src/init/cursor.raw\"\n"
+    ".incbin \"src/user/init/cursor.raw\"\n"
 );
 
 asm(
     ".section .rodata\n"
     "background_bitmap:\n"
-    ".incbin \"src/init/background.raw\"\n"
+    ".incbin \"src/user/init/background.raw\"\n"
 );
