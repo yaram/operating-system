@@ -143,3 +143,7 @@ name##_handler_thunk: ;\
 general_thunk(preempt_timer)
 general_thunk(spurious_interrupt)
 general_thunk(kernel_page_tables_update)
+
+.globl legacy_pic_dumping_ground
+legacy_pic_dumping_ground:
+    iretq

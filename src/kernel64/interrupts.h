@@ -36,3 +36,5 @@ extern "C" uint8_t exception_handler_thunk_30[];
 extern "C" uint8_t preempt_timer_handler_thunk[];
 extern "C" uint8_t spurious_interrupt_handler_thunk[];
 extern "C" uint8_t kernel_page_tables_update_handler_thunk[];
+
+extern "C" uint8_t legacy_pic_dumping_ground[];

@@ -371,6 +371,7 @@ objects_kernel64 = [
     (os.path.join(source_directory, 'kernel64', 'process.cpp'), 'process.o'),
     (os.path.join(source_directory, 'kernel64', 'console.cpp'), 'console.o'),
     (os.path.join(source_directory, 'kernel64', 'paging.cpp'), 'paging.o'),
+    (os.path.join(source_directory, 'kernel64', 'io.cpp'), 'io.o'),
     (os.path.join(source_directory, 'kernel64', 'acpi_environment.cpp'), 'acpi_environment.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o')
 ]

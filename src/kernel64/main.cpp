@@ -15,6 +15,7 @@ extern "C" {
 #include "halt.h"
 #include "array.h"
 #include "multiprocessing.h"
+#include "io.h"
 
 #define do_ranges_intersect(a_start, a_end, b_start, b_end) (!((a_end) <= (b_start) || (b_end) <= (a_start)))
 
@@ -623,7 +624,21 @@ const size_t idt_length = 48;
     0 \
 }
 
+#define idt_entry_legacy_pic() {\
+    (uint16_t)(size_t)&legacy_pic_dumping_ground, \
+    0x08, \
+    0, \
+    0, \
+    0xE, \
+    false, \
+    0, \
+    true, \
+    (uint64_t)(size_t)&legacy_pic_dumping_ground >> 16, \
+    0 \
+}
+
 const size_t kernel_page_tables_update_vector = 33;
+const size_t legacy_pic_vectors_start = 34;
 
 IDTEntry idt_entries[idt_length] {
     idt_entry_exception(0),
@@ -652,7 +667,15 @@ IDTEntry idt_entries[idt_length] {
     {},
     idt_entry_general(preempt_timer),
     idt_entry_general(kernel_page_tables_update),
-    {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {},
+    idt_entry_legacy_pic(),
+    idt_entry_legacy_pic(),
+    idt_entry_legacy_pic(),
+    idt_entry_legacy_pic(),
+    idt_entry_legacy_pic(),
+    idt_entry_legacy_pic(),
+    idt_entry_legacy_pic(),
+    idt_entry_legacy_pic(),
+    {}, {}, {}, {}, {},
     idt_entry_general(spurious_interrupt)
 };
 
@@ -1839,13 +1862,26 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
     setup_console();
 
+    // Perform legacy PIC initialization
+
+    io_out(0xA0, 1 << 4 | 1 << 0);
+    io_out(0x20, 1 << 4 | 1 << 0);
+
+    io_out(0xA1, legacy_pic_vectors_start);
+    io_out(0x21, legacy_pic_vectors_start);
+
+    io_out(0xA1, 1 << 2);
+    io_out(0x21, 1 << 1);
+
+    io_out(0xA1, 1 << 0);
+    io_out(0x21, 1 << 0);
+
+    io_out(0xA1, 0xFF);
+    io_out(0x21, 0xFF);
+
+    // Load IDT
     asm volatile(
-        // Load IDT
-        "lidt (%0)\n"
-        // Disable PIC
-        "mov $0xff, %%al\n"
-        "out %%al, $0xA1\n"
-        "out %%al, $0x21\n"
+        "lidt (%0)"
         :
         : "D"(&idt_descriptor)
         : "al"
