@@ -3,5 +3,5 @@
 #include <stdarg.h>
 #include "printf.h"
 
-void clear_console();
+void setup_console();
 void putchar(char character);

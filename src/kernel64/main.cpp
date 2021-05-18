@@ -1837,7 +1837,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         init_array_start[i]();
     }
 
-    clear_console();
+    setup_console();
 
     asm volatile(
         // Load IDT
