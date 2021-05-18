@@ -1,6 +1,7 @@
+.set FLAG_MEMINFO, 1 << 1
+
 .set MAGIC, 0x1BADB002
-.set FLAG_ALIGN, 1 << 0 | 1 << 6
-.set FLAGS, FLAG_ALIGN
+.set FLAGS, FLAG_MEMINFO
 .set CHECKSUM, -(MAGIC + FLAGS)
 
 .section .text.multiboot
