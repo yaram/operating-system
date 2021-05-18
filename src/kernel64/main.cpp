@@ -1633,7 +1633,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
     asm volatile(
         "wrmsr"
         :
-        : "a"((uint32_t)-1), "d"((uint32_t)-1), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
+        : "a"((uint32_t)-1), "d"(0), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
     );
 
     asm volatile(
