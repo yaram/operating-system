@@ -6,7 +6,7 @@ exception_handler_thunk_##index: ;\
     pushq $0 ;\
 ;\
     sub $512, %rsp ;\
-    /*fxsave64 (%rsp)*/ ;\
+    fxsave64 (%rsp) ;\
 ;\
     sub $8, %rsp ;\
 ;\
