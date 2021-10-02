@@ -533,7 +533,9 @@ CreateProcessFromELFResult create_process_from_elf(
                         *(uint32_t*)slot_kernel_address = (uint32_t)(symbol_user_address + relocation->addend - slot_user_address);
                     } break;
 
-                    case 9: { // R_X86_64_GOTPCREL
+                    case 9: // R_X86_64_GOTPCREL
+                    case 41: // R_X86_64_GOTPCRELX
+                    case 42: { // R_X86_64_REX_GOTPCRELX
                         auto index = next_global_offset_table_index;
                         next_global_offset_table_index += 1;
 
