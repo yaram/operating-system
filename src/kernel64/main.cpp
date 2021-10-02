@@ -121,6 +121,7 @@ Processes global_processes {};
 
 #define unreachable() unreachable_implementation(__FILE__, __LINE__)
 
+// APIC timer must be disabled or at 0 when this function is called, and there must be no pending APIC timer interrupts
 [[noreturn]] static void enter_next_process(
     ProcessorArea *processor_area,
     Array<uint8_t> bitmap,
@@ -486,6 +487,10 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackF
     if(frame->interrupt_frame.code_segment != 0x08) {
         auto user_processor_area = (ProcessorArea*)processor_area_memory_start;
 
+        // Disable APIC timer and clear any pending interrupt
+
+        user_processor_area->in_syscall_or_user_exception = true;
+
         // Disable APIC timer
         user_processor_area->apic_registers[0x320 / 4] |= 1 << 16;
 
@@ -493,6 +498,9 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackF
         asm volatile(
             "sti"
         );
+
+        user_processor_area->in_syscall_or_user_exception = false;
+        user_processor_area->preempt_during_syscall_or_user_exception = false;
 
         continue_in_function(frame, &user_exception_handler_continued);
     } else {
@@ -528,8 +536,8 @@ extern "C" void preempt_timer_handler(ProcessStackFrame *frame) {
     if(frame->interrupt_frame.code_segment == 0x08) {
         auto processor_area = get_processor_area();
 
-        if(processor_area->in_syscall) {
-            processor_area->preempt_during_syscall = true;
+        if(processor_area->in_syscall_or_user_exception) {
+            processor_area->preempt_during_syscall_or_user_exception = true;
 
             // Send the End of Interrupt signal
             processor_area->apic_registers[0x0B0 / 4] = 0;
@@ -769,7 +777,7 @@ static MapProcessMemoryResult map_process_memory_into_kernel(Process *process, s
 void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
     auto processor_area = get_processor_area();
 
-    processor_area->in_syscall = true;
+    processor_area->in_syscall_or_user_exception = true;
 
     asm volatile(
         "sti"
@@ -1401,6 +1409,18 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
         default: { // unknown syscall
             printf("Unknown syscall from process %zu at %p\n", process->id, stack_frame->interrupt_frame.instruction_pointer);
 
+            // Disable APIC timer and clear any pending interrupt
+
+            // Disable APIC timer
+            processor_area->apic_registers[0x320 / 4] |= 1 << 16;
+
+            asm volatile(
+                "sti"
+            );
+
+            processor_area->in_syscall_or_user_exception = false;
+            processor_area->preempt_during_syscall_or_user_exception = false;
+
             destroy_process(processor_area->current_process_iterator, global_bitmap);
 
             enter_next_process(processor_area, global_bitmap, &global_processes);
@@ -1413,12 +1433,13 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
         "cli"
     );
 
-    if(processor_area->preempt_during_syscall) {
+    if(processor_area->preempt_during_syscall_or_user_exception) {
         asm volatile(
             "sti"
         );
 
-        processor_area->preempt_during_syscall = false;
+        processor_area->in_syscall_or_user_exception = false;
+        processor_area->preempt_during_syscall_or_user_exception = false;
 
         process->frame = *stack_frame;
 
@@ -1427,7 +1448,7 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
         enter_next_process(processor_area, global_bitmap, &global_processes);
     }
 
-    processor_area->in_syscall = false;
+    processor_area->in_syscall_or_user_exception = false;
 }
 
 extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
