@@ -4,30 +4,17 @@ import sys
 import os
 import subprocess
 import shutil
+import argparse
 
 def run_command(executable, *arguments):
     subprocess.call([executable, *arguments], stdout=sys.stdout, stderr=sys.stderr)
 
-configuration = 'debug'
+parser = argparse.ArgumentParser(description='Build Operating System')
 
-if len(sys.argv) >= 2:
-    configuration = sys.argv[1]
+parser.add_argument('--optimize', action='store_true', help='produce optimized output')
+parser.add_argument('--nodebug', dest='debug', action='store_false', help='don\'t produce debug info')
 
-optimize = None
-debug_info = None
-
-if configuration.lower() == 'debug':
-    optimize = False
-    debug_info = True
-elif configuration.lower() == 'release':
-    optimize = True
-    debug_info = False
-elif configuration.lower() == "relwithdebinfo":
-    optimize = True
-    debug_info = True
-else:
-    print('Unknown configuration \'{}\''.format(configuration), file=sys.stderr)
-    exit(1)
+arguments = parser.parse_args()
 
 c_compiler_path = shutil.which('clang')
 cpp_compiler_path = shutil.which('clang++')
@@ -47,10 +34,10 @@ def build_objects(objects, target, name, *extra_arguments):
     if not os.path.exists(sub_object_directory):
         os.makedirs(sub_object_directory)
 
-    if debug_info:
+    if arguments.debug:
         extra_arguments = (*extra_arguments, '-g')
 
-    if optimize:
+    if arguments.optimize:
         extra_arguments = (*extra_arguments, '-O2', '-DOPTIMIZED')
 
     for source_path, object_name in objects:
