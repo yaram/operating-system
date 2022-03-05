@@ -2,17 +2,24 @@
 
 import sys
 import os
+import time
 import subprocess
+import concurrent.futures
 import shutil
 import argparse
+
+start_time = time.time()
 
 def run_command(executable, *arguments):
     subprocess.call([executable, *arguments], stdout=sys.stdout, stderr=sys.stderr)
 
 parser = argparse.ArgumentParser(description='Build Operating System')
 
+cpu_count = os.cpu_count() or 1
+
 parser.add_argument('--optimize', action='store_true', help='produce optimized output')
-parser.add_argument('--nodebug', dest='debug', action='store_false', help='don\'t produce debug info')
+parser.add_argument('--nodebug', dest="debug", action='store_false', help='don\'t produce debug info')
+parser.add_argument('--jobs', action='store', default=cpu_count, type=int, help='number of parallel compiler jobs (default: {})'.format(cpu_count))
 
 arguments = parser.parse_args()
 
@@ -40,21 +47,23 @@ def build_objects(objects, target, name, *extra_arguments):
     if arguments.optimize:
         extra_arguments = (*extra_arguments, '-O2', '-DOPTIMIZED')
 
-    for source_path, object_name in objects:
-        is_cpp = source_path.endswith('.cpp')
+    with concurrent.futures.ThreadPoolExecutor(arguments.jobs) as thread_pool:
+        for source_path, object_name in objects:
+            is_cpp = source_path.endswith('.cpp')
 
-        run_command(
-            cpp_compiler_path if is_cpp else c_compiler_path,
-            '-target', target,
-            '-march=x86-64',
-            '-std=gnu++11' if is_cpp else '-std=gnu11',
-            '-ffreestanding',
-            '-Wall',
-            *extra_arguments,
-            '-c',
-            '-o', os.path.join(sub_object_directory, object_name),
-            source_path
-        )
+            thread_pool.submit(
+                run_command,
+                cpp_compiler_path if is_cpp else c_compiler_path,
+                '-target', target,
+                '-march=x86-64',
+                '-std=gnu++11' if is_cpp else '-std=gnu11',
+                '-ffreestanding',
+                '-Wall',
+                *extra_arguments,
+                '-c',
+                '-o', os.path.join(sub_object_directory, object_name),
+                source_path
+            )
 
 def build_objects_64bit(objects, name, *extra_arguments):
     build_objects(objects, 'x86_64-unknown-unknown-elf', name, *extra_arguments)
@@ -418,3 +427,7 @@ do_linking(
     '-e', 'entry',
     '-T', os.path.join(source_directory, 'kernel32', 'linker.ld'),
 )
+
+end_time = time.time()
+
+print('Total time: {:.3f}s'.format(end_time - start_time))
