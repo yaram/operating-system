@@ -20,6 +20,7 @@ cpu_count = os.cpu_count() or 1
 parser.add_argument('--optimize', action='store_true', help='produce optimized output')
 parser.add_argument('--nodebug', dest="debug", action='store_false', help='don\'t produce debug info')
 parser.add_argument('--jobs', action='store', default=cpu_count, type=int, help='number of parallel compiler jobs (default: {})'.format(cpu_count))
+parser.add_argument('--rebuild', action='store_true', help='rebuild all libraries')
 
 arguments = parser.parse_args()
 
@@ -90,7 +91,7 @@ openlibm_directory = os.path.join(thirdparty_directory, 'openlibm')
 
 acpica_archive = os.path.join(build_directory, 'acpica.a')
 
-if not os.path.exists(acpica_archive):
+if arguments.rebuild or not os.path.exists(acpica_archive):
     objects = [
         (os.path.join(acpica_directory, 'src', name), name[:name.index('.c')] + '.o')
         for name in os.listdir(os.path.join(acpica_directory, 'src'))
@@ -117,7 +118,7 @@ if not os.path.exists(acpica_archive):
 
 user_openlibm_archive = os.path.join(build_directory, 'user_openlibm.a')
 
-if not os.path.exists(user_openlibm_archive):
+if arguments.rebuild or not os.path.exists(user_openlibm_archive):
     objects = [
         (os.path.join(openlibm_directory, 'src', 'common.c'), 'common.o'),
         (os.path.join(openlibm_directory, 'src', 'e_acos.c'), 'e_acos.o'),
