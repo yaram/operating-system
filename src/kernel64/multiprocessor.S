@@ -27,7 +27,7 @@ entry:
     // Clear all 3 coarse page tables
     mov $0, %eax
     mov $(4096 * 3), %ecx
-    rep stosl
+    rep stosb
 
     // Set up page table entries
 
