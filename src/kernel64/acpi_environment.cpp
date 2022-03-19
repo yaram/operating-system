@@ -168,9 +168,7 @@ extern "C" void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size) {
 }
 
 extern "C" ACPI_STATUS AcpiOsGetPhysicalAddress(void *LogicalAddress, ACPI_PHYSICAL_ADDRESS *PhysicalAddress) {
-    *PhysicalAddress = (ACPI_PHYSICAL_ADDRESS)LogicalAddress;
-
-    return AE_OK;
+    return AE_NOT_IMPLEMENTED;
 }
 
 
