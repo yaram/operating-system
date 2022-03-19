@@ -13,7 +13,8 @@
 .global entry
 
 entry:
-    cli
+    ljmp $0x00, $.continued
+.continued:
 
     // Enable extended memory
     mov %cr4, %eax
