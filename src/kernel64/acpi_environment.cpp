@@ -190,7 +190,7 @@ extern "C" ACPI_STATUS AcpiOsRemoveInterruptHandler(UINT32 InterruptNumber, ACPI
  * Threads and Scheduling
  */
 extern "C" ACPI_THREAD_ID AcpiOsGetThreadId(void) {
-    return 0;
+    return (ACPI_THREAD_ID)get_processor_id();
 }
 
 extern "C" ACPI_STATUS AcpiOsExecute(ACPI_EXECUTE_TYPE Type, ACPI_OSD_EXEC_CALLBACK Function, void *Context) {
