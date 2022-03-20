@@ -91,6 +91,8 @@ CreateProcessFromELFResult create_process_from_elf(
     void *data,
     size_t data_size,
     Array<uint8_t> bitmap,
+    size_t processor_area_count,
+    size_t processor_areas_physical_memory_start,
     Processes *processes,
     Process **result_processs,
     Processes::Iterator *result_process_iterator

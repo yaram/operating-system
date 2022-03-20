@@ -161,6 +161,8 @@ CreateProcessFromELFResult create_process_from_elf(
     void *data,
     size_t data_size,
     Array<uint8_t> bitmap,
+    size_t processor_area_count,
+    size_t processor_areas_physical_memory_start,
     Processes *processes,
     Process **result_processs,
     Processes::Iterator *result_process_iterator
@@ -306,21 +308,22 @@ CreateProcessFromELFResult create_process_from_elf(
         unmap_page_walker(&walker);
     }
 
-    { // Reserve pages for processor area
-        PageWalker walker;
-        if(!create_page_walker(process->pml4_table_physical_address, processor_area_pages_start, bitmap, &walker)) {
-            destroy_process(process_iterator, bitmap);
+    auto processor_areas_page_count = divide_round_up(processor_area_count * sizeof(ProcessorArea), page_size);
+    auto processor_areas_physical_pages_start = processor_areas_physical_memory_start / page_size;
 
-            return CreateProcessFromELFResult::OutOfMemory;
+    { // Map pages for processor area
+        PageWalker walker;
+        if(!create_page_walker(process->pml4_table_physical_address, user_processor_areas_pages_start, bitmap, &walker)) {
+            printf("Error: Out of memory\n");
+
+            halt();
         }
 
-        for(size_t relative_page_index = 0; relative_page_index < processor_area_page_count; relative_page_index += 1) {
+        for(size_t relative_page_index = 0; relative_page_index < processor_areas_page_count; relative_page_index += 1) {
             if(!increment_page_walker(&walker, bitmap)) {
-                unmap_page_walker(&walker);
+                printf("Error: Out of memory\n");
 
-                destroy_process(process_iterator, bitmap);
-
-                return CreateProcessFromELFResult::OutOfMemory;
+                halt();
             }
 
             auto page = &walker.page_table[walker.page_index];
@@ -328,6 +331,7 @@ CreateProcessFromELFResult create_process_from_elf(
             page->present = true;
             page->write_allowed = true;
             page->user_mode_allowed = false;
+            page->page_address = processor_areas_physical_pages_start + relative_page_index;
         }
 
         unmap_page_walker(&walker);
@@ -683,7 +687,7 @@ CreateProcessFromELFResult create_process_from_elf(
     // Set ABI-specified intial register states
 
     process->frame.mxcsr |= bits_to_mask(6) << 7;
-    
+
     process->is_ready = true;
 
     *result_processs = process;

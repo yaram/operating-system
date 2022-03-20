@@ -2,7 +2,9 @@
 
 .set USER_PROCESSOR_AREA_ADDRESS, 0x800000
 
-.set STACK_OFFSET, 0
+.set SELF_POINTER_OFFSET, 0
+
+.set STACK_OFFSET, 16
 
 .extern syscall_entrance
 
@@ -10,7 +12,12 @@
 syscall_thunk:
     mov %rsp, %rax
 
-    mov $(USER_PROCESSOR_AREA_ADDRESS + STACK_OFFSET + PROCESSOR_STACK_SIZE), %rsp
+	swapgs
+
+    mov %gs:SELF_POINTER_OFFSET, %rsp
+    add $(STACK_OFFSET + PROCESSOR_STACK_SIZE), %rsp
+
+    swapgs
 
     pushq $0x1b
     push %rax

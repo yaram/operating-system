@@ -70,9 +70,10 @@ struct __attribute__((packed)) IDTDescriptor {
     uint64_t base;
 };
 
-using ProcessorAreas = BucketArray<ProcessorArea*, 4>;
-
-ProcessorAreas processor_areas {};
+static size_t global_processor_count;
+static size_t global_processor_area_count;
+static size_t global_processor_areas_physical_address;
+static ProcessorArea *global_processor_areas;
 
 const uint32_t preempt_time = 0x100000;
 
@@ -106,8 +107,8 @@ extern uint8_t multiprocessor_binary_end[];
 extern uint8_t embedded_init_binary[];
 extern uint8_t embedded_init_binary_end[];
 
-static volatile bool additional_processor_initialized_flag = false;
-volatile bool all_processors_initialized = false;
+static volatile bool global_additional_processor_initialized_flag = false;
+volatile bool global_all_processors_initialized = false;
 
 Array<uint8_t> global_bitmap;
 
@@ -156,6 +157,10 @@ Processes global_processes {};
                     "cli"
                 );
 
+                // These values may not be reset under certain conditions, so reset them here while interrupts are disabled
+                processor_area->in_syscall_or_user_exception = false;
+                processor_area->preempt_during_syscall_or_user_exception = false;
+
                 // Set timer value
                 processor_area->apic_registers[0x380 / 4] = preempt_time;
 
@@ -186,50 +191,37 @@ Processes global_processes {};
         }
     }
 
-    auto processor_area_physical_pages_start = processor_area->physical_address / page_size;
+    auto processor_id = get_processor_id();
 
-    { // Map pages for processor area
-        PageWalker walker;
-        if(!create_page_walker(process->pml4_table_physical_address, processor_area_pages_start, bitmap, &walker)) {
-            printf("Error: Out of memory\n");
+    auto processor_area_user_address = user_processor_areas_memory_start + processor_id * sizeof(ProcessorArea);
 
-            halt();
-        }
-
-        for(size_t relative_page_index = 0; relative_page_index < processor_area_page_count; relative_page_index += 1) {
-            if(!increment_page_walker(&walker, bitmap)) {
-                printf("Error: Out of memory\n");
-
-                halt();
-            }
-
-            auto page = &walker.page_table[walker.page_index];
-
-            page->page_address = processor_area_physical_pages_start + relative_page_index;
-        }
-
-        unmap_page_walker(&walker);
-    }
+    auto stack_kernel_address = (size_t)&processor_area->stack;
+    auto stack_user_address = processor_area_user_address + offsetof(ProcessorArea, stack);
 
     GDTDescriptor gdt_descriptor {
         (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
-        processor_area_memory_start + offsetof(ProcessorArea, gdt_entries)
+        processor_area_user_address + offsetof(ProcessorArea, gdt_entries)
     };
 
-    process->resident_processor_id = processor_area->processor_id;
+    process->resident_processor_id = processor_id;
 
+    // Must be a full copy on the kernel stack, so that the user-page-table user_enter_thunk can access it
     auto stack_frame_copy = process->frame;
 
     auto stack_frame_copy_kernel_address = (size_t)&stack_frame_copy;
 
-    auto stack_frame_copy_relative_address = stack_frame_copy_kernel_address - (size_t)&processor_area->stack;
+    auto stack_frame_copy_relative_address = stack_frame_copy_kernel_address - stack_kernel_address;
 
-    auto stack_frame_copy_user_address = processor_area_memory_start + stack_frame_copy_relative_address;
+    auto stack_frame_copy_user_address = stack_user_address + stack_frame_copy_relative_address;
 
     // Disable interrupts until process entry for interrupt safety
     asm volatile(
         "cli"
     );
+
+    // These values may not be reset under certain conditions, so reset them here while interrupts are disabled
+    processor_area->in_syscall_or_user_exception = false;
+    processor_area->preempt_during_syscall_or_user_exception = false;
 
     // Set timer value
     processor_area->apic_registers[0x380 / 4] = preempt_time;
@@ -253,34 +245,6 @@ Processes global_processes {};
     unreachable();
 }
 
-static inline uint8_t get_processor_id() {
-    uint8_t processor_id;
-    asm volatile(
-        "mov $1, %%eax\n"
-        "cpuid\n"
-        "shrl $24, %%ebx\n"
-        : "=b"(processor_id)
-        :
-        : "eax", "ecx", "edx"
-    );
-
-    return processor_id;
-}
-
-static ProcessorArea *get_processor_area() {
-    auto processor_id = get_processor_id();
-
-    for(auto processor_area_pointer : processor_areas) {
-        auto processor_area = *processor_area_pointer;
-
-        if(processor_area->processor_id == processor_id) {
-            return processor_area;
-        }
-    }
-
-    unreachable();
-}
-
 // Basically using always_inline as a type-safe macro
 static __attribute__((always_inline)) void continue_in_function_return(ProcessStackFrame *stack_frame, void (*function_continued)(ProcessStackFrame*)) {
     size_t current_pml4_table;
@@ -292,25 +256,30 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
     if(current_pml4_table == (size_t)&kernel_pml4_table) {
         function_continued(stack_frame);
     } else {
-        auto stack_offset = offsetof(ProcessorArea, stack);
+        auto processor_id = get_processor_id();
 
-        auto stack_user_address = processor_area_memory_start + stack_offset;
-
-        auto user_processor_area = (ProcessorArea*)processor_area_memory_start;
-        auto stack_kernel_address = (size_t)user_processor_area->kernel_address + stack_offset;
+        auto processor_area_offset = processor_id * sizeof(ProcessorArea);
 
         auto frame_user_address = (size_t)stack_frame;
 
+        auto processor_area_kernel_address = (size_t)global_processor_areas + processor_area_offset;
+        auto processor_area_user_address = user_processor_areas_memory_start + processor_area_offset;
+
+        auto stack_offset = offsetof(ProcessorArea, stack);
+
+        auto stack_kernel_address = processor_area_kernel_address + stack_offset;
+        auto stack_user_address = processor_area_user_address + stack_offset;
+
         GDTDescriptor kernel_gdt_descriptor {
             (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
-            (size_t)user_processor_area->kernel_address + offsetof(ProcessorArea, gdt_entries)
+            processor_area_kernel_address + offsetof(ProcessorArea, gdt_entries)
         };
 
         auto kernel_gdt_descriptor_user_address = (size_t)&kernel_gdt_descriptor;
 
         GDTDescriptor user_gdt_descriptor {
             (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
-            processor_area_memory_start + offsetof(ProcessorArea, gdt_entries)
+            processor_area_user_address + offsetof(ProcessorArea, gdt_entries)
         };
 
         auto user_gdt_descriptor_user_address = (size_t)&user_gdt_descriptor;
@@ -404,16 +373,21 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
     if(current_pml4_table == (size_t)&kernel_pml4_table) {
         function_continued(stack_frame);
     } else {
+        auto processor_id = get_processor_id();
+
+        auto processor_area_offset = processor_id * sizeof(ProcessorArea);
+
+        auto processor_area_kernel_address = (size_t)global_processor_areas + processor_area_offset;
+        auto processor_area_user_address = user_processor_areas_memory_start + processor_area_offset;
+
         auto stack_offset = offsetof(ProcessorArea, stack);
 
-        auto stack_user_address = processor_area_memory_start + stack_offset;
-
-        auto user_processor_area = (ProcessorArea*)processor_area_memory_start;
-        auto stack_kernel_address = (size_t)user_processor_area->kernel_address + stack_offset;
+        auto stack_kernel_address = processor_area_kernel_address + stack_offset;
+        auto stack_user_address = processor_area_user_address + stack_offset;
 
         GDTDescriptor gdt_descriptor {
             (uint16_t)(gdt_size * sizeof(GDTEntry) - 1),
-            (size_t)user_processor_area->kernel_address + offsetof(ProcessorArea, gdt_entries)
+            processor_area_kernel_address + offsetof(ProcessorArea, gdt_entries)
         };
 
         asm volatile(
@@ -454,12 +428,13 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
 }
 
 [[noreturn]] void user_exception_handler_continued(const ProcessStackFrame *frame) {
-    auto processor_area = get_processor_area();
+    auto processor_id = get_processor_id();
+    auto processor_area = &global_processor_areas[processor_id];
 
     if(processor_area->current_process_iterator.current_bucket != nullptr) {
         auto process = *processor_area->current_process_iterator;
 
-        printf(" in process %zu (processor %u)\n", process->id, get_processor_id());
+        printf(" in process %zu (processor %u)\n", process->id, processor_id);
 
         auto instruction_pointer = (size_t)frame->interrupt_frame.instruction_pointer;
 
@@ -475,7 +450,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
 
         enter_next_process(processor_area, global_bitmap, &global_processes);
     } else {
-        printf(" in kernel (processor %u)\n", get_processor_id());
+        printf(" in kernel (processor %u)\n", processor_id);
 
         halt();
     }
@@ -485,7 +460,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackF
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
     if(frame->interrupt_frame.code_segment != 0x08) {
-        auto user_processor_area = (ProcessorArea*)processor_area_memory_start;
+        auto user_processor_area = (ProcessorArea*)(user_processor_areas_memory_start + get_processor_id() * sizeof(ProcessorArea));
 
         // Disable APIC timer and clear any pending interrupt
 
@@ -511,7 +486,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackF
 }
 
 [[noreturn]] void preempt_timer_handler_continued(const ProcessStackFrame *frame) {
-    auto processor_area = get_processor_area();
+    auto processor_area = &global_processor_areas[get_processor_id()];
 
     // Send the End of Interrupt signal
     processor_area->apic_registers[0x0B0 / 4] = 0;
@@ -534,7 +509,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackF
 
 extern "C" void preempt_timer_handler(ProcessStackFrame *frame) {
     if(frame->interrupt_frame.code_segment == 0x08) {
-        auto processor_area = get_processor_area();
+        auto processor_area = &global_processor_areas[get_processor_id()];
 
         if(processor_area->in_syscall_or_user_exception) {
             processor_area->preempt_during_syscall_or_user_exception = true;
@@ -564,15 +539,13 @@ extern "C" void spurious_interrupt_handler(const ProcessStackFrame *frame) {
     printf("Spurious interrupt at %p\n", frame->interrupt_frame.instruction_pointer);
 }
 
-volatile size_t processor_count = 0;
-
-volatile bool kernel_tables_update_lock = false;
-volatile size_t kernel_tables_update_pages_start;
-volatile size_t kernel_tables_update_page_count;
-volatile size_t kernel_tables_update_progress;
+volatile bool global_kernel_tables_update_lock = false;
+volatile size_t global_kernel_tables_update_pages_start;
+volatile size_t global_kernel_tables_update_page_count;
+volatile size_t global_kernel_tables_update_progress;
 
 void kernel_page_tables_update_handler_continued(ProcessStackFrame *frame) {
-    auto processor_area = get_processor_area();
+    auto processor_area = &global_processor_areas[get_processor_id()];
 
     // Send the End of Interrupt signal
     processor_area->apic_registers[0x0B0 / 4] = 0;
@@ -587,8 +560,8 @@ extern "C" void kernel_page_tables_update_handler(ProcessStackFrame *frame) {
 
     if(current_pml4_table == (size_t)&kernel_pml4_table) {
         for(
-            size_t absolute_page_index = kernel_tables_update_pages_start;
-            absolute_page_index < kernel_tables_update_pages_start + kernel_tables_update_page_count;
+            size_t absolute_page_index = global_kernel_tables_update_pages_start;
+            absolute_page_index < global_kernel_tables_update_pages_start + global_kernel_tables_update_page_count;
             absolute_page_index += 1
         ) {
             asm volatile(
@@ -599,7 +572,7 @@ extern "C" void kernel_page_tables_update_handler(ProcessStackFrame *frame) {
         }
     }
 
-    atomic_add(&kernel_tables_update_progress, (size_t)1);
+    atomic_add(&global_kernel_tables_update_progress, (size_t)1);
 
     continue_in_function_return(frame, &kernel_page_tables_update_handler_continued);
 }
@@ -688,16 +661,18 @@ IDTEntry idt_entries[idt_length] {
 };
 
 void send_kernel_page_tables_update(size_t pages_start, size_t page_count) {
-    acquire_lock(&kernel_tables_update_lock);
+    printf("Kernel tables update\n");
 
-    kernel_tables_update_pages_start = pages_start;
-    kernel_tables_update_page_count = page_count;
-    kernel_tables_update_progress = 0;
+    acquire_lock(&global_kernel_tables_update_lock);
+
+    global_kernel_tables_update_pages_start = pages_start;
+    global_kernel_tables_update_page_count = page_count;
+    global_kernel_tables_update_progress = 0;
 
     // Make sure all memory writes are global
     asm volatile("mfence");
 
-    auto processor_area = get_processor_area();
+    auto processor_area = &global_processor_areas[get_processor_id()];
 
     // Set vector number, set delivery mode to fixed, set destination mode to physical,
     // set level assert, set edge trigger, set all-excluding-self shorthand
@@ -708,13 +683,11 @@ void send_kernel_page_tables_update(size_t pages_start, size_t page_count) {
         asm volatile("pause");
     }
 
-    auto total_processor_count = processor_count;
-
-    while(kernel_tables_update_progress != total_processor_count - 1) {
+    while(global_kernel_tables_update_progress != global_processor_count - 1) {
         asm volatile("pause");
     }
 
-    kernel_tables_update_lock = false;
+    global_kernel_tables_update_lock = false;
 }
 
 IDTDescriptor idt_descriptor { idt_length * sizeof(IDTEntry) - 1, (uint64_t)&idt_entries };
@@ -775,7 +748,7 @@ static MapProcessMemoryResult map_process_memory_into_kernel(Process *process, s
 }
 
 void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
-    auto processor_area = get_processor_area();
+    auto processor_area = &global_processor_areas[get_processor_id()];
 
     processor_area->in_syscall_or_user_exception = true;
 
@@ -1067,6 +1040,8 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
                                 data,
                                 parameters->data_size,
                                 global_bitmap,
+                                global_processor_area_count,
+                                global_processor_areas_physical_address,
                                 &global_processes,
                                 &new_process,
                                 &new_process_iterator
@@ -1510,39 +1485,30 @@ volatile uint32_t* global_io_apic_registers;
 extern void (*init_array_start[])();
 extern void (*init_array_end[])();
 
-static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable *madt_table, Array<uint8_t> bitmap) {
-    size_t processor_area_physical_address;
-    auto processor_area = (ProcessorArea*)map_and_allocate_consecutive_memory(sizeof(ProcessorArea), bitmap, &processor_area_physical_address, false);
-    if(processor_area == nullptr) {
-        printf("Error: Out of memory\n");
+static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable *madt_table, Array<uint8_t> bitmap) {
+    auto processor_id = get_processor_id();
 
-        halt();
-    }
+    auto processor_area = &processor_areas[processor_id];
 
-    *processor_area = {};
+    auto processor_area_user_address = user_processor_areas_memory_start + processor_id * sizeof(ProcessorArea);
 
-    auto processor_area_pointer = allocate_from_bucket_array(processor_areas, bitmap, false);
-    if(processor_area_pointer == nullptr) {
-        printf("Error: Out of memory\n");
+    processor_area->user_address = processor_area_user_address;
 
-        halt();
-    }
+    // Store user processor area pointer in GS for syscall entry to use with swapgs
+    asm volatile(
+        "wrmsr"
+        :
+        : "a"((uint32_t)processor_area_user_address), "d"((uint32_t)(processor_area_user_address >> 32)), "c"((uint32_t)0xC0000102) // IA32_KERNEL_GS_BASE MSR
+    );
 
-    *processor_area_pointer = processor_area;
+    // The processor areas are mapped into each process at the same position, so each processor stack is always in the same position
 
-    processor_count += 1;
-
-    processor_area->processor_id = get_processor_id();
-    processor_area->physical_address = processor_area_physical_address;
-    processor_area->kernel_address = processor_area;
-
-    // Processor area is mapped into each process at the same position, so processor stack is always in the same position
-    auto stack_user_address = processor_area_memory_start + offsetof(ProcessorArea, stack);
+    auto stack_user_address = processor_area_user_address + offsetof(ProcessorArea, stack);
 
     processor_area->tss_entry.iopb_offset = (uint16_t)sizeof(TSSEntry);
     processor_area->tss_entry.rsp0 = stack_user_address + processor_stack_size;
 
-    auto tss_entry_user_address = processor_area_memory_start + offsetof(ProcessorArea, tss_entry);
+    auto tss_entry_user_address = processor_area_user_address + offsetof(ProcessorArea, tss_entry);
 
     processor_area->gdt_entries[1].normal_segment.present = true;
     processor_area->gdt_entries[1].normal_segment.type = true;
@@ -1697,7 +1663,11 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 }
 
 [[noreturn]] static void bootstrap_processor_entry_continued() {
-    auto processor_area = get_processor_area();
+    // MAKE SURE the processor area for the bootstrap processor is initalized BEFORE this point
+
+    auto bootstrap_processor_id = get_processor_id();
+
+    auto processor_area = &global_processor_areas[bootstrap_processor_id];
 
     MADTTable *madt_table;
     {
@@ -1749,9 +1719,6 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
     memcpy((void*)multiprocessor_binary_load_location, multiprocessor_binary, multiprocessor_binary_size);
 
-    auto bootstrap_processor_id = get_processor_id();
-
-    // MAKE SURE the processor area for the bootstrap processor is initalized BEFORE this point
     current_madt_index = 0;
     while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
         auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
@@ -1780,7 +1747,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
                     // TODO: Need to wait 10ms for a real physical CPU to reset
 
-                    // Set entry page number to 1 (address 0x1000), set delivery mode to STARTUP, set destination mode to physical,
+                    // Set entry page number, set delivery mode to STARTUP, set destination mode to physical,
                     // set level assert, set edge trigger, set no shorthand
                     processor_area->apic_registers[0x300 / 4] = 1 | 6 << 8 | 1 << 14;
 
@@ -1792,11 +1759,11 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
                     // No need to wait 200us for a real physical cpu to start executing, as we wait for the flag to be set anyway
 
                     // Wait for additional processor to set flag
-                    while(!additional_processor_initialized_flag) {
+                    while(!global_additional_processor_initialized_flag) {
                         asm volatile("pause");
                     }
 
-                    additional_processor_initialized_flag = false;
+                    global_additional_processor_initialized_flag = false;
                 }
             } break;
         }
@@ -1805,6 +1772,8 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
     }
 
     AcpiPutTable(&madt_table->preamble.Header);
+
+    global_all_processors_initialized = true;
 
     // Reload TLB
     asm volatile(
@@ -1815,8 +1784,6 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
     asm volatile(
         "sti"
     );
-
-    all_processors_initialized = true;
 
     printf("Loading init process...\n");
 
@@ -1830,6 +1797,8 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         nullptr,
         0,
         global_bitmap,
+        global_processor_area_count,
+        global_processor_areas_physical_address,
         &global_processes,
         &init_process,
         &init_process_iterator
@@ -1850,6 +1819,8 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
         default: halt();
     }
+
+    printf("Entering init process");
 
     enter_next_process(processor_area, global_bitmap, &global_processes);
 }
@@ -2166,7 +2137,51 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         }
     }
 
-    auto processor_area = setup_processor(&processor_areas, madt_table, global_bitmap);
+    auto bootstrap_processor_id = get_processor_id();
+
+    size_t processor_count = 1;
+
+    auto maximum_processor_id = bootstrap_processor_id;
+
+    size_t current_madt_index = 0;
+    while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
+        auto header = (ACPI_SUBTABLE_HEADER*)((size_t)madt_table->entries + current_madt_index);
+
+        switch(header->Type) {
+            case ACPI_MADT_TYPE_LOCAL_APIC: {
+                auto subtable = (ACPI_MADT_LOCAL_APIC*)header;
+
+                if(subtable->ProcessorId != bootstrap_processor_id) {
+                    processor_count += 1;
+
+                    if(subtable->ProcessorId > maximum_processor_id) {
+                        maximum_processor_id = subtable->ProcessorId;
+                    }
+                }
+            } break;
+        }
+
+        current_madt_index += (size_t)header->Length;
+    }
+
+    auto processor_area_count = maximum_processor_id + 1;
+
+    size_t processor_areas_physical_address;
+    auto processor_areas = (ProcessorArea*)map_and_allocate_consecutive_memory(
+        processor_area_count * sizeof(ProcessorArea),
+        global_bitmap,
+        &processor_areas_physical_address,
+        false
+    );
+
+    memset(processor_areas, 0, processor_area_count * sizeof(ProcessorArea));
+
+    global_processor_count = processor_count;
+    global_processor_area_count = processor_area_count;
+    global_processor_areas_physical_address = processor_areas_physical_address;
+    global_processor_areas = processor_areas;
+
+    auto processor_area = setup_processor(global_processor_areas, madt_table, global_bitmap);
 
     AcpiPutTable(&madt_table->preamble.Header);
 
@@ -2175,7 +2190,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "mov %0, %%rsp\n"
         "call *%1"
         :
-        : "r"(processor_area->stack + processor_stack_size), "r"(bootstrap_processor_entry_continued)
+        : "r"((size_t)&processor_area->stack + processor_stack_size), "r"(bootstrap_processor_entry_continued)
     );
 
     unreachable();
@@ -2183,14 +2198,14 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
 
 [[noreturn]] static void additional_processor_entry_continued() {
     // MAKE SURE the processor area for this additional processor is initalized BEFORE this point
-    asm volatile("mfence");
-    additional_processor_initialized_flag = true;
+
+    global_additional_processor_initialized_flag = true;
 
     asm volatile(
         "sti"
     );
 
-    auto processor_area = get_processor_area();
+    auto processor_area = &global_processor_areas[get_processor_id()];
 
     enter_next_process(processor_area, global_bitmap, &global_processes);
 }
@@ -2250,7 +2265,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         }
     }
 
-    auto processor_area = setup_processor(&processor_areas, madt_table, global_bitmap);
+    auto processor_area = setup_processor(global_processor_areas, madt_table, global_bitmap);
 
     AcpiPutTable(&madt_table->preamble.Header);
 
@@ -2259,7 +2274,7 @@ static ProcessorArea *setup_processor(ProcessorAreas *processor_areas, MADTTable
         "mov %0, %%rsp\n"
         "call *%1"
         :
-        : "r"(processor_area->stack + processor_stack_size), "r"(additional_processor_entry_continued)
+        : "r"((size_t)&processor_area->stack + processor_stack_size), "r"(additional_processor_entry_continued)
     );
 
     unreachable();
@@ -2280,7 +2295,7 @@ void *allocate(size_t size) {
         return nullptr;
     }
 
-    if(all_processors_initialized) {
+    if(global_all_processors_initialized) {
         send_kernel_page_tables_update_memory(base_pointer, page_size + size);
     }
 

@@ -12,3 +12,17 @@ static inline void acquire_lock(volatile bool *lock) {
         asm volatile("pause");
     }
 }
+
+static inline uint8_t get_processor_id() {
+    uint32_t cpuid_value_a;
+    uint32_t cpuid_value_b;
+    uint32_t cpuid_value_c;
+    uint32_t cpuid_value_d;
+    asm volatile(
+        "cpuid"
+        : "=a"(cpuid_value_a), "=b"(cpuid_value_b), "=c"(cpuid_value_c), "=d"(cpuid_value_d)
+        : "a"((uint32_t)1)
+    );
+
+    return cpuid_value_b >> 24;
+}

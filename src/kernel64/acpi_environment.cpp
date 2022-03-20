@@ -42,7 +42,7 @@ extern "C" ACPI_STATUS AcpiOsPhysicalTableOverride(ACPI_TABLE_HEADER *ExistingTa
 }
 
 extern Array<uint8_t> global_bitmap;
-extern volatile bool all_processors_initialized;
+extern volatile bool global_all_processors_initialized;
 
 /*
  * Spinlock primitives
@@ -54,7 +54,7 @@ extern "C" ACPI_STATUS AcpiOsCreateLock(ACPI_SPINLOCK *OutHandle) {
         return AE_ERROR;
     }
 
-    if(all_processors_initialized) {
+    if(global_all_processors_initialized) {
         send_kernel_page_tables_update_memory((void*)lock, sizeof(bool));
     }
 
@@ -88,7 +88,7 @@ extern "C" ACPI_STATUS AcpiOsCreateSemaphore(UINT32 MaxUnits, UINT32 InitialUnit
         return AE_ERROR;
     }
 
-    if(all_processors_initialized) {
+    if(global_all_processors_initialized) {
         send_kernel_page_tables_update_memory((void*)semaphore, sizeof(UINT32));
     }
 
@@ -156,7 +156,7 @@ extern "C" void * AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length)
         return nullptr;
     }
 
-    if(all_processors_initialized) {
+    if(global_all_processors_initialized) {
         send_kernel_page_tables_update_memory(pointer, (size_t)Length);
     }
 

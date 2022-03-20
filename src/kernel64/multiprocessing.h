@@ -61,25 +61,23 @@ struct __attribute__((packed)) TSSEntry {
 
 // The addresses/sizes/offset in this file MUST remain in-sync with the ones in syscall.S
 
-const auto processor_area_pages_start = kernel_pages_end;
+const auto user_processor_areas_pages_start = kernel_pages_end;
 
-const auto processor_area_memory_start = processor_area_pages_start * page_size;
+const auto user_processor_areas_memory_start = user_processor_areas_pages_start * page_size;
 
 const size_t processor_stack_size = 1024 * 16;
 
 const size_t gdt_size = 7;
 
 struct ProcessorArea {
+    // Needed for GS register crazyness in syscall.S
+    size_t user_address;
+
     __attribute__((aligned(16))) uint8_t stack[processor_stack_size];
 
     GDTEntry gdt_entries[gdt_size];
 
     TSSEntry tss_entry;
-
-    uint8_t processor_id;
-
-    size_t physical_address;
-    ProcessorArea *kernel_address;
 
     volatile uint32_t *apic_registers;
 
@@ -89,11 +87,9 @@ struct ProcessorArea {
     bool preempt_during_syscall_or_user_exception;
 };
 
-static_assert(processor_stack_size % 16 == 0, "Processor stack size of not 16-byte aligned");
+static_assert(processor_stack_size % 16 == 0, "Processor stack size not 16-byte aligned");
 
 const auto processor_area_size = sizeof(ProcessorArea);
-
-const auto processor_area_page_count = divide_round_up(processor_area_size, page_size);
 
 void send_kernel_page_tables_update(size_t pages_start, size_t page_count);
 
