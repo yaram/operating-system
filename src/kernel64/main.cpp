@@ -719,8 +719,6 @@ IDTEntry idt_entries[idt_length] {
 };
 
 void send_kernel_page_tables_update(size_t pages_start, size_t page_count) {
-    printf("Kernel tables update\n");
-
     acquire_lock(&global_kernel_tables_update_lock);
 
     global_kernel_tables_update_pages_start = pages_start;
