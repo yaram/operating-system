@@ -82,6 +82,7 @@ struct ProcessorArea {
     volatile uint32_t *apic_registers;
 
     Processes::Iterator current_process_iterator;
+    ProcessThreads::Iterator current_thread_iterator;
 
     bool in_syscall_or_user_exception;
     bool preempt_during_syscall_or_user_exception;

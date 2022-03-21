@@ -6,7 +6,7 @@
 #include "array.h"
 
 // Positions of members in this struct are VERY IMPORTANT and relied on by assembly code and the architecture
-struct __attribute__((aligned(16))) ProcessStackFrame {
+struct __attribute__((aligned(16))) ThreadStackFrame {
     // Base integer registers
     uint64_t rax;
     uint64_t rbx;
@@ -58,6 +58,17 @@ struct ProcessPageMapping {
 
 using ProcessPageMappings = BucketArray<ProcessPageMapping, 16>;
 
+struct ProcessThread {
+    ThreadStackFrame frame;
+
+    bool is_resident;
+    uint8_t resident_processor_id;
+
+    bool is_ready;
+};
+
+using ProcessThreads = BucketArray<ProcessThread, 4>;
+
 struct Process {
     size_t pml4_table_physical_address;
 
@@ -67,10 +78,7 @@ struct Process {
 
     DebugCodeSections debug_code_sections;
 
-    ProcessStackFrame frame;
-
-    bool is_resident;
-    uint8_t resident_processor_id;
+    ProcessThreads threads;
 
     bool is_ready;
 };

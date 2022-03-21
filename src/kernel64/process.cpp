@@ -672,22 +672,25 @@ CreateProcessFromELFResult create_process_from_elf(
 
     unmap_and_deallocate_bucket_array(&section_allocations, bitmap);
 
+    auto thread = allocate_from_bucket_array(&process->threads, bitmap, true);
+
     // Set process entry conditions
-    process->frame.interrupt_frame.instruction_pointer = entry_point;
-    process->frame.interrupt_frame.code_segment = 0x23;
-    process->frame.interrupt_frame.cpu_flags = 1 << 9;
-    process->frame.interrupt_frame.stack_pointer = (void*)((size_t)stack_top - 8);
-    process->frame.interrupt_frame.stack_segment = 0x1B;
+    thread->frame.interrupt_frame.instruction_pointer = entry_point;
+    thread->frame.interrupt_frame.code_segment = 0x23;
+    thread->frame.interrupt_frame.cpu_flags = 1 << 9;
+    thread->frame.interrupt_frame.stack_pointer = (void*)((size_t)stack_top - 8);
+    thread->frame.interrupt_frame.stack_segment = 0x1B;
 
     // Set entry function parameters (process ID, data & data-size)
-    process->frame.rdi = process->id;
-    process->frame.rsi = data_user_pages_start * page_size;
-    process->frame.rdx = data_size;
+    thread->frame.rdi = process->id;
+    thread->frame.rsi = data_user_pages_start * page_size;
+    thread->frame.rdx = data_size;
 
     // Set ABI-specified intial register states
 
-    process->frame.mxcsr |= bits_to_mask(6) << 7;
+    thread->frame.mxcsr |= bits_to_mask(6) << 7;
 
+    thread->is_ready = true;
     process->is_ready = true;
 
     *result_processs = process;

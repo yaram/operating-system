@@ -128,22 +128,63 @@ Processes global_processes {};
     Array<uint8_t> bitmap,
     Processes *processes
 ) {
-    ++processor_area->current_process_iterator;
-
     Process *process;
-    // First iteration from current process iterator onwards, to give the next processes priority for round-robin
-    while(true) {
-        if(processor_area->current_process_iterator.current_bucket == nullptr) {
-            break;
-        }
+    ProcessThread *thread;
+    if(processor_area->current_process_iterator.current_bucket != nullptr) {
+        ++processor_area->current_thread_iterator;
 
         process = *processor_area->current_process_iterator;
 
-        if(process->is_ready && compare_and_swap(&process->is_resident, false, true)) {
-            break;
-        }
+        if(process->is_ready) {
+            while(true) {
+                if(processor_area->current_thread_iterator.current_bucket == nullptr) {
+                    break;
+                }
 
+                thread = *processor_area->current_thread_iterator;
+
+                if(thread->is_ready && compare_and_swap(&thread->is_resident, false, true)) {
+                    break;
+                }
+
+                ++processor_area->current_thread_iterator;
+            }
+        }
+    }
+
+    if(processor_area->current_thread_iterator.current_bucket == nullptr) {
         ++processor_area->current_process_iterator;
+
+        while(true) {
+            if(processor_area->current_process_iterator.current_bucket == nullptr) {
+                break;
+            }
+
+            process = *processor_area->current_process_iterator;
+            processor_area->current_thread_iterator = begin(process->threads);
+
+            if(process->is_ready) {
+                while(true) {
+                    if(processor_area->current_thread_iterator.current_bucket == nullptr) {
+                        break;
+                    }
+
+                    thread = *processor_area->current_thread_iterator;
+
+                    if(thread->is_ready && compare_and_swap(&thread->is_resident, false, true)) {
+                        break;
+                    }
+
+                    ++processor_area->current_thread_iterator;
+                }
+
+                if(processor_area->current_thread_iterator.current_bucket != nullptr) {
+                    break;
+                }
+            }
+
+            ++processor_area->current_process_iterator;
+        }
     }
 
     /// Second iteration from start of process list
@@ -182,9 +223,26 @@ Processes global_processes {};
             }
 
             process = *processor_area->current_process_iterator;
+            processor_area->current_thread_iterator = begin(process->threads);
 
-            if(process->is_ready && compare_and_swap(&process->is_resident, false, true)) {
-                break;
+            if(process->is_ready) {
+                while(true) {
+                    if(processor_area->current_thread_iterator.current_bucket == nullptr) {
+                        break;
+                    }
+                    
+                    thread = *processor_area->current_thread_iterator;
+
+                    if(thread->is_ready && compare_and_swap(&thread->is_resident, false, true)) {
+                        break;
+                    }
+
+                    ++processor_area->current_thread_iterator;
+                }
+
+                if(processor_area->current_thread_iterator.current_bucket != nullptr) {
+                    break;
+                }
             }
 
             ++processor_area->current_process_iterator;
@@ -203,10 +261,10 @@ Processes global_processes {};
         processor_area_user_address + offsetof(ProcessorArea, gdt_entries)
     };
 
-    process->resident_processor_id = processor_id;
+    thread->resident_processor_id = processor_id;
 
     // Must be a full copy on the kernel stack, so that the user-page-table user_enter_thunk can access it
-    auto stack_frame_copy = process->frame;
+    auto stack_frame_copy = thread->frame;
 
     auto stack_frame_copy_kernel_address = (size_t)&stack_frame_copy;
 
@@ -246,7 +304,7 @@ Processes global_processes {};
 }
 
 // Basically using always_inline as a type-safe macro
-static __attribute__((always_inline)) void continue_in_function_return(ProcessStackFrame *stack_frame, void (*function_continued)(ProcessStackFrame*)) {
+static __attribute__((always_inline)) void continue_in_function_return(ThreadStackFrame *stack_frame, void (*function_continued)(ThreadStackFrame*)) {
     size_t current_pml4_table;
     asm volatile(
         "mov %%cr3, %0"
@@ -363,7 +421,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
     }
 }
 
-[[noreturn]] static __attribute__((always_inline)) void continue_in_function(const ProcessStackFrame *stack_frame, void (*function_continued)(const ProcessStackFrame*)) {
+[[noreturn]] static __attribute__((always_inline)) void continue_in_function(const ThreadStackFrame *stack_frame, void (*function_continued)(const ThreadStackFrame*)) {
     size_t current_pml4_table;
     asm volatile(
         "mov %%cr3, %0"
@@ -427,7 +485,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
     unreachable();
 }
 
-[[noreturn]] void user_exception_handler_continued(const ProcessStackFrame *frame) {
+[[noreturn]] void user_exception_handler_continued(const ThreadStackFrame *frame) {
     auto processor_id = get_processor_id();
     auto processor_area = &global_processor_areas[processor_id];
 
@@ -456,7 +514,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ProcessSt
     }
 }
 
-extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackFrame *frame) {
+extern "C" [[noreturn]] void exception_handler(size_t index, const ThreadStackFrame *frame) {
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
     if(frame->interrupt_frame.code_segment != 0x08) {
@@ -485,18 +543,18 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackF
     }
 }
 
-[[noreturn]] void preempt_timer_handler_continued(const ProcessStackFrame *frame) {
+[[noreturn]] void preempt_timer_handler_continued(const ThreadStackFrame *frame) {
     auto processor_area = &global_processor_areas[get_processor_id()];
 
     // Send the End of Interrupt signal
     processor_area->apic_registers[0x0B0 / 4] = 0;
 
     if(processor_area->current_process_iterator.current_bucket != nullptr) {
-        auto old_process = *processor_area->current_process_iterator;
+        auto old_thread = *processor_area->current_thread_iterator;
 
-        old_process->frame = *frame;
+        old_thread->frame = *frame;
 
-        old_process->is_resident = false;
+        old_thread->is_resident = false;
     }
 
     // Re-enable interrupts
@@ -507,7 +565,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ProcessStackF
     enter_next_process(processor_area, global_bitmap, &global_processes);
 }
 
-extern "C" void preempt_timer_handler(ProcessStackFrame *frame) {
+extern "C" void preempt_timer_handler(ThreadStackFrame *frame) {
     if(frame->interrupt_frame.code_segment == 0x08) {
         auto processor_area = &global_processor_areas[get_processor_id()];
 
@@ -535,7 +593,7 @@ extern "C" void preempt_timer_handler(ProcessStackFrame *frame) {
     }
 }
 
-extern "C" void spurious_interrupt_handler(const ProcessStackFrame *frame) {
+extern "C" void spurious_interrupt_handler(const ThreadStackFrame *frame) {
     printf("Spurious interrupt at %p\n", frame->interrupt_frame.instruction_pointer);
 }
 
@@ -544,14 +602,14 @@ volatile size_t global_kernel_tables_update_pages_start;
 volatile size_t global_kernel_tables_update_page_count;
 volatile size_t global_kernel_tables_update_progress;
 
-void kernel_page_tables_update_handler_continued(ProcessStackFrame *frame) {
+void kernel_page_tables_update_handler_continued(ThreadStackFrame *frame) {
     auto processor_area = &global_processor_areas[get_processor_id()];
 
     // Send the End of Interrupt signal
     processor_area->apic_registers[0x0B0 / 4] = 0;
 }
 
-extern "C" void kernel_page_tables_update_handler(ProcessStackFrame *frame) {
+extern "C" void kernel_page_tables_update_handler(ThreadStackFrame *frame) {
     size_t current_pml4_table;
     asm volatile(
         "mov %%cr3, %0"
@@ -747,7 +805,7 @@ static MapProcessMemoryResult map_process_memory_into_kernel(Process *process, s
     return MapProcessMemoryResult::Success;
 }
 
-void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
+void syscall_entrance_continued(ThreadStackFrame *stack_frame) {
     auto processor_area = &global_processor_areas[get_processor_id()];
 
     processor_area->in_syscall_or_user_exception = true;
@@ -757,6 +815,7 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
     );
 
     auto process = *processor_area->current_process_iterator;
+    auto thread = *processor_area->current_thread_iterator;
 
     auto syscall_index = stack_frame->rbx;
     auto parameter_1 = stack_frame->rdx;
@@ -775,9 +834,9 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
         } break;
 
         case SyscallType::RelinquishTime: {
-            process->frame = *stack_frame;
+            thread->frame = *stack_frame;
 
-            process->is_resident = false;
+            thread->is_resident = false;
 
             enter_next_process(processor_area, global_bitmap, &global_processes);
         } break;
@@ -1416,9 +1475,9 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
         processor_area->in_syscall_or_user_exception = false;
         processor_area->preempt_during_syscall_or_user_exception = false;
 
-        process->frame = *stack_frame;
+        thread->frame = *stack_frame;
 
-        process->is_resident = false;
+        thread->is_resident = false;
 
         enter_next_process(processor_area, global_bitmap, &global_processes);
     }
@@ -1426,7 +1485,7 @@ void syscall_entrance_continued(ProcessStackFrame *stack_frame) {
     processor_area->in_syscall_or_user_exception = false;
 }
 
-extern "C" void syscall_entrance(ProcessStackFrame *stack_frame) {
+extern "C" void syscall_entrance(ThreadStackFrame *stack_frame) {
     continue_in_function_return(stack_frame, &syscall_entrance_continued);
 }
 
