@@ -142,12 +142,18 @@ static void send_focus_lost_event(const Window *window) {
     }
 }
 
-static void draw_rectangle(
+struct Framebuffer {
+    size_t width;
+    size_t height;
+
+    size_t address;
+};
+
+static void fill_rectangle(
     intptr_t x, intptr_t y,
     intptr_t width, intptr_t height,
     uint32_t color,
-    size_t framebuffer_width, size_t framebuffer_height,
-    size_t framebuffer_address
+    Framebuffer framebuffer
 ) {
     auto top = y;
     auto bottom = y + height;
@@ -155,16 +161,16 @@ static void draw_rectangle(
     auto left = x;
     auto right = x + width;
 
-    auto visible_top = (size_t)min(max(top, 0), (intptr_t)framebuffer_height);
-    auto visible_bottom = (size_t)max(min(bottom, (intptr_t)framebuffer_height), 0);
+    auto visible_top = (size_t)min(max(top, 0), (intptr_t)framebuffer.height);
+    auto visible_bottom = (size_t)max(min(bottom, (intptr_t)framebuffer.height), 0);
 
-    auto visible_left = (size_t)min(max(left, 0), (intptr_t)framebuffer_width);
-    auto visible_right = (size_t)max(min(right, (intptr_t)framebuffer_width), 0);
+    auto visible_left = (size_t)min(max(left, 0), (intptr_t)framebuffer.width);
+    auto visible_right = (size_t)max(min(right, (intptr_t)framebuffer.width), 0);
 
     if(visible_right != visible_left) {
         for(auto y = visible_top; y < visible_bottom; y += 1) {
             for(auto x = visible_left; x < visible_right; x += 1) {
-                ((uint32_t*)framebuffer_address)[y * framebuffer_width + x] = color;
+                ((uint32_t*)framebuffer.address)[y * framebuffer.width + x] = color;
             }
         }
     }
@@ -545,37 +551,6 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
     };
 
     auto test_app_executable_size = (size_t)&test_app_executable_end - (size_t)&test_app_executable;
-
-    for(size_t i = 0; i < 2; i += 1) {
-        CreateProcessParameters parameters {
-            &test_app_executable,
-            test_app_executable_size,
-            &test_app_parameters,
-            sizeof(TestAppParameters)
-        };
-
-        switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0)) {
-            case CreateProcessResult::Success: break;
-
-            case CreateProcessResult::OutOfMemory: {
-                printf("Error: Unable to create test app process: Out of memory\n");
-
-                exit();
-            } break;
-
-            case CreateProcessResult::InvalidMemoryRange: {
-                printf("Error: Unable to create test app process: Invalid memory range for ELF binary or data\n");
-
-                exit();
-            } break;
-
-            case CreateProcessResult::InvalidELF: {
-                printf("Error: Unable to create test app process: Invalid ELF binary\n");
-
-                exit();
-            } break;
-        }
-    }
 
     const intptr_t window_title_height = 32;
 
@@ -994,6 +969,8 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             }
         }
 
+        intptr_t app_launch_bar_size = 48;
+
         for(auto device : virtio_input_devices) {
             auto used_index = device->used_ring->idx;
 
@@ -1008,193 +985,220 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                             auto key_state = (bool)event->value;
                             auto is_mouse_button = (event->code >= 0x110 && event->code <= 0x117) || (event->code >= 0x140 && event->code <= 0x14F);
 
-                            if(key_state && is_mouse_button) {
-                                auto any_windows = false;
-                                size_t highest_window_z_index;
-                                Window *highest_intersecting_window = nullptr;
-                                for(auto window : windows) {
-                                    if(!any_windows || window->z_index > highest_window_z_index) {
-                                        highest_window_z_index = window->z_index;
-                                        any_windows = true;
+                            if(key_state && is_mouse_button && cursor_y >= display_height - app_launch_bar_size) {
+                                if(event->code == 0x110 && cursor_x < app_launch_bar_size) { // BTN_LEFT
+                                    CreateProcessParameters parameters {
+                                        &test_app_executable,
+                                        test_app_executable_size,
+                                        &test_app_parameters,
+                                        sizeof(TestAppParameters)
+                                    };
+
+                                    switch((CreateProcessResult)syscall(SyscallType::CreateProcess, (size_t)&parameters, 0)) {
+                                        case CreateProcessResult::Success: break;
+
+                                        case CreateProcessResult::OutOfMemory: {
+                                            printf("Error: Unable to create test app process: Out of memory\n");
+                                        } break;
+
+                                        case CreateProcessResult::InvalidMemoryRange: {
+                                            printf("Error: Unable to create test app process: Invalid memory range for ELF binary or data\n");
+                                        } break;
+
+                                        case CreateProcessResult::InvalidELF: {
+                                            printf("Error: Unable to create test app process: Invalid ELF binary\n");
+                                        } break;
+                                    }
+                                }
+                            } else {
+                                if(key_state && is_mouse_button) {
+                                    auto any_windows = false;
+                                    size_t highest_window_z_index;
+                                    Window *highest_intersecting_window = nullptr;
+                                    for(auto window : windows) {
+                                        if(!any_windows || window->z_index > highest_window_z_index) {
+                                            highest_window_z_index = window->z_index;
+                                            any_windows = true;
+                                        }
+
+                                        if(
+                                            cursor_x >= window->x && cursor_y >= window->y &&
+                                            cursor_x < window->x + window->width && cursor_y < window->y + window->height + window_title_height
+                                        ) {
+                                            if(highest_intersecting_window == nullptr || window->z_index > highest_intersecting_window->z_index) {
+                                                highest_intersecting_window = window;
+                                            }
+                                        }
+                                    }
+
+                                    if(!any_windows || highest_intersecting_window != focused_window) {
+                                        if(focused_window != nullptr) {
+                                            if(resizing_focused_window) {
+                                                send_size_changed_event(focused_window);
+
+                                                resizing_focused_window = false;
+                                            }
+
+                                            dragging_focused_window = false;
+
+                                            send_focus_lost_event(focused_window);
+                                        }
+
+                                        focused_window = highest_intersecting_window;
                                     }
 
                                     if(
-                                        cursor_x >= window->x && cursor_y >= window->y &&
-                                        cursor_x < window->x + window->width && cursor_y < window->y + window->height + window_title_height
+                                        any_windows &&
+                                        highest_intersecting_window != nullptr &&
+                                        highest_intersecting_window->z_index != highest_window_z_index
                                     ) {
-                                        if(highest_intersecting_window == nullptr || window->z_index > highest_intersecting_window->z_index) {
-                                            highest_intersecting_window = window;
-                                        }
+                                        highest_intersecting_window->z_index = highest_window_z_index + 1;
                                     }
                                 }
 
-                                if(!any_windows || highest_intersecting_window != focused_window) {
-                                    if(focused_window != nullptr) {
-                                        if(resizing_focused_window) {
-                                            send_size_changed_event(focused_window);
+                                intptr_t resize_region_size = 8;
 
-                                            resizing_focused_window = false;
-                                        }
+                                if(focused_window != nullptr) {
+                                    auto ring = focused_window->client_process->ring;
 
-                                        dragging_focused_window = false;
-
-                                        send_focus_lost_event(focused_window);
-                                    }
-
-                                    focused_window = highest_intersecting_window;
-                                }
-
-                                if(
-                                    any_windows &&
-                                    highest_intersecting_window != nullptr &&
-                                    highest_intersecting_window->z_index != highest_window_z_index
-                                ) {
-                                    highest_intersecting_window->z_index = highest_window_z_index + 1;
-                                }
-                            }
-
-                            intptr_t resize_region_size = 8;
-
-                            if(focused_window != nullptr) {
-                                auto ring = focused_window->client_process->ring;
-
-                                auto forward_event = true;
-                                if(is_mouse_button) {
-                                    if(!focused_window->maximized && cursor_x < focused_window->x + resize_region_size) {
-                                        if(event->code == 0x110) { // BTN_LEFT
-                                            if(key_state) {
-                                                resizing_focused_window = true;
-                                                resizing_side = WindowSide::Left;
-
-                                                forward_event = false;
-                                            } else {
-                                                if(resizing_focused_window) {
-                                                    send_size_changed_event(focused_window);
-
-                                                    resizing_focused_window = false;
-                                                }
-                                            }
-                                        }
-                                    } else if(!focused_window->maximized && cursor_y < focused_window->y + resize_region_size) {
-                                        if(event->code == 0x110) { // BTN_LEFT
-                                            if(key_state) {
-                                                resizing_focused_window = true;
-                                                resizing_side = WindowSide::Top;
-
-                                                forward_event = false;
-                                            } else {
-                                                if(resizing_focused_window) {
-                                                    send_size_changed_event(focused_window);
-
-                                                    resizing_focused_window = false;
-                                                }
-                                            }
-                                        }
-                                    } else if(!focused_window->maximized && cursor_x >= focused_window->x + focused_window->width - resize_region_size) {
-                                        if(event->code == 0x110) { // BTN_LEFT
-                                            if(key_state) {
-                                                resizing_focused_window = true;
-                                                resizing_side = WindowSide::Right;
-
-                                                forward_event = false;
-                                            } else {
-                                                if(resizing_focused_window) {
-                                                    send_size_changed_event(focused_window);
-
-                                                    resizing_focused_window = false;
-                                                }
-                                            }
-                                        }
-                                    } else if(!focused_window->maximized && cursor_y >= focused_window->y + focused_window->height + window_title_height - resize_region_size) {
-                                        if(event->code == 0x110) { // BTN_LEFT
-                                            if(key_state) {
-                                                resizing_focused_window = true;
-                                                resizing_side = WindowSide::Bottom;
-
-                                                forward_event = false;
-                                            } else {
-                                                if(resizing_focused_window) {
-                                                    send_size_changed_event(focused_window);
-
-                                                    resizing_focused_window = false;
-                                                }
-                                            }
-                                        }
-                                    } else if(cursor_y < focused_window->y + window_title_height) {
-                                        if(event->code == 0x110) { // BTN_LEFT
-                                            if(cursor_x > focused_window->x + focused_window->width - window_title_height) {
-                                                if(key_state && ring->read_head != ring->write_head) {
-                                                    auto entry = &ring->entries[ring->write_head];
-
-                                                    entry->window_id = focused_window->id;
-
-                                                    entry->type = CompositorEventType::CloseRequested;
-
-                                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
-                                                }
-                                            } else if(cursor_x > focused_window->x + focused_window->width - window_title_height * 2) {
+                                    auto forward_event = true;
+                                    if(is_mouse_button) {
+                                        if(!focused_window->maximized && cursor_x < focused_window->x + resize_region_size) {
+                                            if(event->code == 0x110) { // BTN_LEFT
                                                 if(key_state) {
-                                                    if(focused_window->maximized) {
-                                                        focused_window->maximized = false;
-                                                        focused_window->x = focused_window->pre_maximized_x;
-                                                        focused_window->y = focused_window->pre_maximized_y;
-                                                        focused_window->width = focused_window->pre_maximized_width;
-                                                        focused_window->height = focused_window->pre_maximized_height;
-                                                    } else {
-                                                        focused_window->maximized = true;
-                                                        focused_window->pre_maximized_x = focused_window->x;
-                                                        focused_window->pre_maximized_y = focused_window->y;
-                                                        focused_window->pre_maximized_width = focused_window->width;
-                                                        focused_window->pre_maximized_height = focused_window->height;
-                                                        focused_window->x = 0;
-                                                        focused_window->y = 0;
-                                                        focused_window->width = display_width;
-                                                        focused_window->height = display_height;
-                                                    }
+                                                    resizing_focused_window = true;
+                                                    resizing_side = WindowSide::Left;
 
-                                                    send_size_changed_event(focused_window);
-                                                }
-                                            } else {
-                                                if(key_state) {
-                                                    dragging_focused_window = true;
+                                                    forward_event = false;
                                                 } else {
-                                                    dragging_focused_window = false;
+                                                    if(resizing_focused_window) {
+                                                        send_size_changed_event(focused_window);
 
-                                                    if(cursor_y == 0) {
-                                                        focused_window->maximized = true;
-                                                        focused_window->pre_maximized_x = focused_window->x;
-                                                        focused_window->pre_maximized_y = focused_window->y;
-                                                        focused_window->pre_maximized_width = focused_window->width;
-                                                        focused_window->pre_maximized_height = focused_window->height;
-                                                        focused_window->x = 0;
-                                                        focused_window->y = 0;
-                                                        focused_window->width = display_width;
-                                                        focused_window->height = display_height;
+                                                        resizing_focused_window = false;
+                                                    }
+                                                }
+                                            }
+                                        } else if(!focused_window->maximized && cursor_y < focused_window->y + resize_region_size) {
+                                            if(event->code == 0x110) { // BTN_LEFT
+                                                if(key_state) {
+                                                    resizing_focused_window = true;
+                                                    resizing_side = WindowSide::Top;
+
+                                                    forward_event = false;
+                                                } else {
+                                                    if(resizing_focused_window) {
+                                                        send_size_changed_event(focused_window);
+
+                                                        resizing_focused_window = false;
+                                                    }
+                                                }
+                                            }
+                                        } else if(!focused_window->maximized && cursor_x >= focused_window->x + focused_window->width - resize_region_size) {
+                                            if(event->code == 0x110) { // BTN_LEFT
+                                                if(key_state) {
+                                                    resizing_focused_window = true;
+                                                    resizing_side = WindowSide::Right;
+
+                                                    forward_event = false;
+                                                } else {
+                                                    if(resizing_focused_window) {
+                                                        send_size_changed_event(focused_window);
+
+                                                        resizing_focused_window = false;
+                                                    }
+                                                }
+                                            }
+                                        } else if(!focused_window->maximized && cursor_y >= focused_window->y + focused_window->height + window_title_height - resize_region_size) {
+                                            if(event->code == 0x110) { // BTN_LEFT
+                                                if(key_state) {
+                                                    resizing_focused_window = true;
+                                                    resizing_side = WindowSide::Bottom;
+
+                                                    forward_event = false;
+                                                } else {
+                                                    if(resizing_focused_window) {
+                                                        send_size_changed_event(focused_window);
+
+                                                        resizing_focused_window = false;
+                                                    }
+                                                }
+                                            }
+                                        } else if(cursor_y < focused_window->y + window_title_height) {
+                                            if(event->code == 0x110) { // BTN_LEFT
+                                                if(cursor_x > focused_window->x + focused_window->width - window_title_height) {
+                                                    if(key_state && ring->read_head != ring->write_head) {
+                                                        auto entry = &ring->entries[ring->write_head];
+
+                                                        entry->window_id = focused_window->id;
+
+                                                        entry->type = CompositorEventType::CloseRequested;
+
+                                                        ring->write_head = (ring->write_head + 1) % compositor_ring_length;
+                                                    }
+                                                } else if(cursor_x > focused_window->x + focused_window->width - window_title_height * 2) {
+                                                    if(key_state) {
+                                                        if(focused_window->maximized) {
+                                                            focused_window->maximized = false;
+                                                            focused_window->x = focused_window->pre_maximized_x;
+                                                            focused_window->y = focused_window->pre_maximized_y;
+                                                            focused_window->width = focused_window->pre_maximized_width;
+                                                            focused_window->height = focused_window->pre_maximized_height;
+                                                        } else {
+                                                            focused_window->maximized = true;
+                                                            focused_window->pre_maximized_x = focused_window->x;
+                                                            focused_window->pre_maximized_y = focused_window->y;
+                                                            focused_window->pre_maximized_width = focused_window->width;
+                                                            focused_window->pre_maximized_height = focused_window->height;
+                                                            focused_window->x = 0;
+                                                            focused_window->y = 0;
+                                                            focused_window->width = display_width;
+                                                            focused_window->height = display_height;
+                                                        }
 
                                                         send_size_changed_event(focused_window);
                                                     }
+                                                } else {
+                                                    if(key_state) {
+                                                        dragging_focused_window = true;
+                                                    } else {
+                                                        dragging_focused_window = false;
+
+                                                        if(cursor_y == 0) {
+                                                            focused_window->maximized = true;
+                                                            focused_window->pre_maximized_x = focused_window->x;
+                                                            focused_window->pre_maximized_y = focused_window->y;
+                                                            focused_window->pre_maximized_width = focused_window->width;
+                                                            focused_window->pre_maximized_height = focused_window->height;
+                                                            focused_window->x = 0;
+                                                            focused_window->y = 0;
+                                                            focused_window->width = display_width;
+                                                            focused_window->height = display_height;
+
+                                                            send_size_changed_event(focused_window);
+                                                        }
+                                                    }
                                                 }
                                             }
+
+                                            forward_event = false;
+                                        }
+                                    }
+
+                                    if(forward_event && ring->read_head != ring->write_head) {
+                                        auto entry = &ring->entries[ring->write_head];
+
+                                        entry->window_id = focused_window->id;
+
+                                        if(key_state) {
+                                            entry->type = CompositorEventType::KeyDown;
+                                            entry->key_down.scancode = event->code;
+                                        } else {
+                                            entry->type = CompositorEventType::KeyUp;
+                                            entry->key_down.scancode = event->code;
                                         }
 
-                                        forward_event = false;
+                                        ring->write_head = (ring->write_head + 1) % compositor_ring_length;
                                     }
-                                }
-
-                                if(forward_event && ring->read_head != ring->write_head) {
-                                    auto entry = &ring->entries[ring->write_head];
-
-                                    entry->window_id = focused_window->id;
-
-                                    if(key_state) {
-                                        entry->type = CompositorEventType::KeyDown;
-                                        entry->key_down.scancode = event->code;
-                                    } else {
-                                        entry->type = CompositorEventType::KeyUp;
-                                        entry->key_down.scancode = event->code;
-                                    }
-
-                                    ring->write_head = (ring->write_head + 1) % compositor_ring_length;
                                 }
                             }
                         } break;
@@ -1287,6 +1291,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             }
         }
 
+        Framebuffer display_framebuffer {
+            display_width, display_height,
+            display_framebuffer_address
+        };
+
         for(size_t y = 0; y < display_height; y += 1) {
             auto background_y = y % background_bitmap_size;
 
@@ -1331,12 +1340,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 title_bar_color = 0xCCCCCC;
             }
 
-            draw_rectangle(
+            fill_rectangle(
                 next_window->x, next_window->y,
                 next_window->width, window_title_height,
                 title_bar_color,
-                display_width, display_height,
-                display_framebuffer_address
+                display_framebuffer
             );
 
             uint32_t exit_button_color;
@@ -1346,12 +1354,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 exit_button_color = 0x0000CC;
             }
 
-            draw_rectangle(
+            fill_rectangle(
                 next_window->x + next_window->width - window_title_height, next_window->y,
                 window_title_height, window_title_height,
                 exit_button_color,
-                display_width, display_height,
-                display_framebuffer_address
+                display_framebuffer
             );
 
             uint32_t maximize_button_color;
@@ -1361,12 +1368,11 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                 maximize_button_color = 0xAAAAAA;
             }
 
-            draw_rectangle(
+            fill_rectangle(
                 next_window->x + next_window->width - window_title_height * 2, next_window->y,
                 window_title_height, window_title_height,
                 maximize_button_color,
-                display_width, display_height,
-                display_framebuffer_address
+                display_framebuffer
             );
 
             auto framebuffer_size = next_window->framebuffer_width * next_window->framebuffer_height * 4;
@@ -1408,38 +1414,48 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             auto border_size = 2;
             uint32_t border_color = 0;
 
-            draw_rectangle(
+            fill_rectangle(
                 next_window->x - border_size, next_window->y - border_size,
                 next_window->width + border_size * 2, border_size,
                 border_color,
-                display_width, display_height,
-                display_framebuffer_address
+                display_framebuffer
             );
 
-            draw_rectangle(
+            fill_rectangle(
                 next_window->x - border_size, next_window->y + next_window->height + window_title_height,
                 next_window->width + border_size * 2, border_size,
                 border_color,
-                display_width, display_height,
-                display_framebuffer_address
+                display_framebuffer
             );
 
-            draw_rectangle(
+            fill_rectangle(
                 next_window->x - border_size, next_window->y - border_size,
                 border_size, next_window->height + window_title_height + border_size * 2,
                 border_color,
-                display_width, display_height,
-                display_framebuffer_address
+                display_framebuffer
             );
 
-            draw_rectangle(
+            fill_rectangle(
                 next_window->x + next_window->width, next_window->y - border_size,
                 border_size, next_window->height + window_title_height + border_size * 2,
                 border_color,
-                display_width, display_height,
-                display_framebuffer_address
+                display_framebuffer
             );
         }
+
+        fill_rectangle(
+            0, display_height - app_launch_bar_size,
+            display_width, app_launch_bar_size,
+            0xCCCCCC,
+            display_framebuffer
+        );
+
+        fill_rectangle(
+            0, display_height - app_launch_bar_size,
+            app_launch_bar_size, app_launch_bar_size,
+            0xFFFFFF,
+            display_framebuffer
+        );
 
         for(size_t y = 0; y < cursor_bitmap_size; y += 1) {
             for(size_t x = 0; x < cursor_bitmap_size; x += 1) {
