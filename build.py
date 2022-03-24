@@ -7,8 +7,14 @@ import subprocess
 import concurrent.futures
 import shutil
 import argparse
+import signal
 
 start_time = time.time()
+
+def escape_handler(signum, frame):
+    exit(1)
+
+signal.signal(signal.SIGINT, escape_handler)
 
 def run_command(executable, *arguments):
     subprocess.call([executable, *arguments], stdout=sys.stdout, stderr=sys.stderr)
