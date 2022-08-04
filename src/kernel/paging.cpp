@@ -234,6 +234,14 @@ static bool map_and_maybe_allocate_table(
 
         memset(*current_table, 0, sizeof(PageTableEntry[page_table_length]));
 
+#ifndef OPTIMIZED
+        if(parent_table[parent_index].present) {
+            printf("FATAL ERROR: Trying to map already mapped page table entry. Entry index is 0x%zX\n", parent_index);
+
+            halt();
+        }
+#endif
+
         parent_table[parent_index].present = true;
         parent_table[parent_index].write_allowed = true;
         parent_table[parent_index].user_mode_allowed = true;
@@ -743,6 +751,14 @@ static bool maybe_allocate_kernel_tables(
             return false;
         }
 
+#ifndef OPTIMIZED
+        if(pml4_table[pml4_index].present) {
+            printf("FATAL ERROR: Trying to map already mapped pml4 table entry. Entry index is 0x%zX\n", pml4_index);
+
+            halt();
+        }
+#endif
+
         pml4_table[pml4_index].present = true;
         pml4_table[pml4_index].write_allowed = true;
         pml4_table[pml4_index].user_mode_allowed = true;
@@ -775,6 +791,14 @@ static bool maybe_allocate_kernel_tables(
             return false;
         }
 
+#ifndef OPTIMIZED
+        if(pdp_table[pdp_index].present) {
+            printf("FATAL ERROR: Trying to map already mapped pdp table entry. Entry index is 0x%zX\n", pdp_index);
+
+            halt();
+        }
+#endif
+
         pdp_table[pdp_index].present = true;
         pdp_table[pdp_index].write_allowed = true;
         pdp_table[pdp_index].user_mode_allowed = true;
@@ -806,6 +830,14 @@ static bool maybe_allocate_kernel_tables(
         )) {
             return false;
         }
+
+#ifndef OPTIMIZED
+        if(pd_table[pd_index].present) {
+            printf("FATAL ERROR: Trying to map already mapped pd table entry. Entry index is 0x%zX\n", pd_index);
+
+            halt();
+        }
+#endif
 
         pd_table[pd_index].present = true;
         pd_table[pd_index].write_allowed = true;
@@ -868,6 +900,14 @@ bool map_pages(
 
         auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
 
+#ifndef OPTIMIZED
+        if(page_table[page_index].present) {
+            printf("FATAL ERROR: Trying to map already mapped page. Page index is 0x%zX\n", *logical_pages_start + relative_page_index);
+
+            halt();
+        }
+#endif
+
         page_table[page_index].present = true;
         page_table[page_index].write_allowed = true;
         page_table[page_index].page_address = physical_pages_start + relative_page_index;
@@ -907,6 +947,14 @@ void unmap_pages(
         pml4_index %= page_table_length;
 
         auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
+
+#ifndef OPTIMIZED
+        if(!page_table[page_index].present) {
+            printf("FATAL ERROR: Trying to unmap already unmapped page. Page index is 0x%zX\n", logical_pages_start + relative_page_index);
+
+            halt();
+        }
+#endif
 
         page_table[page_index].present = false;
 
@@ -978,6 +1026,14 @@ bool map_and_allocate_pages(
 
             return false;
         }
+
+#ifndef OPTIMIZED
+        if(page_table[page_index].present) {
+            printf("FATAL ERROR: Trying to map already mapped page. Page index is 0x%zX\n", *logical_pages_start + relative_page_index);
+
+            halt();
+        }
+#endif
 
         page_table[page_index].present = true;
         page_table[page_index].write_allowed = true;
@@ -1071,6 +1127,14 @@ void unmap_and_deallocate_pages(
         auto bitmap_sub_bit_index = page_address % 8;
 
         bitmap[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
+
+#ifndef OPTIMIZED
+        if(!page_table[page_index].present) {
+            printf("FATAL ERROR: Trying to unmap already unmapped page. Page index is 0x%zX\n", logical_pages_start + relative_page_index);
+
+            halt();
+        }
+#endif
 
         page_table[page_index].present = false;
 
@@ -1393,6 +1457,14 @@ bool map_pages(
 
         auto page = &walker.page_table[walker.page_index];
 
+#ifndef OPTIMIZED
+        if(page->present) {
+            printf("FATAL ERROR: Trying to map already mapped page. Page index is 0x%zX\n", walker.absolute_page_index);
+
+            halt();
+        }
+#endif
+
         page->present = true;
         page->write_allowed = permissions & PagePermissions::Write;
         page->execute_disable = !(permissions & PagePermissions::Execute);
@@ -1464,6 +1536,20 @@ bool map_pages_from_kernel(
 
         auto user_page = &walker.page_table[walker.page_index];
 
+#ifndef OPTIMIZED
+        if(user_page->present) {
+            printf("FATAL ERROR: Trying to map already mapped page. Page index is 0x%zX\n", walker.absolute_page_index);
+
+            halt();
+        }
+
+        if(!kernel_page_table[kernel_page_index].present) {
+            printf("FATAL ERROR: Trying to reference unmapped page. Page index is 0x%zX\n", kernel_logical_pages_start + relative_page_index);
+
+            halt();
+        }
+#endif
+
         user_page->present = true;
         user_page->write_allowed = permissions & PagePermissions::Write;
         user_page->execute_disable = !(permissions & PagePermissions::Execute);
@@ -1526,6 +1612,14 @@ bool map_pages_from_user(
 
         auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
 
+#ifndef OPTIMIZED
+        if(page_table[page_index].present) {
+            printf("FATAL ERROR: Trying to map already mapped page. Page index is 0x%zX\n", absolute_page_index);
+
+            halt();
+        }
+#endif
+
         page_table[page_index].present = true;
     }
 
@@ -1558,6 +1652,14 @@ bool map_pages_from_user(
         }
 
         auto kernel_page_table = get_page_table_pointer(kernel_pml4_index, kernel_pdp_index, kernel_pd_index);
+
+#ifndef OPTIMIZED
+        if(!walker.page_table[walker.page_index].present) {
+            printf("FATAL ERROR: Trying to reference unmapped page. Page index is 0x%zX\n", walker.absolute_page_index);
+
+            halt();
+        }
+#endif
 
         kernel_page_table[kernel_page_index].write_allowed = true;
         kernel_page_table[kernel_page_index].user_mode_allowed = false;
@@ -1628,6 +1730,20 @@ bool map_pages_between_user(
         auto from_page = &from_walker.page_table[from_walker.page_index];
         auto to_page = &to_walker.page_table[to_walker.page_index];
 
+#ifndef OPTIMIZED
+        if(to_page->present) {
+            printf("FATAL ERROR: Trying to map already mapped page. Page index is 0x%zX\n", to_walker.absolute_page_index);
+
+            halt();
+        }
+
+        if(!from_page->present) {
+            printf("FATAL ERROR: Trying to reference unmapped page. Page index is 0x%zX\n", from_walker.absolute_page_index);
+
+            halt();
+        }
+#endif
+
         to_page->present = true;
         to_page->write_allowed = permissions & PagePermissions::Write;
         to_page->execute_disable = !(permissions & PagePermissions::Execute);
@@ -1682,6 +1798,14 @@ bool unmap_pages(
         }
 
         auto page = &walker.page_table[walker.page_index];
+
+#ifndef OPTIMIZED
+        if(!page->present) {
+            printf("FATAL ERROR: Trying to unmap already unmapped page. Page index is 0x%zX\n", walker.absolute_page_index);
+
+            halt();
+        }
+#endif
 
         page->present = false;
 
