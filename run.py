@@ -17,15 +17,21 @@ cpu_count = os.cpu_count()
 if cpu_count == None:
     cpu_count = 2
 
+qemu_path = shutil.which('qemu-system-x86_64')
+qemu_directory = os.path.dirname(qemu_path)
+
+uefi_firmware_path = os.path.join(qemu_directory, 'edk2-x86_64-code.fd')
+
 run_command(
     shutil.which('qemu-system-x86_64'),
     '-monitor', 'stdio',
     '-machine', 'q35',
-    '-smp', str(cpu_count),
+    '-smp', '1',
     '-m', '4G',
     '-vga', 'virtio',
     '-device', 'virtio-keyboard',
     '-device', 'virtio-mouse',
-    '-kernel', os.path.join(build_directory, 'kernel32.elf'),
+    '-drive', 'if=pflash,format=raw,unit=0,readonly,file={}'.format(uefi_firmware_path),
+    '-kernel', os.path.join(build_directory, 'BOOTX64.EFI'),
     *sys.argv[1:]
 )

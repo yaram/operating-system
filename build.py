@@ -66,6 +66,7 @@ def build_objects(objects, target, name, *extra_arguments):
                 '-std=gnu++11' if is_cpp else '-std=gnu11',
                 '-ffreestanding',
                 '-Wall',
+                '-fshort-wchar',
                 *extra_arguments,
                 '-c',
                 '-o', os.path.join(sub_object_directory, object_name),
@@ -74,9 +75,6 @@ def build_objects(objects, target, name, *extra_arguments):
 
 def build_objects_64bit(objects, name, *extra_arguments):
     build_objects(objects, 'x86_64-unknown-unknown-elf', name, *extra_arguments)
-
-def build_objects_32bit(objects, name, *extra_arguments):
-    build_objects(objects, 'i686-unknown-unknown-elf', name, *extra_arguments)
 
 def build_objects_16bit(objects, name, *extra_arguments):
     build_objects(objects, 'i686-unknown-unknown-code16', name, *extra_arguments)
@@ -94,6 +92,7 @@ user_source_directory = os.path.join(source_directory, 'user')
 acpica_directory = os.path.join(thirdparty_directory, 'acpica')
 printf_directory = os.path.join(thirdparty_directory, 'printf')
 openlibm_directory = os.path.join(thirdparty_directory, 'openlibm')
+edk2_directory = os.path.join(thirdparty_directory, 'edk2')
 
 acpica_archive = os.path.join(build_directory, 'acpica.a')
 
@@ -333,7 +332,7 @@ do_linking(
 )
 
 objects_multiprocessor = [
-    (os.path.join(source_directory, 'kernel64', 'multiprocessor.S'), 'multiprocessor.o')
+    (os.path.join(source_directory, 'kernel', 'multiprocessor.S'), 'multiprocessor.o')
 ]
 
 build_objects_16bit(
@@ -351,7 +350,7 @@ do_linking(
     objects_multiprocessor,
     'multiprocessor',
     '-e', 'entry',
-    '-T', os.path.join(source_directory, 'kernel64', 'multiprocessor.ld')
+    '-T', os.path.join(source_directory, 'kernel', 'multiprocessor.ld')
 )
 
 run_command(
@@ -364,24 +363,24 @@ run_command(
     os.path.join(build_directory, 'multiprocessor.bin')
 )
 
-objects_kernel64 = [
-    (os.path.join(source_directory, 'kernel64', 'static_init.S'), 'static_init.o'),
-    (os.path.join(source_directory, 'kernel64', 'entry.S'), 'entry.o'),
-    (os.path.join(source_directory, 'kernel64', 'syscall.S'), 'syscall.o'),
-    (os.path.join(source_directory, 'kernel64', 'preempt.S'), 'preempt.o'),
-    (os.path.join(source_directory, 'kernel64', 'interrupts.S'), 'interrupts.o'),
-    (os.path.join(source_directory, 'kernel64', 'main.cpp'), 'main.o'),
-    (os.path.join(source_directory, 'kernel64', 'process.cpp'), 'process.o'),
-    (os.path.join(source_directory, 'kernel64', 'console.cpp'), 'console.o'),
-    (os.path.join(source_directory, 'kernel64', 'paging.cpp'), 'paging.o'),
-    (os.path.join(source_directory, 'kernel64', 'io.cpp'), 'io.o'),
-    (os.path.join(source_directory, 'kernel64', 'acpi_environment.cpp'), 'acpi_environment.o'),
+objects_kernel = [
+    (os.path.join(source_directory, 'kernel', 'static_init.S'), 'static_init.o'),
+    (os.path.join(source_directory, 'kernel', 'embed.S'), 'embed.o'),
+    (os.path.join(source_directory, 'kernel', 'syscall.S'), 'syscall.o'),
+    (os.path.join(source_directory, 'kernel', 'preempt.S'), 'preempt.o'),
+    (os.path.join(source_directory, 'kernel', 'interrupts.S'), 'interrupts.o'),
+    (os.path.join(source_directory, 'kernel', 'main.cpp'), 'main.o'),
+    (os.path.join(source_directory, 'kernel', 'process.cpp'), 'process.o'),
+    (os.path.join(source_directory, 'kernel', 'console.cpp'), 'console.o'),
+    (os.path.join(source_directory, 'kernel', 'paging.cpp'), 'paging.o'),
+    (os.path.join(source_directory, 'kernel', 'io.cpp'), 'io.o'),
+    (os.path.join(source_directory, 'kernel', 'acpi_environment.cpp'), 'acpi_environment.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o')
 ]
 
 build_objects_64bit(
-    objects_kernel64,
-    'kernel64',
+    objects_kernel,
+    'kernel',
     '-I{}'.format(os.path.join(source_directory, 'shared')),
     '-I{}'.format(os.path.join(acpica_directory, 'include')),
     '-I{}'.format(os.path.join(printf_directory)),
@@ -394,10 +393,10 @@ build_objects_64bit(
 )
 
 do_linking(
-    objects_kernel64,
-    'kernel64',
-    '-e', 'entry',
-    '-T', os.path.join(source_directory, 'kernel64', 'linker.ld'),
+    objects_kernel,
+    'kernel',
+    '-e', 'main',
+    '-T', os.path.join(source_directory, 'kernel', 'linker.ld'),
     acpica_archive
 )
 
@@ -408,18 +407,24 @@ run_command(
     '--only-section', '.data',
     '--only-section', '.rodata',
     '--only-section', '.eh_frame',
-    os.path.join(build_directory, 'kernel64.elf'),
-    os.path.join(build_directory, 'kernel64.bin')
+    os.path.join(build_directory, 'kernel.elf'),
+    os.path.join(build_directory, 'kernel.bin')
 )
 
-objects_kernel32 = [
-    (os.path.join(source_directory, 'kernel32', 'entry.S'), 'entry.o'),
-    (os.path.join(source_directory, 'kernel32', 'multiboot.S'), 'multiboot.o'),
+objects_uefi = [
+    (os.path.join(source_directory, 'uefi_bootloader', 'main.cpp'), 'main.obj'),
+    (os.path.join(source_directory, 'uefi_bootloader', 'embed.S'), 'embed.obj'),
+    (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
 ]
 
-build_objects_32bit(
-    objects_kernel32,
-    'kernel32',
+build_objects(
+    objects_uefi,
+    'x86_64-unknown-windows',
+    'uefi_bootloader',
+    '-I{}'.format(os.path.join(source_directory, 'kernel')),
+    '-I{}'.format(os.path.join(edk2_directory, 'MdePkg', 'Include')),
+    '-I{}'.format(os.path.join(edk2_directory, 'MdePkg', 'Include', 'X64')),
+    '-I{}'.format(os.path.join(printf_directory)),
     '-mcmodel=kernel',
     '-fno-stack-protector',
     '-mno-red-zone',
@@ -428,11 +433,13 @@ build_objects_32bit(
     '-mno-sse2'
 )
 
-do_linking(
-    objects_kernel32,
-    'kernel32',
-    '-e', 'entry',
-    '-T', os.path.join(source_directory, 'kernel32', 'linker.ld'),
+run_command(
+    shutil.which('lld-link'),
+    '-entry:efi_main',
+    '-subsystem:efi_application',
+    '-base:0x800000',
+    '-out:{}'.format(os.path.join(build_directory, 'BOOTX64.EFI')),
+    *[os.path.join(object_directory, 'uefi_bootloader', object_name) for _, object_name in objects_uefi]
 )
 
 end_time = time.time()
