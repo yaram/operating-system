@@ -956,7 +956,11 @@ void unmap_pages(
         }
 #endif
 
+#ifdef NO_PAGE_REUSE
+        page_table[page_index].page_address = 0x7FFFFFFFFF; // Force a page fault on access
+#else
         page_table[page_index].present = false;
+#endif
 
         asm volatile(
             "invlpg (%0)"
@@ -1121,13 +1125,6 @@ void unmap_and_deallocate_pages(
 
         auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
 
-        auto page_address = page_table[page_index].page_address;
-
-        auto bitmap_index = page_address / 8;
-        auto bitmap_sub_bit_index = page_address % 8;
-
-        bitmap[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
-
 #ifndef OPTIMIZED
         if(!page_table[page_index].present) {
             printf("FATAL ERROR: Trying to unmap already unmapped page. Page index is 0x%zX\n", logical_pages_start + relative_page_index);
@@ -1136,7 +1133,18 @@ void unmap_and_deallocate_pages(
         }
 #endif
 
+#ifdef NO_PAGE_REUSE
+        page_table[page_index].page_address = 0x7FFFFFFFFF; // Force a page fault on access
+#else
+        auto page_address = page_table[page_index].page_address;
+
+        auto bitmap_index = page_address / 8;
+        auto bitmap_sub_bit_index = page_address % 8;
+
+        bitmap[bitmap_index] &= ~(1 << bitmap_sub_bit_index);
+
         page_table[page_index].present = false;
+#endif
 
         asm volatile(
             "invlpg (%0)"
@@ -1807,6 +1815,9 @@ bool unmap_pages(
         }
 #endif
 
+#ifdef NO_PAGE_REUSE
+        page->page_address = 0x7FFFFFFFFF; // Force a page fault on access
+#else
         page->present = false;
 
         if(deallocate) {
@@ -1817,6 +1828,7 @@ bool unmap_pages(
 
             bitmap[byte_index] &= ~(1 << sub_byte_index);
         }
+#endif
     }
 
     unmap_page_walker(&walker, !lock);
