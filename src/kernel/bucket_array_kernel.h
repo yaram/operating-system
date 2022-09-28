@@ -22,7 +22,7 @@ static T *allocate_from_bucket_array(
                 return nullptr;
             }
 
-            *new_bucket = Bucket<T, N>{};
+            memset(new_bucket, 0, sizeof(Bucket<T, N>)); // Need to memset instead of assigning to Bucket<T, N>{} for stack size reasons
 
             if(is_global) {
                 send_kernel_page_tables_update_memory(new_bucket, sizeof(Bucket<T, N>));

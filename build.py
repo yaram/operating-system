@@ -389,7 +389,8 @@ build_objects_64bit(
     '-mno-red-zone',
     '-mno-mmx',
     '-mno-sse',
-    '-mno-sse2'
+    '-mno-sse2',
+    '-Wframe-larger-than=4096'
 )
 
 do_linking(
