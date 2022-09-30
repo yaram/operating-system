@@ -4,6 +4,12 @@ import sys
 import os
 import subprocess
 import shutil
+import signal
+
+def escape_handler(signum, frame):
+    exit(1)
+
+signal.signal(signal.SIGINT, escape_handler)
 
 def run_command(executable, *arguments):
     subprocess.call([executable, *arguments], stdout=sys.stdout, stderr=sys.stderr)
