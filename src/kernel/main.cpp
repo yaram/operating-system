@@ -764,7 +764,7 @@ extern "C" void syscall_thunk();
 #define bits_to_mask(bits) ((1 << (bits)) - 1)
 
 inline void clear_pages(size_t page_index, size_t page_count) {
-    memset((void*)(page_index * page_size), 0, page_count * page_size);
+    fill_memory((void*)(page_index * page_size), page_count * page_size, 0);
 }
 
 enum struct MapProcessMemoryResult {
@@ -1778,7 +1778,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
 
     auto multiprocessor_binary_size = (size_t)multiprocessor_binary_end - (size_t)multiprocessor_binary;
 
-    memcpy((void*)multiprocessor_binary_load_location, multiprocessor_binary, multiprocessor_binary_size);
+    copy_memory(multiprocessor_binary, (void*)multiprocessor_binary_load_location, multiprocessor_binary_size);
 
     asm volatile(
         "sti"
@@ -2093,7 +2093,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
                 : "D"(pdp_table)
             );
 
-            memset((void*)pdp_table, 0, sizeof(PageTableEntry[page_table_length]));
+            fill_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), 0);
         }
 
         auto pd_table = get_pd_table_pointer(pml4_index, pdp_index);
@@ -2113,7 +2113,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
                 : "D"(pd_table)
             );
 
-            memset((void*)pd_table, 0, sizeof(PageTableEntry[page_table_length]));
+            fill_memory(pd_table, sizeof(PageTableEntry[page_table_length]), 0);
         }
 
         auto page_table = get_page_table_pointer(pml4_index, pdp_index, pd_index);
@@ -2133,7 +2133,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
                 : "D"(page_table)
             );
 
-            memset((void*)page_table, 0, sizeof(PageTableEntry[page_table_length]));
+            fill_memory(page_table, sizeof(PageTableEntry[page_table_length]), 0);
         }
 
         page_table[page_index].present = true;
@@ -2163,7 +2163,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
         bitmap_page_count * page_size
     };
 
-    memset((void*)bitmap.data, 0xFF, bitmap_size);
+    fill_memory(bitmap.data, bitmap_size, 0xFF);
 
     for(size_t i = 0; i < bootstrap_memory_map.length; i += 1) {
         auto entry = &bootstrap_memory_map[i];
@@ -2235,7 +2235,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
         false
     );
 
-    memset(processor_areas, 0, processor_area_count * sizeof(ProcessorArea));
+    fill_memory(processor_areas, processor_area_count * sizeof(ProcessorArea), 0);
 
     global_processor_count = processor_count;
     global_processor_area_count = processor_area_count;
@@ -2370,28 +2370,4 @@ void deallocate(void *pointer) {
     auto size = *(size_t*)base_pointer;
 
     unmap_and_deallocate_memory(base_pointer, page_size + size, global_bitmap);
-}
-
-extern "C" void *memset(void *destination, int value, size_t count) {
-    auto temp_destination = destination;
-
-    asm volatile(
-        "rep stosb"
-        : "=D"(temp_destination), "=c"(count)
-        : "D"(temp_destination), "a"((uint8_t)value), "c"(count)
-    );
-
-    return destination;
-}
-
-extern "C" void *memcpy(void *destination, const void *source, size_t count) {
-    auto temp_destination = destination;
-
-    asm volatile(
-        "rep movsb"
-        : "=S"(source), "=D"(temp_destination), "=c"(count)
-        : "S"(source), "D"(temp_destination), "c"(count)
-    );
-
-    return destination;
 }

@@ -124,7 +124,7 @@ static bool map_and_allocate_pages_in_process_and_kernel(
 
     register_process_mapping(process, *user_pages_start, page_count, false, true, bitmap);
 
-    memset((void*)(*kernel_pages_start * page_size), 0, page_count * page_size);
+    fill_memory((void*)(*kernel_pages_start * page_size), page_count * page_size, 0);
 
     return true;
 }
@@ -282,7 +282,7 @@ CreateProcessFromELFResult create_process_from_elf(
             return CreateProcessFromELFResult::OutOfMemory;
         }
 
-        memset(pml4_table, 0, sizeof(PageTableEntry[page_table_length]));
+        fill_memory(pml4_table, sizeof(PageTableEntry[page_table_length]), 0);
 
         PageWalker walker {};
         walker.absolute_page_index = kernel_pages_start;
@@ -424,9 +424,9 @@ CreateProcessFromELFResult create_process_from_elf(
                 if(section_header->type != 8) { // SHT_NOBITS
                     auto allocation = *section_allocation_iterator;
 
-                    memcpy(
-                        (void*)(allocation->kernel_pages_start * page_size),
+                    copy_memory(
                         (void*)((size_t)elf_binary + section_header->in_file_offset),
+                        (void*)(allocation->kernel_pages_start * page_size),
                         section_header->size
                     );
                 }
@@ -661,7 +661,7 @@ CreateProcessFromELFResult create_process_from_elf(
             return CreateProcessFromELFResult::OutOfMemory;
         }
 
-        memcpy((void*)(data_kernel_pages_start * page_size), data, data_size);
+        copy_memory(data, (void*)(data_kernel_pages_start * page_size), data_size);
 
         unmap_pages(data_kernel_pages_start, data_page_count);
     }

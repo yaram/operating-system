@@ -232,7 +232,7 @@ static bool map_and_maybe_allocate_table(
         *current_table = (PageTableEntry*)(logical_page_index * page_size);
         *current_parent_index = parent_index;
 
-        memset(*current_table, 0, sizeof(PageTableEntry[page_table_length]));
+        fill_memory(*current_table, sizeof(PageTableEntry[page_table_length]), 0);
 
 #ifndef OPTIMIZED
         if(parent_table[parent_index].present) {
@@ -768,7 +768,7 @@ static bool maybe_allocate_kernel_tables(
             : "D"(pdp_table)
         );
 
-        memset((void*)pdp_table, 0, sizeof(PageTableEntry[page_table_length]));
+        fill_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), 0);
 
         if(global_all_processors_initialized) {
             send_kernel_page_tables_update((size_t)pdp_table / page_size, 1);
@@ -808,7 +808,7 @@ static bool maybe_allocate_kernel_tables(
             : "D"(pd_table)
         );
 
-        memset((void*)pd_table, 0, sizeof(PageTableEntry[page_table_length]));
+        fill_memory(pd_table, sizeof(PageTableEntry[page_table_length]), 0);
 
         if(global_all_processors_initialized) {
             send_kernel_page_tables_update((size_t)pd_table / page_size, 1);
@@ -848,7 +848,7 @@ static bool maybe_allocate_kernel_tables(
             : "D"(page_table)
         );
 
-        memset((void*)page_table, 0, sizeof(PageTableEntry[page_table_length]));
+        fill_memory(page_table, sizeof(PageTableEntry[page_table_length]), 0);
 
         if(global_all_processors_initialized) {
             send_kernel_page_tables_update((size_t)page_table / page_size, 1);

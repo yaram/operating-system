@@ -287,6 +287,7 @@ if arguments.rebuild or not os.path.exists(user_openlibm_archive):
 
 test_app_objects = [
     (os.path.join(user_source_directory, 'test_app', 'main.cpp'), 'main.o'),
+    (os.path.join(source_directory, 'shared', 'memory.cpp'), 'memory.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
 ]
 
@@ -311,6 +312,7 @@ do_linking(
 init_objects = [
     (os.path.join(user_source_directory, 'init', 'main.cpp'), 'main.o'),
     (os.path.join(user_source_directory, 'init', 'virtio.cpp'), 'virtio.o'),
+    (os.path.join(source_directory, 'shared', 'memory.cpp'), 'memory.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o'),
 ]
 
@@ -375,6 +377,7 @@ objects_kernel = [
     (os.path.join(source_directory, 'kernel', 'paging.cpp'), 'paging.o'),
     (os.path.join(source_directory, 'kernel', 'io.cpp'), 'io.o'),
     (os.path.join(source_directory, 'kernel', 'acpi_environment.cpp'), 'acpi_environment.o'),
+    (os.path.join(source_directory, 'shared', 'memory.cpp'), 'memory.o'),
     (os.path.join(printf_directory, 'printf.c'), 'printf.o')
 ]
 

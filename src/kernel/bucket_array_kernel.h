@@ -22,7 +22,9 @@ static T *allocate_from_bucket_array(
                 return nullptr;
             }
 
-            memset(new_bucket, 0, sizeof(Bucket<T, N>)); // Need to memset instead of assigning to Bucket<T, N>{} for stack size reasons
+            fill_memory(new_bucket->unavailable, sizeof(bool[N]), 0);
+            fill_memory(new_bucket->occupied, sizeof(bool[N]), 0);
+            new_bucket->next = nullptr;
 
             if(is_global) {
                 send_kernel_page_tables_update_memory(new_bucket, sizeof(Bucket<T, N>));
@@ -49,7 +51,7 @@ static T *allocate_from_bucket_array(
             continue;
         }
 
-        **iterator = {};
+        fill_memory(*iterator, sizeof(T), 0);
 
         iterator.current_bucket->occupied[iterator.current_sub_index] = true;
 

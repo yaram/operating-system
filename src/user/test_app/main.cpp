@@ -8,30 +8,7 @@
 #include "bucket_array.h"
 #include "bucket_array_user.h"
 #include "threading_user.h"
-
-extern "C" void *memset(void *destination, int value, size_t count) {
-    auto temp_destination = destination;
-
-    asm volatile(
-        "rep stosb"
-        : "=D"(temp_destination), "=c"(count)
-        : "D"(temp_destination), "a"((uint8_t)value), "c"(count)
-    );
-
-    return destination;
-}
-
-extern "C" void *memcpy(void *destination, const void *source, size_t count) {
-    auto temp_destination = destination;
-
-    asm volatile(
-        "rep movsb"
-        : "=S"(source), "=D"(temp_destination), "=c"(count)
-        : "S"(source), "D"(temp_destination), "c"(count)
-    );
-
-    return destination;
-}
+#include "memory.h"
 
 void _putchar(char character) {
     syscall(SyscallType::DebugPrint, character, 0);
@@ -571,7 +548,7 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
 
             auto background_shade = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->background_shade, 0), 1));
 
-            memset(framebuffer, background_shade, framebuffer_size);
+            fill_memory(framebuffer, framebuffer_size, background_shade);
 
             auto red = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->color.R, 0), 1));
             auto green = (uint8_t)(0xFF * HMM_MIN(HMM_MAX(window->color.G, 0), 1));

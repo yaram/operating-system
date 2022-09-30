@@ -8,33 +8,10 @@
 #include "bucket_array.h"
 #include "bucket_array_user.h"
 #include "compositor.h"
+#include "memory.h"
 
 #define min(a, b) ((a) > (b) ? (b) : (a))
 #define max(a, b) ((a) < (b) ? (b) : (a))
-
-extern "C" void *memset(void *destination, int value, size_t count) {
-    auto temp_destination = destination;
-
-    asm volatile(
-        "rep stosb"
-        : "=D"(temp_destination), "=c"(count)
-        : "D"(temp_destination), "a"((uint8_t)value), "c"(count)
-    );
-
-    return destination;
-}
-
-extern "C" void *memcpy(void *destination, const void *source, size_t count) {
-    auto temp_destination = destination;
-
-    asm volatile(
-        "rep movsb"
-        : "=S"(source), "=D"(temp_destination), "=c"(count)
-        : "S"(source), "D"(temp_destination), "c"(count)
-    );
-
-    return destination;
-}
 
 void _putchar(char character) {
     syscall(SyscallType::DebugPrint, character, 0);
@@ -1302,18 +1279,18 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
             auto x_copy_count = display_width / background_bitmap_size;
 
             for(size_t x_index = 0; x_index < x_copy_count; x_index += 1) {
-                memcpy(
-                    (void*)(display_framebuffer_address + (y * display_width + x_index * background_bitmap_size) * 4),
+                copy_memory(
                     &background_bitmap[background_y * background_bitmap_size],
+                    (void*)(display_framebuffer_address + (y * display_width + x_index * background_bitmap_size) * 4),
                     background_bitmap_size * 4
                 );
             }
 
             auto x_left = display_width % background_bitmap_size;
 
-            memcpy(
-                (void*)(display_framebuffer_address + (y * display_width + x_copy_count * background_bitmap_size) * 4),
+            copy_memory(
                 &background_bitmap[background_y * background_bitmap_size],
+                (void*)(display_framebuffer_address + (y * display_width + x_copy_count * background_bitmap_size) * 4),
                 x_left * 4
             );
         }
@@ -1402,9 +1379,9 @@ extern "C" [[noreturn]] void entry(size_t process_id, void *data, size_t data_si
                         // Aquire the current swapbuffer again for this line to prevent flickering (double buffering)
                         auto current_framebuffer_address = (size_t)next_window->framebuffers + (size_t)*next_window->swap_indicator * framebuffer_size;
 
-                        memcpy(
-                            (void*)(display_framebuffer_address + ((visible_top + y) * display_width + visible_left) * 4),
+                        copy_memory(
                             (void*)(current_framebuffer_address + ((visible_top_relative + y) * next_window->framebuffer_width + visible_left_relative) * 4),
+                            (void*)(display_framebuffer_address + ((visible_top + y) * display_width + visible_left) * 4),
                             visible_width * 4
                         );
                     }
