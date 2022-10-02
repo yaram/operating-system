@@ -30,6 +30,8 @@ uefi_firmware_path = os.path.join(qemu_directory, 'edk2-x86_64-code.fd')
 
 run_command(
     shutil.which('qemu-system-x86_64'),
+    '-no-reboot',
+    '-no-shutdown',
     '-monitor', 'stdio',
     '-machine', 'q35',
     '-smp', '1',
