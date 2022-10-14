@@ -34,7 +34,7 @@ run_command(
     '-no-shutdown',
     '-monitor', 'stdio',
     '-machine', 'q35',
-    '-smp', '1',
+    '-smp', '{}'.format(cpu_count),
     '-m', '4G',
     '-vga', 'virtio',
     '-device', 'virtio-keyboard',
