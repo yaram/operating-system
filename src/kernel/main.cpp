@@ -528,6 +528,16 @@ static __attribute__((always_inline)) void continue_in_function_return(ThreadSta
 extern "C" [[noreturn]] void exception_handler(size_t index, const ThreadStackFrame *frame) {
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
+    if(index == 0x0E) { // Page Fault
+        size_t fault_address;
+        asm volatile(
+            "mov %%cr2, %0"
+            : "=r"(fault_address)
+        );
+
+        printf(" ACCESSING %p", (void*)fault_address);
+    }
+
     if(frame->interrupt_frame.code_segment != 0x08) {
         auto user_processor_area = (ProcessorArea*)(user_processor_areas_memory_start + get_processor_id() * sizeof(ProcessorArea));
 
