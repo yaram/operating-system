@@ -1560,6 +1560,43 @@ volatile uint32_t* global_io_apic_registers;
 extern void (*init_array_start[])();
 extern void (*init_array_end[])();
 
+enum struct MSR : uint32_t {
+    IA32_APIC_BASE = 0x1B,
+    IA32_EFER = 0xC0000080,
+    IA32_STAR = 0xC0000081,
+    IA32_LSTAR = 0xC0000082,
+    IA32_FMASK = 0xC0000084,
+    IA32_KERNEL_GS_BASE = 0xC0000102
+};
+
+static inline void read_msr(MSR msr, uint32_t* low_part, uint32_t* high_part) {
+    asm volatile(
+        "rdmsr"
+        : "=a"(*low_part), "=d"(*high_part)
+        : "c"(msr)
+    );
+}
+
+static inline uint64_t read_msr(MSR msr) {
+    uint32_t low_part;
+    uint32_t high_part;
+    read_msr(msr, &low_part, &high_part);
+
+    return (uint64_t)low_part | (uint64_t)high_part << 32;
+}
+
+static inline void write_msr(MSR msr, uint32_t low_part, uint32_t high_part) {
+    asm volatile(
+        "wrmsr"
+        :
+        : "a"(low_part), "d"(high_part), "c"(msr)
+    );
+}
+
+static inline void write_msr(MSR msr, uint64_t value) {
+    write_msr(msr, (uint32_t)value, (uint32_t)(value >> 32));
+}
+
 static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable *madt_table, Array<uint8_t> bitmap) {
     auto processor_id = get_processor_id();
 
@@ -1570,11 +1607,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
     processor_area->user_address = processor_area_user_address;
 
     // Store user processor area pointer in GS for syscall entry to use with swapgs
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)processor_area_user_address), "d"((uint32_t)(processor_area_user_address >> 32)), "c"((uint32_t)0xC0000102) // IA32_KERNEL_GS_BASE MSR
-    );
+    write_msr(MSR::IA32_KERNEL_GS_BASE, processor_area_user_address);
 
     // The processor areas are mapped into each process at the same position, so each processor stack is always in the same position
 
@@ -1705,34 +1738,18 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
 
     // Set up syscall/sysret instructions
 
-    asm volatile(
-        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
-        "rdmsr\n"
-        "or $1, %%eax\n"
-        "wrmsr\n"
-        :
-        :
-        : "eax", "ecx", "edx"
-    );
+    {
+        auto value = read_msr(MSR::IA32_EFER);
+        value |= 0b1;
+        write_msr(MSR::IA32_EFER, value);
+    }
 
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)-1), "d"(0), "c"((uint32_t)0xC0000084) // IA32_FMASK MSR
-    );
+    write_msr(MSR::IA32_FMASK, -1, 0);
 
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)(size_t)syscall_thunk), "d"((uint32_t)((size_t)syscall_thunk >> 32)), "c"((uint32_t)0xC0000082) // IA32_LSTAR MSR
-    );
+    write_msr(MSR::IA32_LSTAR, (size_t)syscall_thunk);
 
-    asm volatile(
-        "wrmsr"
-        :
-        : "a"((uint32_t)0), "d"((uint32_t)0x10 << 16 | (uint32_t)0x08), "c"((uint32_t)0xC0000081) // IA32_STAR MSR
-        // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
-    );
+    // sysretq adds 16 (wtf why?) to the selector to get the code selector so 0x10 ( + 16 = 0x20) is used above...
+    write_msr(MSR::IA32_STAR, 0, (uint32_t)0x10 << 16 | (uint32_t)0x08);
 
     return processor_area;
 }
@@ -2157,16 +2174,11 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
         );
     }
 
-    // Enable execution-disable page bit
-    asm volatile(
-        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
-        "rdmsr\n"
-        "or $(1 << 11), %%eax\n"
-        "wrmsr\n"
-        :
-        :
-        : "eax", "ecx", "edx"
-    );
+    { // Enable execution-disable page bit
+        auto value = read_msr(MSR::IA32_EFER);
+        value |= 1 << 11;
+        write_msr(MSR::IA32_EFER, value);
+    }
 
     Array<uint8_t> bitmap {
         (uint8_t*)(kernel_pages_end * page_size),
@@ -2309,16 +2321,11 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
         : "al"
     );
 
-    // Enable execution-disable page bit
-    asm volatile(
-        "mov $0xC0000080, %%ecx\n" // IA32_EFER MSR
-        "rdmsr\n"
-        "or $(1 << 11), %%eax\n"
-        "wrmsr\n"
-        :
-        :
-        : "eax", "ecx", "edx"
-    );
+    { // Enable execution-disable page bit
+        auto value = read_msr(MSR::IA32_EFER);
+        value |= 1 << 11;
+        write_msr(MSR::IA32_EFER, value);
+    }
 
     asm volatile(
         "mov %0, %%cr3"
