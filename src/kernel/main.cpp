@@ -133,6 +133,70 @@ Processes global_processes {};
 
 #define unreachable() unreachable_implementation(__FILE__, __LINE__)
 
+static inline uint64_t read_cr0() {
+    uint64_t value;
+    asm volatile(
+        "mov %%cr0, %0"
+        : "=r"(value)
+    );
+
+    return value;
+}
+
+static inline void write_cr0(uint64_t value) {
+    asm volatile(
+        "mov %0, %%cr0"
+        :
+        : "r"(value)
+    );
+}
+
+static inline uint64_t read_cr2() {
+    uint64_t value;
+    asm volatile(
+        "mov %%cr2, %0"
+        : "=r"(value)
+    );
+
+    return value;
+}
+
+static inline uint64_t read_cr3() {
+    uint64_t value;
+    asm volatile(
+        "mov %%cr3, %0"
+        : "=r"(value)
+    );
+
+    return value;
+}
+
+static inline void write_cr3(uint64_t value) {
+    asm volatile(
+        "mov %0, %%cr3"
+        :
+        : "r"(value)
+    );
+}
+
+static inline uint64_t read_cr4() {
+    uint64_t value;
+    asm volatile(
+        "mov %%cr4, %0"
+        : "=r"(value)
+    );
+
+    return value;
+}
+
+static inline void write_cr4(uint64_t value) {
+    asm volatile(
+        "mov %0, %%cr4"
+        :
+        : "r"(value)
+    );
+}
+
 // APIC timer must be disabled or at 0 when this function is called, and there must be no pending APIC timer interrupts
 [[noreturn]] static void enter_next_process(
     ProcessorArea *processor_area,
@@ -316,11 +380,7 @@ Processes global_processes {};
 
 // Basically using always_inline as a type-safe macro
 static __attribute__((always_inline)) void continue_in_function_return(ThreadStackFrame *stack_frame, void (*function_continued)(ThreadStackFrame*)) {
-    size_t current_pml4_table;
-    asm volatile(
-        "mov %%cr3, %0"
-        : "=r"(current_pml4_table)
-    );
+    auto current_pml4_table = read_cr3();
 
     if(current_pml4_table == (size_t)&kernel_pml4_table) {
         function_continued(stack_frame);
@@ -433,11 +493,7 @@ static __attribute__((always_inline)) void continue_in_function_return(ThreadSta
 }
 
 [[noreturn]] static __attribute__((always_inline)) void continue_in_function(const ThreadStackFrame *stack_frame, void (*function_continued)(const ThreadStackFrame*)) {
-    size_t current_pml4_table;
-    asm volatile(
-        "mov %%cr3, %0"
-        : "=r"(current_pml4_table)
-    );
+    auto current_pml4_table = read_cr3();
 
     if(current_pml4_table == (size_t)&kernel_pml4_table) {
         function_continued(stack_frame);
@@ -529,11 +585,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ThreadStackFr
     printf("EXCEPTION 0x%X(0x%X) AT %p", index, frame->interrupt_frame.error_code, frame->interrupt_frame.instruction_pointer);
 
     if(index == 0x0E) { // Page Fault
-        size_t fault_address;
-        asm volatile(
-            "mov %%cr2, %0"
-            : "=r"(fault_address)
-        );
+        auto fault_address = read_cr2();
 
         printf(" ACCESSING %p", (void*)fault_address);
     }
@@ -631,11 +683,7 @@ void kernel_page_tables_update_handler_continued(ThreadStackFrame *frame) {
 }
 
 extern "C" void kernel_page_tables_update_handler(ThreadStackFrame *frame) {
-    size_t current_pml4_table;
-    asm volatile(
-        "mov %%cr3, %0"
-        : "=r"(current_pml4_table)
-    );
+    auto current_pml4_table = read_cr3();
 
     if(current_pml4_table == (size_t)&kernel_pml4_table) {
         for(
@@ -1857,10 +1905,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
     global_all_processors_initialized = true;
 
     // Reload TLB
-    asm volatile(
-        "mov %0, %%cr3"
-        : : "r"(&kernel_pml4_table)
-    );
+    write_cr3((size_t)&kernel_pml4_table);
 
     printf("Loading init process...\n");
 
@@ -1902,6 +1947,21 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
     enter_next_process(processor_area, global_bitmap, &global_processes);
 }
 
+static inline void enable_sse() {
+    {
+        auto value = read_cr0();
+        value |= 1 << 1;
+        value &= ~(1 << 2);
+        write_cr0(value);
+    }
+
+    {
+        auto value = read_cr4();
+        value |= 1 << 9 | 1 << 10;
+        write_cr4(value);
+    }
+}
+
 [[noreturn]] static void bootstrap_processor_entry() {
     auto bootstrap_space = (BootstrapSpace*)bootstrap_space_address;
 
@@ -1912,20 +1972,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
 
     global_acpi_table_physical_address = bootstrap_space->acpi_table_physical_address;
 
-    // Enable sse
-    asm volatile(
-        "mov %%cr0, %%rax\n"
-        "or $(1 << 1), %%rax\n"
-        "and $~(1 << 2), %%rax\n"
-        "mov %%rax, %%cr0\n"
-        "mov %%cr4, %%rax\n"
-        "or $(1 << 9), %%rax\n"
-        "or $(1 << 10), %%rax\n"
-        "mov %%rax, %%cr4"
-        :
-        :
-        : "rax"
-    );
+    enable_sse();
 
     auto initializer_count = ((size_t)init_array_end - (size_t)init_array_start) / sizeof(void (*)());
 
@@ -2025,11 +2072,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
     kernel_pml4_table[page_table_length - 1].write_allowed = true;
     kernel_pml4_table[page_table_length - 1].page_address = (size_t)kernel_pml4_table / page_size;
 
-    asm volatile(
-        "mov %0, %%cr3"
-        :
-        : "D"(&kernel_pml4_table)
-    );
+    write_cr3((size_t)&kernel_pml4_table);
 
     size_t highest_available_memory_end = 0;
     for(size_t i = 0; i < bootstrap_memory_map.length; i += 1) {
@@ -2283,20 +2326,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
 }
 
 [[noreturn]] static void additional_processor_entry() {
-    // Enable sse
-    asm volatile(
-        "mov %%cr0, %%rax\n"
-        "or $(1 << 1), %%rax\n"
-        "and $~(1 << 2), %%rax\n"
-        "mov %%rax, %%cr0\n"
-        "mov %%cr4, %%rax\n"
-        "or $(1 << 9), %%rax\n"
-        "or $(1 << 10), %%rax\n"
-        "mov %%rax, %%cr4"
-        :
-        :
-        : "rax"
-    );
+    enable_sse();
 
     asm volatile(
         // Load IDT
@@ -2316,11 +2346,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
         write_msr(MSR::IA32_EFER, value);
     }
 
-    asm volatile(
-        "mov %0, %%cr3"
-        :
-        : "D"(&kernel_pml4_table)
-    );
+    write_cr3((size_t)&kernel_pml4_table);
 
     MADTTable *madt_table;
     acpi_call(
