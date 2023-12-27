@@ -197,6 +197,18 @@ static inline void write_cr4(uint64_t value) {
     );
 }
 
+static inline void enable_interrupts() {
+    asm volatile(
+        "sti"
+    );
+}
+
+static inline void disable_interrupts() {
+    asm volatile(
+        "cli"
+    );
+}
+
 // APIC timer must be disabled or at 0 when this function is called, and there must be no pending APIC timer interrupts
 [[noreturn]] static void enter_next_process(
     ProcessorArea *processor_area,
@@ -269,9 +281,7 @@ static inline void write_cr4(uint64_t value) {
         while(true) {
             if(processor_area->current_process_iterator.current_bucket == nullptr) {
                 // Disable interrupts until stack is correctly setup for interrupt safety
-                asm volatile(
-                    "cli"
-                );
+                disable_interrupts();
 
                 // These values may not be reset under certain conditions, so reset them here while interrupts are disabled
                 processor_area->in_syscall_or_user_exception = false;
@@ -348,9 +358,7 @@ static inline void write_cr4(uint64_t value) {
     auto stack_frame_copy_user_address = stack_user_address + stack_frame_copy_relative_address;
 
     // Disable interrupts until process entry for interrupt safety
-    asm volatile(
-        "cli"
-    );
+    disable_interrupts();
 
     // These values may not be reset under certain conditions, so reset them here while interrupts are disabled
     processor_area->in_syscall_or_user_exception = false;
@@ -600,10 +608,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ThreadStackFr
         // Disable APIC timer
         user_processor_area->apic_registers->lvt_timer.value |= 1 << 16;
 
-        // Re-enable interrupts
-        asm volatile(
-            "sti"
-        );
+        enable_interrupts();
 
         user_processor_area->in_syscall_or_user_exception = false;
         user_processor_area->preempt_during_syscall_or_user_exception = false;
@@ -630,10 +635,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ThreadStackFr
         old_thread->is_resident = false;
     }
 
-    // Re-enable interrupts
-    asm volatile(
-        "sti"
-    );
+    enable_interrupts();
 
     enter_next_process(processor_area, global_bitmap, &global_processes);
 }
@@ -648,19 +650,13 @@ extern "C" void preempt_timer_handler(ThreadStackFrame *frame) {
             // Send the End of Interrupt signal
             processor_area->apic_registers->end_of_interrupt.value = 0;
         } else {
-            // Re-enable interrupts
-            asm volatile(
-                "sti"
-            );
+            enable_interrupts();
 
             // This path is only taken when the processor is idled in enter_next_process
             continue_in_function(frame, &preempt_timer_handler_continued);
         }
     } else {
-        // Re-enable interrupts
-        asm volatile(
-            "sti"
-        );
+        enable_interrupts();
 
         continue_in_function(frame, &preempt_timer_handler_continued);
     }
@@ -691,11 +687,7 @@ extern "C" void kernel_page_tables_update_handler(ThreadStackFrame *frame) {
             absolute_page_index < global_kernel_tables_update_pages_start + global_kernel_tables_update_page_count;
             absolute_page_index += 1
         ) {
-            asm volatile(
-                "invlpg (%0)"
-                :
-                : "D"(absolute_page_index * page_size)
-            );
+            invalidate_memory_page((void*)(absolute_page_index * page_size));
         }
     }
 
@@ -787,6 +779,10 @@ IDTEntry idt_entries[idt_length] {
     idt_entry_general(spurious_interrupt)
 };
 
+static void inline memory_fence() {
+    asm volatile("mfence");
+}
+
 void send_kernel_page_tables_update(size_t pages_start, size_t page_count) {
     acquire_lock(&global_kernel_tables_update_lock);
 
@@ -795,7 +791,7 @@ void send_kernel_page_tables_update(size_t pages_start, size_t page_count) {
     global_kernel_tables_update_progress = 0;
 
     // Make sure all memory writes are global
-    asm volatile("mfence");
+    memory_fence();
 
     auto processor_area = &global_processor_areas[get_processor_id()];
 
@@ -805,11 +801,11 @@ void send_kernel_page_tables_update(size_t pages_start, size_t page_count) {
 
     // Wait for delivery of the IPI
     while((processor_area->apic_registers->interrupt_command_lower.value & (1 << 12)) != 0) {
-        asm volatile("pause");
+        spinloop_pause();
     }
 
     while(global_kernel_tables_update_progress != global_processor_count - 1) {
-        asm volatile("pause");
+        spinloop_pause();
     }
 
     global_kernel_tables_update_lock = false;
@@ -877,9 +873,7 @@ void syscall_entrance_continued(ThreadStackFrame *stack_frame) {
 
     processor_area->in_syscall_or_user_exception = true;
 
-    asm volatile(
-        "sti"
-    );
+    enable_interrupts();
 
     auto process = *processor_area->current_process_iterator;
     auto thread = *processor_area->current_thread_iterator;
@@ -1236,9 +1230,6 @@ void syscall_entrance_continued(ThreadStackFrame *stack_frame) {
                 case MapProcessMemoryResult::Success: {
                     MCFGTable *mcfg_table;
                     {
-                        //
-                        // !!!!!!!!!!!!!!!TABLE ISN'T BEING FOUND!!!!!!!!!!!!!!!!
-                        //
                         auto status = AcpiGetTable((char*)ACPI_SIG_MCFG, 1, (ACPI_TABLE_HEADER**)&mcfg_table);
                         if(status != AE_OK) {
                             *return_1 = (size_t)FindPCIEDeviceResult::NotFound;
@@ -1518,9 +1509,7 @@ void syscall_entrance_continued(ThreadStackFrame *stack_frame) {
             // Disable APIC timer
             processor_area->apic_registers->lvt_timer.value |= 1 << 16;
 
-            asm volatile(
-                "sti"
-            );
+            enable_interrupts();
 
             processor_area->in_syscall_or_user_exception = false;
             processor_area->preempt_during_syscall_or_user_exception = false;
@@ -1533,14 +1522,10 @@ void syscall_entrance_continued(ThreadStackFrame *stack_frame) {
 
     // Check for preempt during syscall
 
-    asm volatile(
-        "cli"
-    );
+    disable_interrupts();
 
     if(processor_area->preempt_during_syscall_or_user_exception) {
-        asm volatile(
-            "sti"
-        );
+        enable_interrupts();
 
         processor_area->in_syscall_or_user_exception = false;
         processor_area->preempt_during_syscall_or_user_exception = false;
@@ -1844,9 +1829,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
 
     copy_memory(multiprocessor_binary, (void*)multiprocessor_binary_load_location, multiprocessor_binary_size);
 
-    asm volatile(
-        "sti"
-    );
+    enable_interrupts();
 
     current_madt_index = 0;
     while(current_madt_index < madt_table->preamble.Header.Length - sizeof(ACPI_TABLE_MADT)) {
@@ -1857,7 +1840,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
                 auto subtable = (ACPI_MADT_LOCAL_APIC*)header;
 
                 if(subtable->ProcessorId != bootstrap_processor_id) {
-                    asm volatile("mfence");
+                    memory_fence();
 
                     // Reset error status register
                     processor_area->apic_registers->error_status.value = 0;
@@ -1871,7 +1854,7 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
 
                     // Wait for delivery of the INIT IPI
                     while((processor_area->apic_registers->interrupt_command_lower.value & (1 << 12)) != 0) {
-                        asm volatile("pause");
+                        spinloop_pause();
                     }
 
                     // TODO: Need to wait 10ms for a real physical CPU to reset
@@ -1882,14 +1865,14 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
 
                     // Wait for delivery of the STARTUP IPI
                     while((processor_area->apic_registers->interrupt_command_lower.value & (1 << 12)) != 0) {
-                        asm volatile("pause");
+                        spinloop_pause();
                     }
 
                     // No need to wait 200us for a real physical cpu to start executing, as we wait for the flag to be set anyway
 
                     // Wait for additional processor to set flag
                     while(!global_additional_processor_initialized_flag) {
-                        asm volatile("pause");
+                        spinloop_pause();
                     }
 
                     global_additional_processor_initialized_flag = false;
@@ -2146,11 +2129,7 @@ static inline void enable_sse() {
             pml4_table[pml4_index].user_mode_allowed = true;
             pml4_table[pml4_index].page_address = physical_pages_start;
 
-            asm volatile(
-                "invlpg (%0)"
-                :
-                : "D"(pdp_table)
-            );
+            invalidate_memory_page(pdp_table);
 
             fill_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), 0);
         }
@@ -2166,11 +2145,7 @@ static inline void enable_sse() {
             pdp_table[pdp_index].user_mode_allowed = true;
             pdp_table[pdp_index].page_address = physical_pages_start;
 
-            asm volatile(
-                "invlpg (%0)"
-                :
-                : "D"(pd_table)
-            );
+            invalidate_memory_page(pd_table);
 
             fill_memory(pd_table, sizeof(PageTableEntry[page_table_length]), 0);
         }
@@ -2186,11 +2161,7 @@ static inline void enable_sse() {
             pd_table[pd_index].user_mode_allowed = true;
             pd_table[pd_index].page_address = physical_pages_start;
 
-            asm volatile(
-                "invlpg (%0)"
-                :
-                : "D"(page_table)
-            );
+            invalidate_memory_page(page_table);
 
             fill_memory(page_table, sizeof(PageTableEntry[page_table_length]), 0);
         }
@@ -2199,11 +2170,7 @@ static inline void enable_sse() {
         page_table[page_index].write_allowed = true;
         page_table[page_index].page_address = bitmap_physical_pages_start + relative_page_index;
 
-        asm volatile(
-            "invlpg (%0)"
-            :
-            : "D"((kernel_pages_end + relative_page_index) * page_size)
-        );
+        invalidate_memory_page((void*)((kernel_pages_end + relative_page_index) * page_size));
     }
 
     { // Enable execution-disable page bit
@@ -2316,9 +2283,7 @@ static inline void enable_sse() {
 
     global_additional_processor_initialized_flag = true;
 
-    asm volatile(
-        "sti"
-    );
+    enable_interrupts();
 
     auto processor_area = &global_processor_areas[get_processor_id()];
 

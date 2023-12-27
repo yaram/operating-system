@@ -758,11 +758,7 @@ static bool maybe_allocate_kernel_tables(
         pml4_table[pml4_index].user_mode_allowed = true;
         pml4_table[pml4_index].page_address = physical_page_index;
 
-        asm volatile(
-            "invlpg (%0)"
-            :
-            : "D"(pdp_table)
-        );
+        invalidate_memory_page(pdp_table);
 
         fill_memory(pdp_table, sizeof(PageTableEntry[page_table_length]), 0);
 
@@ -798,11 +794,7 @@ static bool maybe_allocate_kernel_tables(
         pdp_table[pdp_index].user_mode_allowed = true;
         pdp_table[pdp_index].page_address = physical_page_index;
 
-        asm volatile(
-            "invlpg (%0)"
-            :
-            : "D"(pd_table)
-        );
+        invalidate_memory_page(pd_table);
 
         fill_memory(pd_table, sizeof(PageTableEntry[page_table_length]), 0);
 
@@ -838,11 +830,7 @@ static bool maybe_allocate_kernel_tables(
         pd_table[pd_index].user_mode_allowed = true;
         pd_table[pd_index].page_address = physical_page_index;
 
-        asm volatile(
-            "invlpg (%0)"
-            :
-            : "D"(page_table)
-        );
+        invalidate_memory_page(page_table);
 
         fill_memory(page_table, sizeof(PageTableEntry[page_table_length]), 0);
 
@@ -906,11 +894,7 @@ bool map_pages(
         page_table[page_index].write_allowed = true;
         page_table[page_index].page_address = physical_pages_start + relative_page_index;
 
-        asm volatile(
-            "invlpg (%0)"
-            :
-            : "D"((*logical_pages_start + relative_page_index) * page_size)
-        );
+        invalidate_memory_page((void*)((*logical_pages_start + relative_page_index) * page_size));
     }
 
     if(lock) {
@@ -956,11 +940,7 @@ void unmap_pages(
         page_table[page_index].present = false;
 #endif
 
-        asm volatile(
-            "invlpg (%0)"
-            :
-            : "D"((logical_pages_start + relative_page_index) * page_size)
-        );
+        invalidate_memory_page((void*)((logical_pages_start + relative_page_index) * page_size));
     }
 
     if(lock) {
@@ -1037,11 +1017,7 @@ bool map_and_allocate_pages(
         page_table[page_index].write_allowed = true;
         page_table[page_index].page_address = physical_page_index;
 
-        asm volatile(
-            "invlpg (%0)"
-            :
-            : "D"((*logical_pages_start + relative_page_index) * page_size)
-        );
+        invalidate_memory_page((void*)((*logical_pages_start + relative_page_index) * page_size));
     }
 
     if(lock) {
@@ -1140,11 +1116,7 @@ void unmap_and_deallocate_pages(
         page_table[page_index].present = false;
 #endif
 
-        asm volatile(
-            "invlpg (%0)"
-            :
-            : "D"((logical_pages_start + relative_page_index) * page_size)
-        );
+        invalidate_memory_page((void*)((logical_pages_start + relative_page_index) * page_size));
     }
 
     if(lock) {

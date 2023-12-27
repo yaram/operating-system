@@ -14,6 +14,14 @@ const size_t kernel_memory_end = 0x800000;
 const auto kernel_pages_start = kernel_memory_start / page_size;
 const auto kernel_pages_end = divide_round_up(kernel_memory_end, page_size);
 
+static inline void invalidate_memory_page(void *address) {
+    asm volatile(
+        "invlpg (%0)"
+        :
+        : "r"(address)
+    );
+}
+
 struct __attribute__((packed)) PageTableEntry {
     bool present: 1;
     bool write_allowed: 1;

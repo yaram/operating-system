@@ -2,6 +2,10 @@
 
 #include "threading.h"
 
+static void __attribute__((always_inline)) spinloop_pause() {
+    asm volatile("pause");
+}
+
 static inline void acquire_lock(volatile bool *lock) {
     while(true) {        
         auto false_value = false; // Must be reset every iteration as __atomic_compare_exchange_n overwrites it
@@ -9,7 +13,7 @@ static inline void acquire_lock(volatile bool *lock) {
             break;
         }
 
-        asm volatile("pause");
+        spinloop_pause();
     }
 }
 
