@@ -214,10 +214,10 @@ Processes global_processes {};
                 processor_area->preempt_during_syscall_or_user_exception = false;
 
                 // Set timer value
-                processor_area->apic_registers[0x380 / 4] = preempt_time;
+                processor_area->apic_registers->timer_initial_count.value = preempt_time;
 
                 // Enable APIC timer
-                processor_area->apic_registers[0x320 / 4] &= ~(1 << 16);
+                processor_area->apic_registers->lvt_timer.value &= ~(1 << 16);
 
                 // Halt current processor until next timer interval, also reset stack to top to prevent stack overflow
                 asm volatile(
@@ -293,10 +293,10 @@ Processes global_processes {};
     processor_area->preempt_during_syscall_or_user_exception = false;
 
     // Set timer value
-    processor_area->apic_registers[0x380 / 4] = preempt_time;
+    processor_area->apic_registers->timer_initial_count.value = preempt_time;
 
     // Enable APIC timer
-    processor_area->apic_registers[0x320 / 4] &= ~(1 << 16);
+    processor_area->apic_registers->lvt_timer.value &= ~(1 << 16);
 
     asm volatile(
         // Load GDT
@@ -546,7 +546,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ThreadStackFr
         user_processor_area->in_syscall_or_user_exception = true;
 
         // Disable APIC timer
-        user_processor_area->apic_registers[0x320 / 4] |= 1 << 16;
+        user_processor_area->apic_registers->lvt_timer.value |= 1 << 16;
 
         // Re-enable interrupts
         asm volatile(
@@ -568,7 +568,7 @@ extern "C" [[noreturn]] void exception_handler(size_t index, const ThreadStackFr
     auto processor_area = &global_processor_areas[get_processor_id()];
 
     // Send the End of Interrupt signal
-    processor_area->apic_registers[0x0B0 / 4] = 0;
+    processor_area->apic_registers->end_of_interrupt.value = 0;
 
     if(processor_area->current_process_iterator.current_bucket != nullptr) {
         auto old_thread = *processor_area->current_thread_iterator;
@@ -594,7 +594,7 @@ extern "C" void preempt_timer_handler(ThreadStackFrame *frame) {
             processor_area->preempt_during_syscall_or_user_exception = true;
 
             // Send the End of Interrupt signal
-            processor_area->apic_registers[0x0B0 / 4] = 0;
+            processor_area->apic_registers->end_of_interrupt.value = 0;
         } else {
             // Re-enable interrupts
             asm volatile(
@@ -627,7 +627,7 @@ void kernel_page_tables_update_handler_continued(ThreadStackFrame *frame) {
     auto processor_area = &global_processor_areas[get_processor_id()];
 
     // Send the End of Interrupt signal
-    processor_area->apic_registers[0x0B0 / 4] = 0;
+    processor_area->apic_registers->end_of_interrupt.value = 0;
 }
 
 extern "C" void kernel_page_tables_update_handler(ThreadStackFrame *frame) {
@@ -753,10 +753,10 @@ void send_kernel_page_tables_update(size_t pages_start, size_t page_count) {
 
     // Set vector number, set delivery mode to fixed, set destination mode to physical,
     // set level assert, set edge trigger, set all-excluding-self shorthand
-    processor_area->apic_registers[0x300 / 4] = kernel_page_tables_update_vector | 1 << 14 | 0b11 << 18;
+    processor_area->apic_registers->interrupt_command_lower.value = kernel_page_tables_update_vector | 1 << 14 | 0b11 << 18;
 
     // Wait for delivery of the IPI
-    while((processor_area->apic_registers[0x300 / 4] & (1 << 12)) != 0) {
+    while((processor_area->apic_registers->interrupt_command_lower.value & (1 << 12)) != 0) {
         asm volatile("pause");
     }
 
@@ -1468,7 +1468,7 @@ void syscall_entrance_continued(ThreadStackFrame *stack_frame) {
             // Disable APIC timer and clear any pending interrupt
 
             // Disable APIC timer
-            processor_area->apic_registers[0x320 / 4] |= 1 << 16;
+            processor_area->apic_registers->lvt_timer.value |= 1 << 16;
 
             asm volatile(
                 "sti"
@@ -1698,41 +1698,30 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
         current_madt_index += (size_t)header->Length;
     }
 
-    auto apic_registers = (volatile uint32_t*)map_memory(apic_physical_address, 0x400, bitmap);
+    auto apic_registers = (APICRegisters*)map_memory(apic_physical_address, 0x400, bitmap);
     if(apic_registers == nullptr) {
         printf("Error: Out of memory\n");
 
         halt();
     }
 
-    // Globally enable APICs
-    asm volatile(
-        "mov $0x1B, %%ecx\n" // IA32_APIC_BASE MSR
-        "rdmsr\n"
-        "or $(1 << 11), %%eax\n"
-        "wrmsr\n"
-        :
-        :
-        : "eax", "ecx", "edx"
-    );
-
     // Set APIC to known state
-    apic_registers[0x2F0 / 4] |= 1 << 16;
-    apic_registers[0x320 / 4] |= 1 << 16;
-    apic_registers[0x330 / 4] |= 1 << 16;
-    apic_registers[0x340 / 4] |= 1 << 16;
-    apic_registers[0x350 / 4] |= 1 << 16;
-    apic_registers[0x360 / 4] |= 1 << 16;
-    apic_registers[0x370 / 4] |= 1 << 16;
+    apic_registers->lvt_corrected_machine_check_interrupt.value |= 1 << 16;
+    apic_registers->lvt_timer.value |= 1 << 16;
+    apic_registers->lvt_thermal_sensor.value |= 1 << 16;
+    apic_registers->lvt_performance_monitoring_counters.value |= 1 << 16;
+    apic_registers->lvt_lint0.value |= 1 << 16;
+    apic_registers->lvt_lint1.value |= 1 << 16;
+    apic_registers->lvt_error.value |= 1 << 16;
 
     // Enable local APIC / set spurious interrupt vector
-    apic_registers[0xF0 / 4] = 0x2F | 0x100;
+    apic_registers->spurious_interrupt_vector.value = 0x2F | 1 << 8;
 
     // Set timer interrupt vector / keep timer disabled
-    apic_registers[0x320 / 4] = 1 << 16 | 0x20;
+    apic_registers->lvt_timer.value = 0x20 | 1 << 16;
 
     // Set timer divider to 16
-    apic_registers[0x3E0 / 4] = 3;
+    apic_registers->timer_divide_configuration.value = 3;
 
     processor_area->apic_registers = apic_registers;
 
@@ -1823,17 +1812,17 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
                     asm volatile("mfence");
 
                     // Reset error status register
-                    processor_area->apic_registers[0x280 / 4] = 0;
+                    processor_area->apic_registers->error_status.value = 0;
 
                     // Set target processor APIC ID
-                    processor_area->apic_registers[0x310 / 4] = (uint32_t)subtable->Id << 24;
+                    processor_area->apic_registers->interrupt_command_upper.value = (uint32_t)subtable->Id << 24;
 
                     // Set vector number to 0, set delivery mode to INIT, set destination mode to physical,
                     // set level assert, set edge trigger, set no shorthand
-                    processor_area->apic_registers[0x300 / 4] = 5 << 8 | 1 << 14;
+                    processor_area->apic_registers->interrupt_command_lower.value = 5 << 8 | 1 << 14;
 
                     // Wait for delivery of the INIT IPI
-                    while((processor_area->apic_registers[0x300 / 4] & (1 << 12)) != 0) {
+                    while((processor_area->apic_registers->interrupt_command_lower.value & (1 << 12)) != 0) {
                         asm volatile("pause");
                     }
 
@@ -1841,10 +1830,10 @@ static ProcessorArea *setup_processor(ProcessorArea *processor_areas, MADTTable 
 
                     // Set entry page number, set delivery mode to STARTUP, set destination mode to physical,
                     // set level assert, set edge trigger, set no shorthand
-                    processor_area->apic_registers[0x300 / 4] = 1 | 6 << 8 | 1 << 14;
+                    processor_area->apic_registers->interrupt_command_lower.value = 1 | 6 << 8 | 1 << 14;
 
                     // Wait for delivery of the STARTUP IPI
-                    while((processor_area->apic_registers[0x300 / 4] & (1 << 12)) != 0) {
+                    while((processor_area->apic_registers->interrupt_command_lower.value & (1 << 12)) != 0) {
                         asm volatile("pause");
                     }
 

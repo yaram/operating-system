@@ -3,6 +3,55 @@
 #include "process.h"
 #include "paging.h"
 
+union __attribute__((aligned(16))) APICRegister {
+    uint32_t value;
+};
+
+struct APICRegisters {
+    volatile APICRegister reserved_1[2];
+
+    volatile APICRegister lapic_id;
+    volatile APICRegister lapic_version;
+
+    volatile APICRegister reserved_2[4];
+
+    volatile APICRegister task_priority;
+    volatile APICRegister arbitration_priority;
+    volatile APICRegister processor_priority;
+    volatile APICRegister end_of_interrupt;
+    volatile APICRegister remote_read;
+    volatile APICRegister logical_destination;
+    volatile APICRegister destination_format;
+    volatile APICRegister spurious_interrupt_vector;
+
+    volatile APICRegister in_service[8];
+    volatile APICRegister trigger_mode[8];
+    volatile APICRegister interrupt_request[8];
+
+    volatile APICRegister error_status;
+
+    volatile APICRegister reserved_3[6];
+
+    volatile APICRegister lvt_corrected_machine_check_interrupt;
+    volatile APICRegister interrupt_command_lower;
+    volatile APICRegister interrupt_command_upper;
+    volatile APICRegister lvt_timer;
+    volatile APICRegister lvt_thermal_sensor;
+    volatile APICRegister lvt_performance_monitoring_counters;
+    volatile APICRegister lvt_lint0;
+    volatile APICRegister lvt_lint1;
+    volatile APICRegister lvt_error;
+    volatile APICRegister timer_initial_count;
+    volatile APICRegister timer_current_count;
+
+    volatile APICRegister reserved_4[4];
+
+    volatile APICRegister timer_divide_configuration;
+    volatile APICRegister reserved_5;
+};
+
+static_assert(sizeof(APICRegisters) == 0x400, "APIC register struct is incorrect size");
+
 union GDTEntry {
     struct __attribute__((packed)) {
         uint16_t limit_low;
@@ -79,7 +128,7 @@ struct ProcessorArea {
 
     TSSEntry tss_entry;
 
-    volatile uint32_t *apic_registers;
+    APICRegisters *apic_registers;
 
     Processes::Iterator current_process_iterator;
     ProcessThreads::Iterator current_thread_iterator;
