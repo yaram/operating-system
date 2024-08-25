@@ -52,7 +52,7 @@ run_command(
     '-vga', 'virtio',
     '-device', 'virtio-keyboard',
     '-device', 'virtio-mouse',
-    '-drive', 'if=pflash,format=raw,unit=0,readonly,file={}'.format(uefi_firmware_path),
+    '-drive', 'if=pflash,format=raw,unit=0,readonly=on,file={}'.format(uefi_firmware_path),
     '-kernel', os.path.join(build_directory, 'BOOTX64.EFI'),
     *sys.argv[1:]
 )
