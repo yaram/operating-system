@@ -26,10 +26,23 @@ if cpu_count == None:
 qemu_path = shutil.which('qemu-system-x86_64')
 qemu_directory = os.path.dirname(qemu_path)
 
-uefi_firmware_path = os.path.join(qemu_directory, 'edk2-x86_64-code.fd')
+possible_uefi_firmware_paths = [
+    os.path.join(qemu_directory, 'edk2-x86_64-code.fd'),
+    '/usr/share/edk2/ovmf/OVMF_CODE.fd'
+]
+
+uefi_firmware_path = None
+for path in possible_uefi_firmware_paths:
+    if os.path.exists(path):
+        uefi_firmware_path = path
+        break
+
+if uefi_firmware_path == None:
+    print("Could not find OVMF UEFI firmware", file=sys.stderr)
+    exit(1)
 
 run_command(
-    shutil.which('qemu-system-x86_64'),
+    qemu_path,
     '-no-reboot',
     '-no-shutdown',
     '-monitor', 'stdio',
