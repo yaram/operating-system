@@ -340,7 +340,6 @@ objects_multiprocessor = [
 build_objects_16bit(
     objects_multiprocessor,
     'multiprocessor',
-    '-mcmodel=kernel',
     '-fno-stack-protector',
     '-mno-red-zone',
     '-mno-mmx',
