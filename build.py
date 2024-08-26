@@ -8,6 +8,7 @@ import concurrent.futures
 import shutil
 import argparse
 import signal
+import json
 
 start_time = time.time()
 
@@ -27,6 +28,7 @@ parser.add_argument('--optimize', action='store_true', help='produce optimized o
 parser.add_argument('--nodebug', dest="debug", action='store_false', help='don\'t produce debug info')
 parser.add_argument('--jobs', action='store', default=cpu_count, type=int, help='number of parallel compiler jobs (default: {})'.format(cpu_count))
 parser.add_argument('--rebuild', action='store_true', help='rebuild all libraries')
+parser.add_argument('--compile-commands', action='store_true', help='create compile_commands.json')
 
 arguments = parser.parse_args()
 
@@ -41,6 +43,8 @@ build_directory = os.path.join(parent_directory, 'build')
 thirdparty_directory = os.path.join(parent_directory, 'thirdparty')
 
 object_directory = os.path.join(build_directory, 'objects')
+
+compile_commands = []
 
 def build_objects(objects, target, name, *extra_arguments):
     sub_object_directory = os.path.join(object_directory, name)
@@ -58,9 +62,9 @@ def build_objects(objects, target, name, *extra_arguments):
         for source_path, object_name in objects:
             is_cpp = source_path.endswith('.cpp')
 
-            thread_pool.submit(
-                run_command,
-                cpp_compiler_path if is_cpp else c_compiler_path,
+            compiler_path = cpp_compiler_path if is_cpp else c_compiler_path
+
+            compiler_arguments = [
                 '-target', target,
                 '-march=x86-64',
                 '-std=gnu++11' if is_cpp else '-std=gnu11',
@@ -71,6 +75,19 @@ def build_objects(objects, target, name, *extra_arguments):
                 '-c',
                 '-o', os.path.join(sub_object_directory, object_name),
                 source_path
+            ]
+
+            if arguments.compile_commands:
+                compile_commands.append({
+                    'directory': parent_directory,
+                    'arguments': [compiler_path, *compiler_arguments],
+                    'file': source_path
+                })
+
+            thread_pool.submit(
+                run_command,
+                compiler_path,
+                *compiler_arguments
             )
 
 def build_objects_64bit(objects, name, *extra_arguments):
@@ -444,6 +461,10 @@ run_command(
     '-out:{}'.format(os.path.join(build_directory, 'BOOTX64.EFI')),
     *[os.path.join(object_directory, 'uefi_bootloader', object_name) for _, object_name in objects_uefi]
 )
+
+if arguments.compile_commands:
+    with open(os.path.join(build_directory, 'compile_commands.json'), 'w') as f:
+        json.dump(compile_commands, f, indent=2)
 
 end_time = time.time()
 
